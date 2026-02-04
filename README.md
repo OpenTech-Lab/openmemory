@@ -67,6 +67,8 @@ The AI now has two tools:
 }
 ```
 
+> **Tip:** The AI won't automatically save everything. Before ending a conversation, ask: *"Please save anything important from our discussion"* to ensure key information is remembered for next time.
+
 ## Development
 
 ```bash

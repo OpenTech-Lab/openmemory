@@ -179,36 +179,43 @@ flowchart LR
 
 ## Data Model
 
-### PostgreSQL Schema
+A single memory is split across two stores for optimal performance:
 
 ```mermaid
 erDiagram
-    memory_index {
-        uuid id PK
+    MEMORY ||--|| MEMORY_INDEX : "metadata in"
+    MEMORY ||--|| MEMORY_DOCUMENT : "content in"
+
+    MEMORY {
+        uuid id PK "Shared identifier"
+    }
+
+    MEMORY_INDEX {
+        uuid id PK "PostgreSQL"
         text user_id
         text summary
-        real importance_score
-        text[] tags
+        real importance_score "0.0 - 1.0"
+        text_array tags
         timestamptz created_at
         timestamptz updated_at
     }
-```
 
-### OpenSearch Document
-
-```mermaid
-classDiagram
-    class MemoryDocument {
-        +string id
-        +string user_id
-        +string content
-        +string summary
-        +float importance_score
-        +string[] tags
-        +datetime created_at
-        +datetime updated_at
+    MEMORY_DOCUMENT {
+        string id PK "OpenSearch"
+        string user_id
+        string content "Full text (BM25 indexed)"
+        string summary
+        float importance_score
+        string_array tags "Keyword indexed"
+        datetime created_at
+        datetime updated_at
     }
 ```
+
+| Store | Purpose | Data |
+|-------|---------|------|
+| **PostgreSQL** | Fast metadata lookup | id, importance, tags, timestamps |
+| **OpenSearch** | Full-text search (BM25) | content, summary, tags |
 
 ### Data Flow
 
