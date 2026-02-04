@@ -30,7 +30,14 @@ import {
 } from '@/components/ui/alert-dialog';
 import { DataTable } from '@/components/ui/data-table';
 import { createMemoryColumns, type Memory } from '@/components/memory-columns';
-import { Search, Database, RefreshCw, Plus, AlertCircle } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud } from 'lucide-react';
 
 export function MemoryDashboard() {
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -40,6 +47,7 @@ export function MemoryDashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('browse');
   const [error, setError] = useState<string | null>(null);
+  const [dataSource, setDataSource] = useState<'all' | 'postgres' | 'opensearch'>('all');
 
   // Dialog states
   const [viewMemory, setViewMemory] = useState<Memory | null>(null);
@@ -60,7 +68,7 @@ export function MemoryDashboard() {
         onView: (memory) => setViewMemory(memory),
         onEdit: (memory) => {
           setEditMemory(memory);
-          setFormContent(memory.content);
+          setFormContent(memory.content || '');
           setFormSummary(memory.summary || '');
           setFormTags(memory.tags.join(', '));
           setFormImportance(memory.importance_score);
@@ -70,7 +78,7 @@ export function MemoryDashboard() {
     []
   );
 
-  const fetchAllMemories = async () => {
+  const fetchAllMemories = async (source: 'all' | 'postgres' | 'opensearch' = dataSource) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -80,6 +88,7 @@ export function MemoryDashboard() {
         body: JSON.stringify({
           type: 'memory.list',
           limit: 100,
+          source,
         }),
       });
 
@@ -257,9 +266,9 @@ export function MemoryDashboard() {
 
   useEffect(() => {
     if (activeTab === 'browse') {
-      fetchAllMemories();
+      fetchAllMemories(dataSource);
     }
-  }, [activeTab]);
+  }, [activeTab, dataSource]);
 
   return (
     <div className="flex flex-col h-full">
@@ -274,7 +283,7 @@ export function MemoryDashboard() {
             </Badge>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={fetchAllMemories} disabled={isLoading}>
+            <Button variant="outline" size="sm" onClick={() => fetchAllMemories()} disabled={isLoading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
@@ -308,8 +317,40 @@ export function MemoryDashboard() {
           <TabsContent value="browse" className="flex-1 mt-4">
             <Card className="h-full">
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">All Memories</CardTitle>
-                <CardDescription>Browse and manage all stored memories</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">All Memories</CardTitle>
+                    <CardDescription>Browse and manage all stored memories</CardDescription>
+                  </div>
+                  <Select
+                    value={dataSource}
+                    onValueChange={(v) => setDataSource(v as 'all' | 'postgres' | 'opensearch')}
+                  >
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Select source" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">
+                        <div className="flex items-center gap-2">
+                          <Database className="h-4 w-4" />
+                          <span>All (Combined)</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="postgres">
+                        <div className="flex items-center gap-2">
+                          <HardDrive className="h-4 w-4" />
+                          <span>PostgreSQL (Index)</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="opensearch">
+                        <div className="flex items-center gap-2">
+                          <Cloud className="h-4 w-4" />
+                          <span>OpenSearch (Docs)</span>
+                        </div>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
@@ -406,7 +447,9 @@ export function MemoryDashboard() {
               </div>
               <div className="grid grid-cols-4 items-start gap-4">
                 <Label className="text-right text-muted-foreground">Content</Label>
-                <p className="col-span-3 whitespace-pre-wrap">{viewMemory.content}</p>
+                <p className="col-span-3 whitespace-pre-wrap">
+                  {viewMemory.content || <span className="text-muted-foreground italic">No content (index only)</span>}
+                </p>
               </div>
               {viewMemory.summary && (
                 <div className="grid grid-cols-4 items-start gap-4">
@@ -462,7 +505,7 @@ export function MemoryDashboard() {
               onClick={() => {
                 if (viewMemory) {
                   setEditMemory(viewMemory);
-                  setFormContent(viewMemory.content);
+                  setFormContent(viewMemory.content || '');
                   setFormSummary(viewMemory.summary || '');
                   setFormTags(viewMemory.tags.join(', '));
                   setFormImportance(viewMemory.importance_score);

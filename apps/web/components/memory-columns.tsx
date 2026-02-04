@@ -15,7 +15,7 @@ import {
 
 export interface Memory {
   id: string;
-  content: string;
+  content?: string | null;
   summary: string | null;
   tags: string[];
   importance_score: number;
@@ -53,11 +53,16 @@ export function createMemoryColumns(actions?: MemoryActions): ColumnDef<Memory>[
           <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
-      cell: ({ row }) => (
-        <div className="max-w-[400px] truncate" title={row.getValue('content')}>
-          {row.getValue('content')}
-        </div>
-      ),
+      cell: ({ row }) => {
+        const content = row.getValue<string | null | undefined>('content');
+        return content ? (
+          <div className="max-w-[400px] truncate" title={content}>
+            {content}
+          </div>
+        ) : (
+          <span className="text-muted-foreground/50 italic">No content (index only)</span>
+        );
+      },
     },
     {
       accessorKey: 'summary',
@@ -189,7 +194,10 @@ export function createMemoryColumns(actions?: MemoryActions): ColumnDef<Memory>[
                 <Copy className="mr-2 h-4 w-4" />
                 Copy ID
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigator.clipboard.writeText(memory.content)}>
+              <DropdownMenuItem
+                onClick={() => memory.content && navigator.clipboard.writeText(memory.content)}
+                disabled={!memory.content}
+              >
                 <Copy className="mr-2 h-4 w-4" />
                 Copy content
               </DropdownMenuItem>

@@ -187,6 +187,41 @@ impl OpenSearchClient {
         Ok(docs)
     }
 
+    async fn list_all(&self, limit: usize) -> anyhow::Result<Vec<MemoryDocument>> {
+        let url = format!("{}/{}/_search", self.base_url, self.index);
+
+        let search_body = serde_json::json!({
+            "size": limit,
+            "query": {
+                "match_all": {}
+            },
+            "sort": [
+                { "created_at": { "order": "desc" } }
+            ],
+            "_source": true
+        });
+
+        let resp = self.client.post(&url).json(&search_body).send().await?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("List all failed: {}", body);
+        }
+
+        let result: serde_json::Value = resp.json().await?;
+        let hits = result["hits"]["hits"].as_array();
+
+        let docs: Vec<MemoryDocument> = hits
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|hit| serde_json::from_value(hit["_source"].clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(docs)
+    }
+
     async fn get_document(&self, id: &str) -> anyhow::Result<Option<MemoryDocument>> {
         let url = format!("{}/{}/_doc/{}", self.base_url, self.index, id);
 
@@ -246,6 +281,8 @@ enum McpRequest {
         limit: Option<usize>,
         #[serde(default)]
         user_id: Option<String>,
+        #[serde(default)]
+        source: Option<String>, // "all", "postgres", "opensearch"
     },
 
     #[serde(rename = "memory.get")]
@@ -291,6 +328,7 @@ enum McpResponse {
     MemoryListResult {
         memories: Vec<ListResult>,
         total: usize,
+        source: String,
     },
 
     #[serde(rename = "memory.get.result")]
@@ -311,14 +349,18 @@ enum McpResponse {
     },
 }
 
-// List result - from PostgreSQL index (fast)
+// List result - combined from both stores
 #[derive(Debug, Serialize)]
 struct ListResult {
     id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
     summary: Option<String>,
     tags: Vec<String>,
     importance_score: f32,
     created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_at: Option<DateTime<Utc>>,
 }
 
 // Search result - combined from both stores
@@ -640,47 +682,139 @@ async fn mcp(
             ))
         }
 
-        McpRequest::MemoryList { limit, user_id } => {
-            let limit = limit.unwrap_or(100).clamp(1, 500) as i64;
+        McpRequest::MemoryList { limit, user_id, source } => {
+            let limit = limit.unwrap_or(100).clamp(1, 500);
+            let source = source.as_deref().unwrap_or("all");
 
-            // List from PostgreSQL index (fast)
-            let indexes: Vec<MemoryIndex> = match &user_id {
-                Some(uid) => {
-                    sqlx::query_as(
-                        "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
-                    )
-                    .bind(uid)
-                    .bind(limit)
-                    .fetch_all(&state.db)
-                    .await
+            match source {
+                "postgres" => {
+                    // List from PostgreSQL only (index data)
+                    let indexes: Vec<MemoryIndex> = match &user_id {
+                        Some(uid) => {
+                            sqlx::query_as(
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                            )
+                            .bind(uid)
+                            .bind(limit as i64)
+                            .fetch_all(&state.db)
+                            .await
+                        }
+                        None => {
+                            sqlx::query_as(
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1",
+                            )
+                            .bind(limit as i64)
+                            .fetch_all(&state.db)
+                            .await
+                        }
+                    }
+                    .unwrap_or_default();
+
+                    let total = indexes.len();
+                    let results: Vec<ListResult> = indexes
+                        .into_iter()
+                        .map(|i| ListResult {
+                            id: i.id,
+                            content: None,
+                            summary: i.summary,
+                            tags: i.tags,
+                            importance_score: i.importance_score,
+                            created_at: i.created_at,
+                            updated_at: Some(i.updated_at),
+                        })
+                        .collect();
+
+                    Ok((
+                        StatusCode::OK,
+                        Json(McpResponse::MemoryListResult { memories: results, total, source: "postgres".to_string() }),
+                    ))
                 }
-                None => {
-                    sqlx::query_as(
-                        "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1",
-                    )
-                    .bind(limit)
-                    .fetch_all(&state.db)
-                    .await
+
+                "opensearch" => {
+                    // List from OpenSearch only (full documents)
+                    let docs = state.opensearch.list_all(limit).await.unwrap_or_default();
+
+                    let total = docs.len();
+                    let results: Vec<ListResult> = docs
+                        .into_iter()
+                        .filter_map(|d| {
+                            let id = Uuid::parse_str(&d.id).ok()?;
+                            let created_at = chrono::DateTime::parse_from_rfc3339(&d.created_at)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&Utc))
+                                .unwrap_or_else(Utc::now);
+                            let updated_at = chrono::DateTime::parse_from_rfc3339(&d.updated_at)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&Utc));
+                            Some(ListResult {
+                                id,
+                                content: Some(d.content),
+                                summary: d.summary,
+                                tags: d.tags,
+                                importance_score: d.importance_score,
+                                created_at,
+                                updated_at,
+                            })
+                        })
+                        .collect();
+
+                    Ok((
+                        StatusCode::OK,
+                        Json(McpResponse::MemoryListResult { memories: results, total, source: "opensearch".to_string() }),
+                    ))
+                }
+
+                _ => {
+                    // "all" - Combined: Get index from PostgreSQL, content from OpenSearch
+                    let indexes: Vec<MemoryIndex> = match &user_id {
+                        Some(uid) => {
+                            sqlx::query_as(
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                            )
+                            .bind(uid)
+                            .bind(limit as i64)
+                            .fetch_all(&state.db)
+                            .await
+                        }
+                        None => {
+                            sqlx::query_as(
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1",
+                            )
+                            .bind(limit as i64)
+                            .fetch_all(&state.db)
+                            .await
+                        }
+                    }
+                    .unwrap_or_default();
+
+                    // Fetch content from OpenSearch for each
+                    let mut results: Vec<ListResult> = Vec::with_capacity(indexes.len());
+                    for idx in &indexes {
+                        let content = state.opensearch
+                            .get_document(&idx.id.to_string())
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|d| d.content);
+
+                        results.push(ListResult {
+                            id: idx.id,
+                            content,
+                            summary: idx.summary.clone(),
+                            tags: idx.tags.clone(),
+                            importance_score: idx.importance_score,
+                            created_at: idx.created_at,
+                            updated_at: Some(idx.updated_at),
+                        });
+                    }
+
+                    let total = results.len();
+                    Ok((
+                        StatusCode::OK,
+                        Json(McpResponse::MemoryListResult { memories: results, total, source: "all".to_string() }),
+                    ))
                 }
             }
-            .unwrap_or_default();
-
-            let total = indexes.len();
-            let results: Vec<ListResult> = indexes
-                .into_iter()
-                .map(|i| ListResult {
-                    id: i.id,
-                    summary: i.summary,
-                    tags: i.tags,
-                    importance_score: i.importance_score,
-                    created_at: i.created_at,
-                })
-                .collect();
-
-            Ok((
-                StatusCode::OK,
-                Json(McpResponse::MemoryListResult { memories: results, total }),
-            ))
         }
 
         McpRequest::MemoryGet { id } => {
