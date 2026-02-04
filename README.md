@@ -1,99 +1,86 @@
-# Open Memory
-As AI Common memory (OpenMemory-style local MCP memory) Local-first, shared memory for multiple AI tools/agents.
+# OpenMemory
 
-This repo is currently scaffolded from [docs/gpt-plan.md](docs/gpt-plan.md):
+A lightweight, local, shared memory system for AI tools and agents via MCP (Model Context Protocol).
 
-- Rust (Axum) server that accepts MCP-style JSON requests (`memory.save`, `memory.search`)
-- Docker Compose skeleton for PostgreSQL + OpenSearch (infra)
-- Monorepo wiring placeholders (Turborepo/pnpm) for a future Next.js dashboard
+OpenMemory provides persistent, searchable memory for AI assistants without the cost and latency of traditional RAG pipelines. It uses hybrid retrieval (BM25 + importance scoring) to deliver fast, token-efficient context.
 
-## Quick start (runnable sample)
+## Features
 
-### 0) Install JS deps (required for Turbo)
+- **Local-first** - All data stays on your machine
+- **MCP-native** - Works with Claude, GPT, and other MCP-compatible tools
+- **Fast retrieval** - BM25 search via OpenSearch (< 10ms)
+- **Token-efficient** - Returns only relevant memories, not entire history
+- **Privacy-first** - No cloud, no telemetry
 
-```bash
-pnpm install
+## Architecture
+
+```
+┌─────────────────────────────┐
+│  AI Tool (Claude/GPT/etc)   │
+│       via MCP client        │
+└─────────────┬───────────────┘
+              │ MCP (stdio)
+┌─────────────▼───────────────┐
+│     OpenMemory MCP Server   │
+│         (Rust/Axum)         │
+├─────────────┬───────────────┤
+│ PostgreSQL  │  OpenSearch   │
+│  (metadata) │  (BM25 search)│
+└─────────────┴───────────────┘
+              │
+       Next.js Dashboard
 ```
 
-### Build everything from repo root (Turbo)
+See [docs/DESIGN.md](docs/DESIGN.md) for detailed architecture and workflow diagrams.
 
-```bash
-pnpm turbo run build
-```
+## Quick Start
 
-If you don't have pnpm on PATH, you can also run:
-
-```bash
-npx turbo run build
-```
-
-### Dev (run web + server together)
-
-```bash
-pnpm turbo run dev
-```
-
-### 1) Run the Rust server
-
-```bash
-cargo run -p openmemory-server
-```
-
-Server binds to `127.0.0.1:8080` by default. Override with `OPENMEMORY_PORT`.
-
-### 2) Run the sample (save + search)
-
-```bash
-chmod +x scripts/sample.sh
-./scripts/sample.sh
-```
-
-You should see:
-
-- `GET /health` returning `{ "status": "ok" }`
-- two `memory.save` calls
-- one `memory.search` call returning scored results
-
-## Infra (optional)
-
-Bring up PostgreSQL + OpenSearch + Redis locally:
+### 1. Start infrastructure
 
 ```bash
 docker compose up -d
 ```
 
-Services:
-- PostgreSQL: `localhost:5432`
-- OpenSearch: `localhost:9200`
-- OpenSearch Dashboards: `localhost:5601`
-- Redis: `localhost:6379`
+This starts:
+- PostgreSQL (localhost:5432)
+- OpenSearch (localhost:9200)
+- OpenSearch Dashboards (localhost:5601)
+- Redis (localhost:6379, optional caching)
 
-Notes:
-
-- The current server implementation uses an in-memory store (for a minimal working sample).
-- Redis cache is optional; set `REDIS_URL=redis://localhost:6379` to enable caching.
-- Wiring Postgres + OpenSearch is the next step.
-
-## Integrate with AI tools (MCP)
-
-### Step 1: Build the MCP binary
+### 2. Build and run the MCP server
 
 ```bash
 cargo build --release --bin openmemory-mcp
 ```
 
-The binary will be at: `target/release/openmemory-mcp`
+### 3. Configure your AI tool
 
-### Step 2: Configure Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%/Claude/claude_desktop_config.json` (Windows):
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
 ```json
 {
   "mcpServers": {
     "openmemory": {
-      "command": "~/Project/ai-common-memory/target/release/openmemory-mcp",
+      "command": "/absolute/path/to/openmemory/target/release/openmemory-mcp",
       "env": {
+        "DATABASE_URL": "postgres://openmemory:openmemory@localhost:5432/openmemory",
+        "OPENSEARCH_URL": "http://localhost:9200"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** (`~/.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "openmemory": {
+      "command": "/PATH-TO-PROJECT/openmemory/target/release/openmemory-mcp",
+      "env": {
+        "DATABASE_URL": "postgres://openmemory:openmemory@localhost:5432/openmemory",
+        "OPENSEARCH_URL": "http://localhost:9200",
         "REDIS_URL": "redis://localhost:6379"
       }
     }
@@ -101,43 +88,146 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-Or use the full absolute path like `/home/toyofumi/Project/ai-common-memory/target/release/openmemory-mcp`
+### 4. Restart your AI tool
 
-### Step 3: Restart Claude Desktop
+The AI now has access to:
+- **memory_save** - Save important information
+- **memory_search** - Retrieve relevant memories
 
-Quit and reopen Claude Desktop. You should see "openmemory" in the MCP tools list.
+## MCP Tools
 
-### Step 4: Use memory in conversations
+### memory_save
 
-The AI can now use two tools:
-- **memory_save**: Save important facts, preferences, or context
-- **memory_search**: Retrieve relevant information based on keywords
+Save important information for later recall.
 
-Example prompts:
-- "Remember that I prefer docker compose for deployments"
-- "What do you know about my docker setup?"
+```json
+{
+  "content": "User prefers TypeScript over JavaScript",
+  "summary": "TypeScript preference",
+  "importance": 0.8,
+  "tags": ["preference", "coding"]
+}
+```
 
-The system uses hybrid scoring (keyword matching + importance + recency) to return the most relevant memories.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `content` | string | Yes | The information to remember |
+| `summary` | string | No | Brief summary |
+| `importance` | number | No | 0.0-1.0 (default: 0.5) |
+| `tags` | string[] | No | Categorization tags |
 
-### Troubleshooting
+### memory_search
 
-**If the tool shows as "failed" in Claude Desktop:**
+Search memories by keywords.
+
+```json
+{
+  "query": "TypeScript preferences",
+  "limit": 5
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Search keywords |
+| `limit` | number | No | Max results (default: 5) |
+
+## Development
+
+### Prerequisites
+
+- Rust 1.75+
+- Node.js 20+
+- pnpm 9+
+- Docker
+
+### Install dependencies
+
+```bash
+pnpm install
+```
+
+### Build everything
+
+```bash
+pnpm turbo run build
+```
+
+### Run in development mode
+
+```bash
+pnpm turbo run dev
+```
+
+### Seed test data
+
+```bash
+cd scripts
+source venv/bin/activate  # or: uv venv venv && source venv/bin/activate
+uv pip install -r requirements.txt
+python seed-data.py --count 1000
+```
+
+## Project Structure
+
+```
+openmemory/
+├── apps/
+│   ├── server/           # Rust MCP server
+│   └── web/              # Next.js dashboard
+├── packages/
+│   ├── sdk/              # TypeScript SDK (planned)
+│   └── shared-types/     # Shared types (planned)
+├── scripts/
+│   ├── seed-data.py      # Demo data seeder
+│   └── sample.sh         # API test script
+├── docs/
+│   ├── DESIGN.md         # Architecture & design
+│   └── plan/             # Planning documents
+├── docker-compose.yml
+└── turbo.json
+```
+
+## How It Works
+
+Unlike traditional RAG that embeds everything and performs expensive vector searches, OpenMemory uses:
+
+1. **BM25 lexical search** - Fast full-text search via OpenSearch
+2. **Importance scoring** - User-defined priority (0.0-1.0)
+3. **Recency boost** - Recent memories rank higher
+4. **Minimal context** - Returns only top 3-5 relevant memories
+
+**Scoring formula:**
+```
+score = importance * 0.6 + recency * 0.4
+```
+
+| Method | Cost | Speed | Tokens |
+|--------|------|-------|--------|
+| Full RAG | High | Slow | High |
+| Chat History | Medium | Medium | Very High |
+| **OpenMemory** | **Low** | **Fast** | **Low** |
+
+## Troubleshooting
+
+### MCP tool shows as "failed"
 
 1. Check logs: `tail -f ~/Library/Logs/Claude/mcp*.log` (macOS)
-2. Verify the binary path is absolute and correct
-3. Make sure Redis is running: `docker compose up -d redis`
-4. Test the binary manually:
+2. Verify the binary path is absolute
+3. Ensure Docker services are running: `docker compose ps`
+4. Test manually:
    ```bash
-   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | target/release/openmemory-mcp
+   echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | ./target/release/openmemory-mcp
    ```
 
-## Repo layout
+### Database connection errors
 
-```text
-apps/
-	server/   # Rust Axum server (runnable)
-	web/      # placeholder
-packages/   # placeholder
-docs/
-scripts/
+Make sure PostgreSQL and OpenSearch are healthy:
+```bash
+docker compose ps
+curl http://localhost:9200  # Should return OpenSearch info
 ```
+
+## License
+
+MIT

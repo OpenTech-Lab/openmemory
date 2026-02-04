@@ -394,7 +394,7 @@ quadrantChart
     x-axis Low Cost --> High Cost
     y-axis Slow --> Fast
     quadrant-1 Ideal
-    quadrant-2 Fast but Expensive
+    quadrant-2 Fast and Cheap
     quadrant-3 Slow and Cheap
     quadrant-4 Worst
     OpenMemory: [0.2, 0.85]
