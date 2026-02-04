@@ -1,6 +1,5 @@
-# 🧠 ai-common-memory (OpenMemory-style local MCP memory)
-
-Local-first, shared memory for multiple AI tools/agents.
+# Open Memory
+As AI Common memory (OpenMemory-style local MCP memory) Local-first, shared memory for multiple AI tools/agents.
 
 This repo is currently scaffolded from [docs/gpt-plan.md](docs/gpt-plan.md):
 
