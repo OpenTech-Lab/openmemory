@@ -23,6 +23,7 @@ dist/
 coverage/
 .nyc_output/
 *.lcov
+venv/
 
 # Environment variables
 .env
