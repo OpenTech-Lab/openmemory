@@ -1,0 +1,27 @@
+[package]
+name = "openmemory-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "openmemory-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "openmemory-mcp"
+path = "src/mcp.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["json"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
