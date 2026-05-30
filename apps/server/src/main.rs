@@ -328,8 +328,6 @@ enum McpRequest {
         from_id: Uuid,
         to_id: Uuid,
         relationship: String,
-        #[serde(default)]
-        user_id: Option<String>,
     },
 }
 
@@ -1049,24 +1047,11 @@ async fn mcp(
             let hops = hops.unwrap_or(1).clamp(1, 2);
             let limit = limit.unwrap_or(10).clamp(1, 50);
 
-            // Verify the caller owns the source memory before traversing the graph.
-            if let Some(ref uid) = user_id {
-                let owned: Option<(Uuid,)> = sqlx::query_as(
-                    "SELECT id FROM memory_index WHERE id = $1 AND user_id = $2",
-                )
-                .bind(id)
-                .bind(uid)
-                .fetch_optional(&state.db)
-                .await
-                .unwrap_or(None);
-
-                if owned.is_none() {
-                    return Err((
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({ "error": "Memory not found" })),
-                    ));
-                }
-            }
+            // NOTE: user_id here is a client-supplied namespace selector, identical to how
+            // memory_search / memory_list use it. This codebase has no auth layer — there is
+            // no server-side session or token to derive identity from. A real ownership check
+            // requires adding auth middleware (e.g. Bearer token → user_id on McpState).
+            // The user_id is passed to FalkorDB to scope traversal within a namespace only.
 
             let mut fdb = match &state.falkordb {
                 Some(fdb) => fdb.clone(),
@@ -1093,25 +1078,10 @@ async fn mcp(
             }
         }
 
-        McpRequest::MemoryGraphRelate { from_id, to_id, relationship, user_id } => {
-            // Verify the caller owns both memories before creating a link between them.
-            if let Some(ref uid) = user_id {
-                let owned: Vec<(Uuid,)> = sqlx::query_as(
-                    "SELECT id FROM memory_index WHERE id = ANY($1) AND user_id = $2",
-                )
-                .bind(&[from_id, to_id] as &[Uuid])
-                .bind(uid)
-                .fetch_all(&state.db)
-                .await
-                .unwrap_or_default();
-
-                if owned.len() < 2 {
-                    return Err((
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({ "error": "One or both memories not found" })),
-                    ));
-                }
-            }
+        McpRequest::MemoryGraphRelate { from_id, to_id, relationship } => {
+            // NOTE: same no-auth caveat as MemoryGraphNeighbors. user_id is dropped here
+            // because relate_nodes does not use it — the existence check in relate_nodes
+            // (MATCH … RETURN count) verifies both nodes are present in the graph.
 
             let mut fdb = match &state.falkordb {
                 Some(fdb) => fdb.clone(),

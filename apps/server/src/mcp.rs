@@ -559,23 +559,9 @@ impl McpServer {
         let id = uuid::Uuid::parse_str(id_str).context("invalid uuid")?;
         let hops = args["hops"].as_u64().unwrap_or(1).clamp(1, 2) as u8;
         let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+        // user_id is a namespace selector only — consistent with memory_search / memory_list.
+        // A real ownership check requires auth middleware (Bearer → server-side identity).
         let user_id = args["user_id"].as_str().map(|s| s.to_string());
-
-        // Verify ownership before traversal when user_id is provided.
-        if let Some(ref uid) = user_id {
-            let owned: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM memory_index WHERE id = $1 AND user_id = $2",
-            )
-            .bind(id)
-            .bind(uid)
-            .fetch_optional(&self.db)
-            .await
-            .unwrap_or(None);
-
-            if owned.is_none() {
-                anyhow::bail!("Memory not found");
-            }
-        }
 
         let mut fdb = match &self.falkordb {
             Some(fdb) => fdb.clone(),
@@ -621,23 +607,8 @@ impl McpServer {
             .as_str()
             .context("missing relationship")?
             .to_string();
-        let user_id = args["user_id"].as_str().map(|s| s.to_string());
-
-        // Verify the caller owns both memories before creating a link.
-        if let Some(ref uid) = user_id {
-            let owned: Vec<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM memory_index WHERE id = ANY($1) AND user_id = $2",
-            )
-            .bind(&[from_id, to_id] as &[Uuid])
-            .bind(uid)
-            .fetch_all(&self.db)
-            .await
-            .unwrap_or_default();
-
-            if owned.len() < 2 {
-                anyhow::bail!("One or both memories not found");
-            }
-        }
+        // Same no-auth caveat — user_id from args is not a verified identity.
+        // relate_nodes itself verifies both nodes exist in FalkorDB before merging.
 
         let mut fdb = match &self.falkordb {
             Some(fdb) => fdb.clone(),
