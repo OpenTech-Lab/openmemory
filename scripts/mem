@@ -18,6 +18,7 @@ _require_jq() {
 _post() {
     local payload="$1"
     local http_code body response
+    # Sentinel __STATUS__ is safe for controlled JSON API responses (dev CLI only)
     response=$(curl -s -w "\n__STATUS__%{http_code}" \
         -X POST "$BASE_URL/mcp" \
         -H 'content-type: application/json' \
