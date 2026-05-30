@@ -15,19 +15,23 @@ See [docs/DESIGN.md](docs/DESIGN.md) for architecture details.
 
 ## Quick Start
 
-### 1. Start infrastructure
+### Mode 1: MCP (AI tool integration via stdio)
+
+Best for: Claude Code, Cursor, and any MCP-compatible AI tool.
+
+**1. Start infrastructure**
 
 ```bash
 docker compose up -d
 ```
 
-### 2. Build MCP server
+**2. Build MCP server**
 
 ```bash
 cargo build --release --bin openmemory-mcp
 ```
 
-### 3. Configure your AI tool
+**3. Configure your AI tool**
 
 Example for Claude Code (`~/.claude/settings.json`):
 
@@ -46,7 +50,7 @@ Example for Claude Code (`~/.claude/settings.json`):
 }
 ```
 
-### 4. Use it
+**4. Use it**
 
 The AI now has two tools:
 
@@ -68,6 +72,45 @@ The AI now has two tools:
 ```
 
 > **Tip:** The AI won't automatically save everything. Before ending a conversation, ask: *"Please save anything important from our discussion"* to ensure key information is remembered for next time.
+
+---
+
+### Mode 2: API + CLI
+
+Best for: shell scripts, CI pipelines, and AI agents that prefer HTTP over MCP.
+
+**1. Start infrastructure + API server**
+
+```bash
+docker compose --profile api up -d
+```
+
+> First run compiles Rust inside Docker (~3 min). Subsequent starts use the build cache.
+
+**2. Add CLI to PATH**
+
+```bash
+export PATH="$PWD/scripts:$PATH"
+```
+
+**3. Use it**
+
+```bash
+mem save "User prefers TypeScript" --importance 0.8 --tags preference
+mem search "TypeScript"
+mem list --limit 10
+```
+
+**For AI agents:** Copy `skills/openmemory.md` into your project's `.claude/` directory or paste it into `CLAUDE.md`. The skill tells the agent when and how to use memory.
+
+---
+
+### Optional: OpenSearch dashboard
+
+```bash
+docker compose --profile dashboard up -d
+# Dashboard available at http://localhost:5601
+```
 
 ## Development
 
