@@ -132,10 +132,10 @@ export function MemoryDashboard() {
         body: JSON.stringify({ type: 'memory.graph_all' }),
       });
       const data = await response.json();
-      if (data.edges) {
+      if (data.edges && data.edges.length > 0) {
         setGraphEdges(data.edges);
       } else {
-        // FalkorDB not running — compute edges from shared tags as fallback
+        // FalkorDB not running or no edges — compute edges from shared tags as fallback
         setGraphEdges(computeTagEdges(allMemories));
       }
     } catch {

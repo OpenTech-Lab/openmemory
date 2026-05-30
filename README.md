@@ -43,7 +43,7 @@ Example for Claude Code (`~/.claude/settings.json`):
       "env": {
         "DATABASE_URL": "postgres://openmemory:openmemory@localhost:5432/openmemory",
         "OPENSEARCH_URL": "http://localhost:9201",
-        "REDIS_URL": "redis://localhost:6379"
+        "REDIS_URL": "redis://localhost:6399"
       }
     }
   }
