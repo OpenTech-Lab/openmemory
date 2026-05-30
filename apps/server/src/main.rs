@@ -455,6 +455,15 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .with_context(|| format!("invalid bind address {host}:{port}"))?;
 
+    let is_loopback = addr.ip().is_loopback();
+    if !is_loopback {
+        warn!(
+            "⚠️  OPENMEMORY_HOST is set to a non-loopback address ({host}). \
+             The API has NO authentication — do not expose port {port} publicly \
+             without adding auth middleware first."
+        );
+    }
+
     // PostgreSQL connection (index store)
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://openmemory:openmemory@localhost:5432/openmemory".to_string());
