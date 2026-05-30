@@ -1,3 +1,5 @@
+mod falkordb;
+
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
 use anyhow::Context;
@@ -9,6 +11,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
+use falkordb::FalkorDbClient;
 use redis::AsyncCommands;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
@@ -50,6 +53,7 @@ struct AppState {
     db: PgPool,
     opensearch: OpenSearchClient,
     redis: Option<redis::aio::ConnectionManager>,
+    falkordb: Option<FalkorDbClient>,
 }
 
 #[derive(Clone)]
@@ -307,6 +311,26 @@ enum McpRequest {
     MemoryDelete {
         id: Uuid,
     },
+
+    #[serde(rename = "memory.graph_neighbors")]
+    MemoryGraphNeighbors {
+        id: Uuid,
+        #[serde(default)]
+        hops: Option<u8>,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        user_id: Option<String>,
+    },
+
+    #[serde(rename = "memory.graph_relate")]
+    MemoryGraphRelate {
+        from_id: Uuid,
+        to_id: Uuid,
+        relationship: String,
+        #[serde(default)]
+        user_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -346,6 +370,20 @@ enum McpResponse {
     MemoryDeleteResult {
         id: Uuid,
         deleted: bool,
+    },
+
+    #[serde(rename = "memory.graph_neighbors.result")]
+    MemoryGraphNeighborsResult {
+        id: Uuid,
+        neighbors: Vec<falkordb::NeighborInfo>,
+        hops: u8,
+    },
+
+    #[serde(rename = "memory.graph_relate.result")]
+    MemoryGraphRelateResult {
+        from_id: Uuid,
+        to_id: Uuid,
+        relationship: String,
     },
 }
 
@@ -419,7 +457,7 @@ async fn main() -> anyhow::Result<()> {
 
     // OpenSearch connection (document store)
     let opensearch_url = std::env::var("OPENSEARCH_URL")
-        .unwrap_or_else(|_| "http://localhost:9200".to_string());
+        .unwrap_or_else(|_| "http://localhost:9201".to_string());
 
     let opensearch = OpenSearchClient::new(&opensearch_url);
     opensearch.create_index().await?;
@@ -451,7 +489,21 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState { db, opensearch, redis };
+    // Optional FalkorDB connection (graph layer)
+    let mut falkordb = match std::env::var("FALKORDB_URL") {
+        Ok(url) => FalkorDbClient::connect(&url).await,
+        Err(_) => {
+            info!("FALKORDB_URL not set, running without graph layer");
+            None
+        }
+    };
+    if let Some(ref mut fdb) = falkordb {
+        if let Err(e) = fdb.init_indexes().await {
+            warn!("FalkorDB index init failed: {e}");
+        }
+    }
+
+    let state = AppState { db, opensearch, redis, falkordb };
 
     let app = Router::new()
         .route("/health", get(health))
@@ -583,6 +635,26 @@ async fn mcp(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error": "Failed to save memory content" })),
                 ));
+            }
+
+            // 3. Save graph node (non-blocking — failure is logged, not fatal)
+            if let Some(fdb) = &state.falkordb {
+                let mut fdb = fdb.clone();
+                let (id_c, uid_c, sum_c, tags_c, ts) = (
+                    id,
+                    user_id.clone(),
+                    summary.clone(),
+                    tags.clone(),
+                    now.to_rfc3339(),
+                );
+                tokio::spawn(async move {
+                    if let Err(e) = fdb
+                        .save_node(id_c, uid_c.as_deref(), sum_c.as_deref(), importance_score, &tags_c, &ts)
+                        .await
+                    {
+                        warn!("FalkorDB save_node failed: {e}");
+                    }
+                });
             }
 
             Ok((
@@ -909,6 +981,20 @@ async fn mcp(
                 }
             }
 
+            // 3. Sync graph node (non-blocking — keeps summary/importance/tags in sync)
+            if let Some(fdb) = &state.falkordb {
+                let mut fdb = fdb.clone();
+                let (sum_c, imp_c, tags_c) = (summary.clone(), importance, tags.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = fdb
+                        .update_node(id, sum_c.as_deref(), imp_c.map(clamp01), tags_c.as_deref())
+                        .await
+                    {
+                        warn!("FalkorDB update_node failed: {e}");
+                    }
+                });
+            }
+
             Ok((
                 StatusCode::OK,
                 Json(McpResponse::MemoryUpdateResult { id, updated_at: now }),
@@ -943,10 +1029,113 @@ async fn mcp(
             // 2. Delete from OpenSearch
             let _ = state.opensearch.delete_document(&id.to_string()).await;
 
+            // 3. Remove graph node (non-blocking)
+            if let Some(fdb) = &state.falkordb {
+                let mut fdb = fdb.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = fdb.delete_node(id).await {
+                        warn!("FalkorDB delete_node failed: {e}");
+                    }
+                });
+            }
+
             Ok((
                 StatusCode::OK,
                 Json(McpResponse::MemoryDeleteResult { id, deleted: true }),
             ))
+        }
+
+        McpRequest::MemoryGraphNeighbors { id, hops, limit, user_id } => {
+            let hops = hops.unwrap_or(1).clamp(1, 2);
+            let limit = limit.unwrap_or(10).clamp(1, 50);
+
+            // Verify the caller owns the source memory before traversing the graph.
+            if let Some(ref uid) = user_id {
+                let owned: Option<(Uuid,)> = sqlx::query_as(
+                    "SELECT id FROM memory_index WHERE id = $1 AND user_id = $2",
+                )
+                .bind(id)
+                .bind(uid)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None);
+
+                if owned.is_none() {
+                    return Err((
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({ "error": "Memory not found" })),
+                    ));
+                }
+            }
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({ "error": "Graph layer not configured (FALKORDB_URL not set)" })),
+                    ));
+                }
+            };
+
+            match fdb.get_neighbors(id, user_id.as_deref(), hops, limit).await {
+                Ok(neighbors) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::MemoryGraphNeighborsResult { id, neighbors, hops }),
+                )),
+                Err(e) => {
+                    error!("FalkorDB get_neighbors failed: {e}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "Graph query failed" })),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::MemoryGraphRelate { from_id, to_id, relationship, user_id } => {
+            // Verify the caller owns both memories before creating a link between them.
+            if let Some(ref uid) = user_id {
+                let owned: Vec<(Uuid,)> = sqlx::query_as(
+                    "SELECT id FROM memory_index WHERE id = ANY($1) AND user_id = $2",
+                )
+                .bind(&[from_id, to_id] as &[Uuid])
+                .bind(uid)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default();
+
+                if owned.len() < 2 {
+                    return Err((
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({ "error": "One or both memories not found" })),
+                    ));
+                }
+            }
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({ "error": "Graph layer not configured (FALKORDB_URL not set)" })),
+                    ));
+                }
+            };
+
+            match fdb.relate_nodes(from_id, to_id, &relationship).await {
+                Ok(()) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::MemoryGraphRelateResult { from_id, to_id, relationship }),
+                )),
+                Err(e) => {
+                    error!("FalkorDB relate_nodes failed: {e}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "Failed to create relationship" })),
+                    ))
+                }
+            }
         }
     }
 }

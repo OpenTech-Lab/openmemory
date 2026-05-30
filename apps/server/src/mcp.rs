@@ -1,5 +1,8 @@
+mod falkordb;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use falkordb::FalkorDbClient;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -171,6 +174,7 @@ impl OpenSearchClient {
 struct McpServer {
     db: PgPool,
     opensearch: OpenSearchClient,
+    falkordb: Option<FalkorDbClient>,
 }
 
 impl McpServer {
@@ -207,13 +211,27 @@ impl McpServer {
 
         // OpenSearch connection
         let opensearch_url = std::env::var("OPENSEARCH_URL")
-            .unwrap_or_else(|_| "http://localhost:9200".to_string());
+            .unwrap_or_else(|_| "http://localhost:9201".to_string());
 
         let opensearch = OpenSearchClient::new(&opensearch_url);
         opensearch.create_index().await?;
         info!("connected to OpenSearch");
 
-        Ok(Self { db, opensearch })
+        // Optional FalkorDB connection (graph layer)
+        let mut falkordb = match std::env::var("FALKORDB_URL") {
+            Ok(url) => FalkorDbClient::connect(&url).await,
+            Err(_) => {
+                info!("FALKORDB_URL not set, running without graph layer");
+                None
+            }
+        };
+        if let Some(ref mut fdb) = falkordb {
+            if let Err(e) = fdb.init_indexes().await {
+                warn!("FalkorDB index init failed: {e}");
+            }
+        }
+
+        Ok(Self { db, opensearch, falkordb })
     }
 
     async fn handle_request(&mut self, req: JsonRpcRequest) -> JsonRpcResponse {
@@ -303,6 +321,65 @@ impl McpServer {
                         },
                         "required": ["query"]
                     }
+                },
+                {
+                    "name": "memory_graph_neighbors",
+                    "description": "Find memories related to a given memory via graph traversal (1-2 hops through shared tags or explicit links)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "format": "uuid",
+                                "description": "UUID of the source memory"
+                            },
+                            "hops": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 2,
+                                "description": "Traversal depth: 1 = direct neighbors, 2 = neighbors of neighbors (default 1)"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 50,
+                                "description": "Max neighbors to return (default 10)"
+                            },
+                            "user_id": {
+                                "type": "string",
+                                "description": "Optional user ID — restricts traversal to the caller's own memories"
+                            }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "memory_graph_relate",
+                    "description": "Explicitly link two memories with a named relationship type",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "from_id": {
+                                "type": "string",
+                                "format": "uuid",
+                                "description": "UUID of the source memory"
+                            },
+                            "to_id": {
+                                "type": "string",
+                                "format": "uuid",
+                                "description": "UUID of the target memory"
+                            },
+                            "relationship": {
+                                "type": "string",
+                                "description": "Named relationship type (e.g. 'causes', 'contradicts', 'extends')"
+                            },
+                            "user_id": {
+                                "type": "string",
+                                "description": "Optional user ID — both memories must belong to this user"
+                            }
+                        },
+                        "required": ["from_id", "to_id", "relationship"]
+                    }
                 }
             ]
         }))
@@ -316,6 +393,8 @@ impl McpServer {
         match name {
             "memory_save" => self.memory_save(arguments).await,
             "memory_search" => self.memory_search(arguments).await,
+            "memory_graph_neighbors" => self.memory_graph_neighbors(arguments).await,
+            "memory_graph_relate" => self.memory_graph_relate(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
         }
     }
@@ -372,6 +451,20 @@ impl McpServer {
         }
 
         info!("saved memory {} to PostgreSQL + OpenSearch", id);
+
+        // 3. Save graph node (non-blocking)
+        if let Some(fdb) = &self.falkordb {
+            let mut fdb = fdb.clone();
+            let (sum_c, tags_c, ts) = (summary.clone(), tags.clone(), now.to_rfc3339());
+            tokio::spawn(async move {
+                if let Err(e) = fdb
+                    .save_node(id, None, sum_c.as_deref(), importance, &tags_c, &ts)
+                    .await
+                {
+                    warn!("FalkorDB save_node failed: {e}");
+                }
+            });
+        }
 
         Ok(json!({
             "content": [{
@@ -457,6 +550,109 @@ impl McpServer {
             "content": [{
                 "type": "text",
                 "text": text
+            }]
+        }))
+    }
+
+    async fn memory_graph_neighbors(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let id_str = args["id"].as_str().context("missing id")?;
+        let id = uuid::Uuid::parse_str(id_str).context("invalid uuid")?;
+        let hops = args["hops"].as_u64().unwrap_or(1).clamp(1, 2) as u8;
+        let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+        let user_id = args["user_id"].as_str().map(|s| s.to_string());
+
+        // Verify ownership before traversal when user_id is provided.
+        if let Some(ref uid) = user_id {
+            let owned: Option<(Uuid,)> = sqlx::query_as(
+                "SELECT id FROM memory_index WHERE id = $1 AND user_id = $2",
+            )
+            .bind(id)
+            .bind(uid)
+            .fetch_optional(&self.db)
+            .await
+            .unwrap_or(None);
+
+            if owned.is_none() {
+                anyhow::bail!("Memory not found");
+            }
+        }
+
+        let mut fdb = match &self.falkordb {
+            Some(fdb) => fdb.clone(),
+            None => anyhow::bail!("Graph layer not configured (FALKORDB_URL not set)"),
+        };
+
+        let neighbors = fdb.get_neighbors(id, user_id.as_deref(), hops, limit).await?;
+
+        let mut text = format!(
+            "Found {} neighbor(s) for memory {} (depth {})\n\n",
+            neighbors.len(),
+            id,
+            hops
+        );
+        if neighbors.is_empty() {
+            text.push_str("No related memories found.");
+        } else {
+            for (i, n) in neighbors.iter().enumerate() {
+                text.push_str(&format!(
+                    "{}. [{}] Summary: {}\n   Tags: {:?}\n   Importance: {:.1}\n\n",
+                    i + 1,
+                    n.id,
+                    n.summary.as_deref().unwrap_or("-"),
+                    n.tags,
+                    n.importance
+                ));
+            }
+        }
+
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    async fn memory_graph_relate(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let from_id = uuid::Uuid::parse_str(
+            args["from_id"].as_str().context("missing from_id")?,
+        )
+        .context("invalid from_id")?;
+        let to_id = uuid::Uuid::parse_str(
+            args["to_id"].as_str().context("missing to_id")?,
+        )
+        .context("invalid to_id")?;
+        let relationship = args["relationship"]
+            .as_str()
+            .context("missing relationship")?
+            .to_string();
+        let user_id = args["user_id"].as_str().map(|s| s.to_string());
+
+        // Verify the caller owns both memories before creating a link.
+        if let Some(ref uid) = user_id {
+            let owned: Vec<(Uuid,)> = sqlx::query_as(
+                "SELECT id FROM memory_index WHERE id = ANY($1) AND user_id = $2",
+            )
+            .bind(&[from_id, to_id] as &[Uuid])
+            .bind(uid)
+            .fetch_all(&self.db)
+            .await
+            .unwrap_or_default();
+
+            if owned.len() < 2 {
+                anyhow::bail!("One or both memories not found");
+            }
+        }
+
+        let mut fdb = match &self.falkordb {
+            Some(fdb) => fdb.clone(),
+            None => anyhow::bail!("Graph layer not configured (FALKORDB_URL not set)"),
+        };
+
+        fdb.relate_nodes(from_id, to_id, &relationship).await?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Created relationship '{}' from {} to {}",
+                    relationship, from_id, to_id
+                )
             }]
         }))
     }

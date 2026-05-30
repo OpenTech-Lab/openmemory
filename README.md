@@ -38,7 +38,7 @@ Example for Claude Code (`~/.claude/settings.json`):
       "command": "/PATH-TO-PROJECT/openmemory/target/release/openmemory-mcp",
       "env": {
         "DATABASE_URL": "postgres://openmemory:openmemory@localhost:5432/openmemory",
-        "OPENSEARCH_URL": "http://localhost:9200",
+        "OPENSEARCH_URL": "http://localhost:9201",
         "REDIS_URL": "redis://localhost:6379"
       }
     }

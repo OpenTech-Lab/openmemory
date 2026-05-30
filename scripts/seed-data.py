@@ -10,7 +10,7 @@ Requirements:
 
 Environment variables (with defaults):
     DATABASE_URL=postgres://openmemory:openmemory@localhost:5432/openmemory
-    OPENSEARCH_URL=http://localhost:9200
+    OPENSEARCH_URL=http://localhost:9201
 """
 
 import argparse
@@ -30,7 +30,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgres://openmemory:openmemory@localhost:5432/openmemory"
 )
-OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://localhost:9200").rstrip("/")
+OPENSEARCH_URL = os.getenv("OPENSEARCH_URL", "http://localhost:9201").rstrip("/")
 OPENSEARCH_INDEX = "memories"
 
 # Public dataset URLs
