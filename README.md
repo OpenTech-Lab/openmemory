@@ -104,11 +104,11 @@ mem list --limit 10
 **For AI agents:** Copy `skills/openmemory.md` into Claude Code so it knows when and how to use memory automatically.
 
 ```bash
-# Project-level (this repo only)
-cp skills/openmemory.md .claude/openmemory.md
+# As a global skill (available in all projects, invokable via /openmemory)
+cp skills/openmemory.md ~/.claude/skills/openmemory.md
 
-# Global (all projects)
-cat skills/openmemory.md >> ~/.claude/CLAUDE.md
+# Project-level only (this repo)
+mkdir -p .claude && cp skills/openmemory.md .claude/openmemory.md
 ```
 
 ---
