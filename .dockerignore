@@ -1,0 +1,25 @@
+# Rust build artifacts
+target/
+
+# Git history
+.git/
+
+# Node artifacts
+node_modules/
+apps/web/node_modules/
+apps/web/.next/
+
+# Local env files — never copy secrets into images
+.env
+.env.*
+*.local
+
+# Docs and scripts don't affect the server binary
+docs/
+scripts/
+*.md
+
+# Editor and CI
+.idea/
+.vscode/
+.github/
