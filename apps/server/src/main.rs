@@ -5,7 +5,7 @@ use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 use anyhow::Context;
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -449,7 +449,20 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(8080);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let host = std::env::var("OPENMEMORY_HOST")
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .with_context(|| format!("invalid bind address {host}:{port}"))?;
+
+    let is_loopback = addr.ip().is_loopback();
+    if !is_loopback {
+        warn!(
+            "⚠️  OPENMEMORY_HOST is set to a non-loopback address ({host}). \
+             The API has NO authentication — do not expose port {port} publicly \
+             without adding auth middleware first."
+        );
+    }
 
     // PostgreSQL connection (index store)
     let database_url = std::env::var("DATABASE_URL")
@@ -518,7 +531,28 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/mcp", post(mcp))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::new().allow_origin(Any).allow_headers(Any).allow_methods(Any))
+        .layer({
+            match std::env::var("OPENMEMORY_CORS_ORIGINS") {
+                Ok(origins) => {
+                    let allowed: Vec<HeaderValue> = origins
+                        .split(',')
+                        .filter_map(|o| o.trim().parse().ok())
+                        .collect();
+                    CorsLayer::new()
+                        .allow_origin(allowed)
+                        .allow_headers(Any)
+                        .allow_methods(Any)
+                }
+                Err(_) => CorsLayer::new()
+                    .allow_origin([
+                        "http://localhost".parse::<HeaderValue>().unwrap(),
+                        "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+                        "http://127.0.0.1".parse::<HeaderValue>().unwrap(),
+                    ])
+                    .allow_headers(Any)
+                    .allow_methods(Any),
+            }
+        })
         .with_state(state);
 
     info!(%addr, "starting openmemory server");

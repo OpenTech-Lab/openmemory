@@ -40,6 +40,7 @@ services:
       retries: 5
 
   opensearch-dashboards:
+    profiles: [dashboard]
     image: opensearchproject/opensearch-dashboards:2.18.0
     environment:
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
@@ -74,6 +75,35 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  openmemory-server:
+    profiles: [api]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${OPENMEMORY_PORT:-8080}:8080"
+    environment:
+      OPENMEMORY_HOST: "0.0.0.0"
+      DATABASE_URL: postgres://openmemory:openmemory@postgres:5432/openmemory
+      OPENSEARCH_URL: http://opensearch:9200
+      REDIS_URL: redis://redis:6379
+      FALKORDB_URL: redis://falkordb:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      falkordb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
 volumes:
   postgres_data:

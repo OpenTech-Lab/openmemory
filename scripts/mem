@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# mem — OpenMemory CLI
+# Requires: curl, jq
+# Config:   OPENMEMORY_URL (default: http://localhost:8080)
+
+set -euo pipefail
+
+BASE_URL="${OPENMEMORY_URL:-http://localhost:8080}"
+CMD="${1:-}"
+
+_require_jq() {
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "error: jq is required (brew install jq / apt install jq)" >&2
+        exit 1
+    fi
+}
+
+_post() {
+    local payload="$1"
+    local http_code body response
+    # Sentinel __STATUS__ is safe for controlled JSON API responses (dev CLI only)
+    response=$(curl -s -w "\n__STATUS__%{http_code}" \
+        -X POST "$BASE_URL/mcp" \
+        -H 'content-type: application/json' \
+        -d "$payload")
+    http_code=$(printf '%s' "$response" | tail -1 | sed 's/__STATUS__//')
+    body=$(printf '%s' "$response" | sed '$d' | sed 's/__STATUS__[0-9]*//')
+
+    if [ "${http_code:-0}" -ge 400 ] 2>/dev/null; then
+        local err
+        err=$(printf '%s' "$body" | jq -r '.error // empty' 2>/dev/null)
+        if [ -n "$err" ]; then
+            echo "error: $err" >&2
+        else
+            echo "error (HTTP $http_code): $body" >&2
+        fi
+        exit 1
+    fi
+
+    printf '%s' "$body" | jq . 2>/dev/null || printf '%s\n' "$body"
+}
+
+_usage() {
+    cat >&2 <<'EOF'
+usage: mem <command> [args]
+
+Commands:
+  save <content> [--importance 0.5] [--tags tag1,tag2] [--summary TEXT]
+  search <query> [--limit 5]
+  list [--limit 20]
+  get <uuid>
+  delete <uuid>
+
+Config:
+  OPENMEMORY_URL  (default: http://localhost:8080)
+EOF
+    exit 1
+}
+
+case "$CMD" in
+
+  save)
+    _require_jq
+    shift
+    CONTENT="${1:?error: content required — usage: mem save <content> [--importance N] [--tags t1,t2] [--summary TEXT]}"
+    shift
+    IMPORTANCE="0.5"
+    TAGS="[]"
+    SUMMARY="null"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --importance) IMPORTANCE="$2"; shift 2 ;;
+            --tags)
+                TAGS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                shift 2 ;;
+            --summary)
+                SUMMARY=$(jq -n --arg v "$2" '$v')
+                shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PAYLOAD=$(jq -n \
+        --arg content "$CONTENT" \
+        --argjson importance "$IMPORTANCE" \
+        --argjson tags "$TAGS" \
+        --argjson summary "$SUMMARY" \
+        '{type:"memory.save",content:$content,importance:$importance,tags:$tags,summary:$summary}')
+    _post "$PAYLOAD"
+    ;;
+
+  search)
+    _require_jq
+    shift
+    QUERY="${1:?error: query required — usage: mem search <query> [--limit N]}"
+    shift
+    LIMIT="5"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --limit) LIMIT="$2"; shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PAYLOAD=$(jq -n --arg q "$QUERY" --argjson l "$LIMIT" \
+        '{type:"memory.search",query:$q,limit:$l}')
+    _post "$PAYLOAD"
+    ;;
+
+  list)
+    _require_jq
+    shift
+    LIMIT="20"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --limit) LIMIT="$2"; shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PAYLOAD=$(jq -n --argjson l "$LIMIT" '{type:"memory.list",limit:$l}')
+    _post "$PAYLOAD"
+    ;;
+
+  get)
+    _require_jq
+    shift
+    ID="${1:?error: uuid required — usage: mem get <uuid>}"
+    PAYLOAD=$(jq -n --arg id "$ID" '{type:"memory.get",id:$id}')
+    _post "$PAYLOAD"
+    ;;
+
+  delete)
+    _require_jq
+    shift
+    ID="${1:?error: uuid required — usage: mem delete <uuid>}"
+    PAYLOAD=$(jq -n --arg id "$ID" '{type:"memory.delete",id:$id}')
+    _post "$PAYLOAD"
+    ;;
+
+  help|--help|-h|"")
+    _usage
+    ;;
+
+  *)
+    echo "error: unknown command '$CMD'" >&2
+    _usage
+    ;;
+
+esac
