@@ -101,7 +101,15 @@ mem search "TypeScript"
 mem list --limit 10
 ```
 
-**For AI agents:** Copy `skills/openmemory.md` into your project's `.claude/` directory or paste it into `CLAUDE.md`. The skill tells the agent when and how to use memory.
+**For AI agents:** Copy `skills/openmemory.md` into Claude Code so it knows when and how to use memory automatically.
+
+```bash
+# Project-level (this repo only)
+cp skills/openmemory.md .claude/openmemory.md
+
+# Global (all projects)
+cat skills/openmemory.md >> ~/.claude/CLAUDE.md
+```
 
 ---
 
