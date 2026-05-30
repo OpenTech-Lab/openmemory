@@ -449,7 +449,11 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(8080);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let host = std::env::var("OPENMEMORY_HOST")
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .with_context(|| format!("invalid bind address {host}:{port}"))?;
 
     // PostgreSQL connection (index store)
     let database_url = std::env::var("DATABASE_URL")
