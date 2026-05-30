@@ -312,6 +312,12 @@ enum McpRequest {
         id: Uuid,
     },
 
+    #[serde(rename = "memory.graph_all")]
+    MemoryGraphAll {
+        #[serde(default)]
+        user_id: Option<String>,
+    },
+
     #[serde(rename = "memory.graph_neighbors")]
     MemoryGraphNeighbors {
         id: Uuid,
@@ -368,6 +374,11 @@ enum McpResponse {
     MemoryDeleteResult {
         id: Uuid,
         deleted: bool,
+    },
+
+    #[serde(rename = "memory.graph_all.result")]
+    MemoryGraphAllResult {
+        edges: Vec<falkordb::EdgeInfo>,
     },
 
     #[serde(rename = "memory.graph_neighbors.result")]
@@ -1041,6 +1052,31 @@ async fn mcp(
                 StatusCode::OK,
                 Json(McpResponse::MemoryDeleteResult { id, deleted: true }),
             ))
+        }
+
+        McpRequest::MemoryGraphAll { user_id } => {
+            match &state.falkordb {
+                None => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::MemoryGraphAllResult { edges: vec![] }),
+                )),
+                Some(fdb) => {
+                    let mut fdb = fdb.clone();
+                    match fdb.get_all_edges(user_id.as_deref()).await {
+                        Ok(edges) => Ok((
+                            StatusCode::OK,
+                            Json(McpResponse::MemoryGraphAllResult { edges }),
+                        )),
+                        Err(e) => {
+                            error!("FalkorDB get_all_edges failed: {e}");
+                            Ok((
+                                StatusCode::OK,
+                                Json(McpResponse::MemoryGraphAllResult { edges: vec![] }),
+                            ))
+                        }
+                    }
+                }
+            }
         }
 
         McpRequest::MemoryGraphNeighbors { id, hops, limit, user_id } => {

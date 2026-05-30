@@ -6,6 +6,15 @@ use uuid::Uuid;
 const GRAPH_NAME: &str = "openmemory";
 
 #[derive(Clone, Debug, Serialize)]
+pub struct EdgeInfo {
+    pub from_id: String,
+    pub to_id: String,
+    pub rel_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct NeighborInfo {
     pub id: Uuid,
     pub summary: Option<String>,
@@ -182,6 +191,31 @@ impl FalkorDbClient {
         Ok(())
     }
 
+    /// Return all edges in the graph, scoped to a user namespace.
+    pub async fn get_all_edges(&mut self, user_id: Option<&str>) -> Result<Vec<EdgeInfo>> {
+        // No user_id → unscoped (single-user mode). A user_id → filter to that tenant only.
+        let user_filter = match user_id {
+            Some(uid) => format!(
+                " WHERE a.user_id = \"{}\" AND b.user_id = \"{}\"",
+                escape_str(uid),
+                escape_str(uid)
+            ),
+            None => String::new(),
+        };
+        let q = format!(
+            "MATCH (a:Memory)-[r]->(b:Memory){user_filter} \
+             RETURN a.id AS from_id, b.id AS to_id, type(r) AS rel_type, r.relationship AS rel_name"
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB get_all_edges failed")?;
+
+        Ok(parse_edge_rows(result))
+    }
+
     /// Return neighbor memories via 1–2 hop graph traversal, scoped to the same user.
     pub async fn get_neighbors(
         &mut self,
@@ -191,10 +225,10 @@ impl FalkorDbClient {
         limit: usize,
     ) -> Result<Vec<NeighborInfo>> {
         let hops = hops.clamp(1, 2);
-        // Restrict traversal to the same tenant so one user cannot reach another's nodes.
+        // Scope to tenant when user_id is provided; unscoped for single-user mode.
         let user_filter = match user_id {
             Some(uid) => format!(" AND b.user_id = \"{}\"", escape_str(uid)),
-            None => " AND b.user_id IS NULL".to_string(),
+            None => String::new(),
         };
         let q = format!(
             "MATCH (a:Memory {{id: \"{id}\"}})-[:RELATED_TO|LINKED_TO*1..{hops}]-(b:Memory) \
@@ -222,21 +256,25 @@ impl FalkorDbClient {
         to_id: Uuid,
         relationship: &str,
     ) -> Result<()> {
-        // Verify both nodes exist before creating the edge
+        // Verify both nodes exist AND share the same namespace before creating the edge.
+        // Checking user_id equality here prevents LINKED_TO edges from crossing tenants,
+        // matching the same-namespace restriction used for auto RELATED_TO edges.
         let check_q = format!(
-            "MATCH (m:Memory) WHERE m.id IN [\"{from_id}\", \"{to_id}\"] RETURN count(m) AS n"
+            "MATCH (a:Memory {{id: \"{from_id}\"}}), (b:Memory {{id: \"{to_id}\"}}) \
+             WHERE (a.user_id = b.user_id OR (a.user_id IS NULL AND b.user_id IS NULL)) \
+             RETURN count(*) AS n"
         );
         let check_result: redis::Value = redis::cmd("GRAPH.QUERY")
             .arg(GRAPH_NAME)
             .arg(&check_q)
             .query_async(&mut self.conn)
             .await
-            .context("FalkorDB relate_nodes existence check failed")?;
+            .context("FalkorDB relate_nodes namespace check failed")?;
 
         let found = extract_node_count(check_result);
-        if found < 2 {
+        if found < 1 {
             anyhow::bail!(
-                "One or both memories are not yet in the graph (found {found}/2). \
+                "One or both memories are not in the graph or belong to different namespaces. \
                  The async graph write may still be in flight — retry in a moment."
             );
         }
@@ -271,6 +309,36 @@ fn cypher_string_list(tags: &[String]) -> String {
         .map(|t| format!("\"{}\"", escape_str(t)))
         .collect();
     format!("[{}]", items.join(", "))
+}
+
+fn parse_edge_rows(result: redis::Value) -> Vec<EdgeInfo> {
+    let outer = match result {
+        redis::Value::Array(v) => v,
+        _ => return vec![],
+    };
+    if outer.len() < 2 {
+        return vec![];
+    }
+    let rows = match &outer[1] {
+        redis::Value::Array(rows) => rows,
+        _ => return vec![],
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let cols = match row {
+                redis::Value::Array(c) => c,
+                _ => return None,
+            };
+            if cols.len() < 3 {
+                return None;
+            }
+            let from_id = extract_string(&cols[0])?;
+            let to_id = extract_string(&cols[1])?;
+            let rel_type = extract_string(&cols[2]).unwrap_or_else(|| "RELATED_TO".to_string());
+            let relationship = if cols.len() >= 4 { extract_string(&cols[3]) } else { None };
+            Some(EdgeInfo { from_id, to_id, rel_type, relationship })
+        })
+        .collect()
 }
 
 // FalkorDB returns GRAPH.QUERY results as:

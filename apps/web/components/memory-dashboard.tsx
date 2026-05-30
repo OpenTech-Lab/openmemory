@@ -1,5 +1,6 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -37,7 +38,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud } from 'lucide-react';
+import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2 } from 'lucide-react';
+import { type GraphEdge } from '@/components/memory-graph';
+
+const MemoryGraph = dynamic(() => import('@/components/memory-graph').then((m) => m.MemoryGraph), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[580px] items-center justify-center rounded-lg border bg-slate-950 text-sm text-muted-foreground">
+      Loading graph…
+    </div>
+  ),
+});
 
 export function MemoryDashboard() {
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -55,6 +66,10 @@ export function MemoryDashboard() {
   const [deleteMemory, setDeleteMemory] = useState<Memory | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Graph state
+  const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
+  const [isGraphLoading, setIsGraphLoading] = useState(false);
 
   // Form states
   const [formContent, setFormContent] = useState('');
@@ -105,6 +120,28 @@ export function MemoryDashboard() {
       setError('Failed to connect to the server. Make sure the backend is running.');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchGraphEdges = async () => {
+    setIsGraphLoading(true);
+    try {
+      const response = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'memory.graph_all' }),
+      });
+      const data = await response.json();
+      if (data.edges) {
+        setGraphEdges(data.edges);
+      } else {
+        // FalkorDB not running — compute edges from shared tags as fallback
+        setGraphEdges(computeTagEdges(allMemories));
+      }
+    } catch {
+      setGraphEdges(computeTagEdges(allMemories));
+    } finally {
+      setIsGraphLoading(false);
     }
   };
 
@@ -267,6 +304,9 @@ export function MemoryDashboard() {
   useEffect(() => {
     if (activeTab === 'browse') {
       fetchAllMemories(dataSource);
+    } else if (activeTab === 'graph') {
+      if (allMemories.length === 0) fetchAllMemories('all');
+      fetchGraphEdges();
     }
   }, [activeTab, dataSource]);
 
@@ -309,9 +349,13 @@ export function MemoryDashboard() {
       {/* Main Content */}
       <div className="flex-1 overflow-auto p-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          <TabsList className="grid w-[300px] grid-cols-2">
+          <TabsList className="grid w-[360px] grid-cols-3">
             <TabsTrigger value="browse">Browse</TabsTrigger>
             <TabsTrigger value="search">Search</TabsTrigger>
+            <TabsTrigger value="graph">
+              <Share2 className="mr-1.5 h-3.5 w-3.5" />
+              Graph
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="browse" className="flex-1 mt-4">
@@ -428,6 +472,43 @@ export function MemoryDashboard() {
                 </Card>
               )}
             </div>
+          </TabsContent>
+
+          <TabsContent value="graph" className="flex-1 mt-4">
+            <Card className="h-full">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">Memory Graph</CardTitle>
+                    <CardDescription>
+                      Relationships from FalkorDB — nodes sized by importance, coloured by tag
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      fetchAllMemories('all');
+                      fetchGraphEdges();
+                    }}
+                    disabled={isGraphLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${isGraphLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {isGraphLoading ? (
+                  <div className="flex h-[580px] items-center justify-center rounded-lg border bg-slate-950 text-sm text-muted-foreground">
+                    <RefreshCw className="mr-2 h-5 w-5 animate-spin" />
+                    Loading graph…
+                  </div>
+                ) : (
+                  <MemoryGraph memories={allMemories} edges={graphEdges} />
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </div>
@@ -635,6 +716,8 @@ export function MemoryDashboard() {
         </DialogContent>
       </Dialog>
 
+      {/* ---- end tabs ---- */}
+
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={!!deleteMemory} onOpenChange={() => setDeleteMemory(null)}>
         <AlertDialogContent>
@@ -660,4 +743,20 @@ export function MemoryDashboard() {
       </AlertDialog>
     </div>
   );
+}
+
+// Fallback: derive RELATED_TO edges from shared tags when FalkorDB is unavailable.
+function computeTagEdges(memories: Memory[]): GraphEdge[] {
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < memories.length; i++) {
+    for (let j = i + 1; j < memories.length; j++) {
+      const a = memories[i];
+      const b = memories[j];
+      const shared = a.tags.some((t) => b.tags.includes(t));
+      if (shared) {
+        edges.push({ from_id: a.id, to_id: b.id, rel_type: 'RELATED_TO' });
+      }
+    }
+  }
+  return edges;
 }

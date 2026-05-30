@@ -393,6 +393,7 @@ impl McpServer {
         match name {
             "memory_save" => self.memory_save(arguments).await,
             "memory_search" => self.memory_search(arguments).await,
+            "memory_graph_all" => self.memory_graph_all(arguments).await,
             "memory_graph_neighbors" => self.memory_graph_neighbors(arguments).await,
             "memory_graph_relate" => self.memory_graph_relate(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
@@ -552,6 +553,18 @@ impl McpServer {
                 "text": text
             }]
         }))
+    }
+
+    async fn memory_graph_all(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let user_id = args["user_id"].as_str().map(|s| s.to_string());
+        let edges = match &self.falkordb {
+            None => vec![],
+            Some(fdb) => {
+                let mut fdb = fdb.clone();
+                fdb.get_all_edges(user_id.as_deref()).await.unwrap_or_default()
+            }
+        };
+        Ok(json!({ "type": "memory.graph_all.result", "edges": edges }))
     }
 
     async fn memory_graph_neighbors(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
