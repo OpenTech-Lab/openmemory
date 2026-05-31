@@ -561,11 +561,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let api_token = std::env::var("OPENMEMORY_API_TOKEN")
-        .unwrap_or_else(|_| {
-            warn!("OPENMEMORY_API_TOKEN not set — using insecure dev default. Set this in production.");
-            "dev-token-change-me".to_string()
-        });
+    let api_token = resolve_api_token();
 
     let secret_key = std::env::var("OPENMEMORY_SECRET_KEY")
         .unwrap_or_else(|_| {
@@ -680,6 +676,66 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     warn!("shutdown signal received");
+}
+
+fn token_file_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    home.join(".openmemory").join("api_token")
+}
+
+fn resolve_api_token() -> String {
+    // 1. Explicit env var takes precedence (Docker / CI / scripting)
+    if let Ok(token) = std::env::var("OPENMEMORY_API_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            info!("API token loaded from OPENMEMORY_API_TOKEN env var");
+            return token;
+        }
+    }
+
+    // 2. Persisted token file — survives restarts without requiring env var
+    let path = token_file_path();
+    if let Ok(stored) = std::fs::read_to_string(&path) {
+        let token = stored.trim().to_string();
+        if !token.is_empty() {
+            info!("API token loaded from {}", path.display());
+            return token;
+        }
+    }
+
+    // 3. First run: generate a cryptographically random token and persist it
+    let token = Uuid::new_v4().to_string();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&path, &token) {
+        Ok(_) => {
+            warn!(
+                "\n\n\
+                 ╔══════════════════════════════════════════════════════════╗\n\
+                 ║  OpenMemory: new API token generated (first run)         ║\n\
+                 ║                                                          ║\n\
+                 ║  Token : {token}  ║\n\
+                 ║  Saved : {path}  ║\n\
+                 ║                                                          ║\n\
+                 ║  Set OPENMEMORY_API_TOKEN env var to use a fixed token.  ║\n\
+                 ╚══════════════════════════════════════════════════════════╝\n",
+                path = path.display(),
+            );
+        }
+        Err(e) => {
+            warn!(
+                "Generated API token but could not persist it to {}: {e}\n\
+                 Token will change on next restart. Set OPENMEMORY_API_TOKEN to fix this.\n\
+                 Token: {token}",
+                path.display()
+            );
+        }
+    }
+
+    token
 }
 
 async fn health() -> impl IntoResponse {

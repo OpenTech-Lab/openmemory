@@ -85,7 +85,7 @@ services:
       - "3000:3000"
     environment:
       NEXT_PUBLIC_API_URL: http://openmemory-server:8080
-      OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN:-dev-token-change-me}
+      OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
     depends_on:
       openmemory-server:
         condition: service_healthy
@@ -105,7 +105,7 @@ services:
       REDIS_URL: redis://redis:6379
       FALKORDB_URL: redis://falkordb:6379
       OPENMEMORY_SECRET_KEY: ${OPENMEMORY_SECRET_KEY:-dev-secret-key-change-me}
-      OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN:-dev-token-change-me}
+      OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
     depends_on:
       postgres:
         condition: service_healthy
