@@ -41,6 +41,7 @@ import {
 import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2, Settings2 } from 'lucide-react';
 import { type GraphEdge } from '@/components/memory-graph';
 import { EnvParamsPanel } from '@/components/env-params-panel';
+import { ThemeToggle } from '@/components/theme-toggle';
 
 const MemoryGraph = dynamic(() => import('@/components/memory-graph').then((m) => m.MemoryGraph), {
   ssr: false,
@@ -324,6 +325,7 @@ export function MemoryDashboard() {
             </Badge>
           </div>
           <div className="flex items-center gap-2">
+            <ThemeToggle />
             <Button variant="outline" size="sm" onClick={() => fetchAllMemories()} disabled={isLoading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
               Refresh

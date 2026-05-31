@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Graph from 'graphology';
 import Sigma from 'sigma';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
+import { useTheme } from 'next-themes';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { type Memory } from '@/components/memory-columns';
@@ -35,6 +36,14 @@ export function MemoryGraph({ memories, edges }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<Memory | null>(null);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+
+  // Theme-aware colors
+  const bgColor = isDark ? '#020817' : '#f8fafc';
+  const edgeDefaultColor = isDark ? '#334155' : '#cbd5e1';
+  const edgeLinkColor = '#6366f1';
+  const labelColor = isDark ? '#94a3b8' : '#475569';
 
   useEffect(() => {
     if (!containerRef.current || memories.length === 0) return;
@@ -68,7 +77,7 @@ export function MemoryGraph({ memories, edges }: Props) {
       seen.add(key);
       try {
         graph.addEdge(e.from_id, e.to_id, {
-          color: e.rel_type === 'LINKED_TO' ? '#6366f1' : '#334155',
+          color: e.rel_type === 'LINKED_TO' ? edgeLinkColor : edgeDefaultColor,
           size: e.rel_type === 'LINKED_TO' ? 2.5 : 1,
         });
       } catch (_) {
@@ -85,6 +94,7 @@ export function MemoryGraph({ memories, edges }: Props) {
     const renderer = new Sigma(graph, container, {
       renderEdgeLabels: false,
       allowInvalidContainer: true,
+      labelColor: { color: labelColor },
     });
 
     renderer.on('enterNode', ({ node }) => {
@@ -103,15 +113,15 @@ export function MemoryGraph({ memories, edges }: Props) {
     return () => {
       renderer.kill();
     };
-  }, [memories, edges]);
+  }, [memories, edges, resolvedTheme]);
 
   return (
     <div className="flex gap-4">
       <div className="relative flex-1">
         <div
           ref={containerRef}
-          className="w-full rounded-lg border bg-slate-950"
-          style={{ height: 580 }}
+          className="w-full rounded-lg border"
+          style={{ height: 580, background: bgColor, transition: 'background 0.2s' }}
         />
 
         {memories.length === 0 && (
@@ -121,17 +131,17 @@ export function MemoryGraph({ memories, edges }: Props) {
         )}
 
         {/* legend + stats */}
-        <div className="absolute bottom-3 left-3 flex items-center gap-4 rounded-md bg-slate-900/80 px-3 py-1.5 text-xs text-slate-400 backdrop-blur">
+        <div className="absolute bottom-3 left-3 flex items-center gap-4 rounded-md bg-background/80 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur">
           <span>{stats.nodes} nodes · {stats.edges} edges</span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block h-0.5 w-5 rounded" style={{ background: '#334155' }} />
+            <span className="inline-block h-0.5 w-5 rounded" style={{ background: edgeDefaultColor }} />
             shared tag
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block h-1 w-5 rounded" style={{ background: '#6366f1' }} />
+            <span className="inline-block h-1 w-5 rounded" style={{ background: edgeLinkColor }} />
             explicit link
           </span>
-          <span className="text-slate-500">click node for details</span>
+          <span className="opacity-60">click node for details</span>
         </div>
       </div>
 
