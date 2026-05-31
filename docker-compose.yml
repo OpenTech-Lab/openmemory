@@ -76,6 +76,20 @@ services:
       timeout: 5s
       retries: 5
 
+  web:
+    profiles: [api]
+    build:
+      context: apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://openmemory-server:8080
+    depends_on:
+      openmemory-server:
+        condition: service_healthy
+    restart: unless-stopped
+
   openmemory-server:
     profiles: [api]
     build:
