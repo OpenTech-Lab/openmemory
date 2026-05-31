@@ -94,6 +94,66 @@ curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
 | 0.5–0.6 | Useful context, project facts |
 | 0.3–0.4 | Minor notes |
 
+## Environment Parameters
+
+Store configuration values and secrets so AI agents can access them during tasks — without pasting credentials into chat.
+
+### Two types
+
+| Type | Agent can write? | Agent can read? | Web UI can read? |
+|------|-----------------|-----------------|-----------------|
+| **Normal** (`is_secret=false`) | Yes | Yes | Yes |
+| **Secret** (`is_secret=true`) | Yes | No — blocked | Yes |
+
+Agents should call `env.list` to discover what parameters exist, then use normal values directly and reference secret keys by name (e.g., pass to a tool) without reading them.
+
+### Commands
+
+```bash
+# List all parameters (keys + type + description, no values)
+curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+  -H 'content-type: application/json' \
+  -d '{"type":"env.list"}' | jq .
+
+# Set a normal parameter (agent can read back)
+curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+  -H 'content-type: application/json' \
+  -d '{"type":"env.set","key":"OPENROUTER_MODEL","value":"openai/gpt-4o","is_secret":false,"description":"Default model for OpenRouter calls"}'
+
+# Set a secret parameter (agent CANNOT read back)
+curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+  -H 'content-type: application/json' \
+  -d '{"type":"env.set","key":"OPENAI_API_KEY","value":"sk-...","is_secret":true}'
+
+# Get a normal parameter value
+curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+  -H 'content-type: application/json' \
+  -d '{"type":"env.get","key":"OPENROUTER_MODEL"}' | jq .value
+
+# Delete a parameter
+curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+  -H 'content-type: application/json' \
+  -d '{"type":"env.delete","key":"OLD_KEY"}'
+```
+
+### CLI shorthand
+
+```bash
+mem env-list
+mem env-set <key> <value> [--secret] [--description TEXT]
+mem env-get <key>          # only works for normal params
+mem env-delete <key>
+```
+
+### When to use
+
+- At session start, call `env.list` or `mem env-list` to see available config values
+- Read normal params (e.g. `OPENROUTER_MODEL`, `API_BASE_URL`) to configure your tools
+- For secret params, use `env.list` to confirm existence, then pass the **key name** to whatever tool or script needs it — do not attempt to read the value
+- Never echo or include a retrieved value in your response text
+
 ## Security Note
 
-The API has no authentication. `OPENMEMORY_PORT` (default 8080) must not be exposed publicly. It is localhost-only by default.
+Memory operations have no authentication. `OPENMEMORY_PORT` (default 8080) must not be exposed publicly — it is localhost-only by default.
+
+`env.get` for **secret** parameters requires a bearer token (`OPENMEMORY_API_TOKEN`). Agents do not have this token by design. Secret values can only be revealed through the web UI.

@@ -38,8 +38,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2 } from 'lucide-react';
+import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2, Settings2 } from 'lucide-react';
 import { type GraphEdge } from '@/components/memory-graph';
+import { EnvParamsPanel } from '@/components/env-params-panel';
 
 const MemoryGraph = dynamic(() => import('@/components/memory-graph').then((m) => m.MemoryGraph), {
   ssr: false,
@@ -349,12 +350,16 @@ export function MemoryDashboard() {
       {/* Main Content */}
       <div className="flex-1 overflow-auto p-4">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          <TabsList className="grid w-[360px] grid-cols-3">
+          <TabsList className="grid w-[480px] grid-cols-4">
             <TabsTrigger value="browse">Browse</TabsTrigger>
             <TabsTrigger value="search">Search</TabsTrigger>
             <TabsTrigger value="graph">
               <Share2 className="mr-1.5 h-3.5 w-3.5" />
               Graph
+            </TabsTrigger>
+            <TabsTrigger value="environment">
+              <Settings2 className="mr-1.5 h-3.5 w-3.5" />
+              Environment
             </TabsTrigger>
           </TabsList>
 
@@ -509,6 +514,10 @@ export function MemoryDashboard() {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="environment" className="flex-1 mt-4">
+            <EnvParamsPanel />
           </TabsContent>
         </Tabs>
       </div>

@@ -1,7 +1,9 @@
+mod crypto;
 mod falkordb;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use crypto::{decrypt_value, derive_key, encrypt_value, EnvParamRow};
 use falkordb::FalkorDbClient;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
@@ -175,6 +177,7 @@ struct McpServer {
     db: PgPool,
     opensearch: OpenSearchClient,
     falkordb: Option<FalkorDbClient>,
+    encryption_key: [u8; 32],
 }
 
 impl McpServer {
@@ -209,6 +212,23 @@ impl McpServer {
         .await
         .context("failed to create memory_index table")?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS env_params (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                key TEXT NOT NULL UNIQUE,
+                value_encrypted BYTEA NOT NULL,
+                is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .context("failed to create env_params table")?;
+
         // OpenSearch connection
         let opensearch_url = std::env::var("OPENSEARCH_URL")
             .unwrap_or_else(|_| "http://localhost:9201".to_string());
@@ -231,7 +251,11 @@ impl McpServer {
             }
         }
 
-        Ok(Self { db, opensearch, falkordb })
+        let secret_key = std::env::var("OPENMEMORY_SECRET_KEY")
+            .unwrap_or_else(|_| "dev-secret-key-change-me".to_string());
+        let encryption_key = derive_key(&secret_key);
+
+        Ok(Self { db, opensearch, falkordb, encryption_key })
     }
 
     async fn handle_request(&mut self, req: JsonRpcRequest) -> JsonRpcResponse {
@@ -380,6 +404,68 @@ impl McpServer {
                         },
                         "required": ["from_id", "to_id", "relationship"]
                     }
+                },
+                {
+                    "name": "env_set",
+                    "description": "Store an environment parameter or secret. Use is_secret=true for sensitive values like API keys — secret values cannot be read back by agents, only by the web UI.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Parameter name (e.g. OPENAI_API_KEY)"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "Parameter value (stored encrypted)"
+                            },
+                            "is_secret": {
+                                "type": "boolean",
+                                "description": "If true, agents cannot read the value back (default false)"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional human-readable description"
+                            }
+                        },
+                        "required": ["key", "value"]
+                    }
+                },
+                {
+                    "name": "env_get",
+                    "description": "Get the value of a normal (non-secret) environment parameter. Returns an error for secret parameters — use env_list to check if a key exists.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Parameter name to retrieve"
+                            }
+                        },
+                        "required": ["key"]
+                    }
+                },
+                {
+                    "name": "env_list",
+                    "description": "List all environment parameters. Returns key names, descriptions, and is_secret flag — never returns values.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "env_delete",
+                    "description": "Delete an environment parameter by key name.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Parameter name to delete"
+                            }
+                        },
+                        "required": ["key"]
+                    }
                 }
             ]
         }))
@@ -396,6 +482,10 @@ impl McpServer {
             "memory_graph_all" => self.memory_graph_all(arguments).await,
             "memory_graph_neighbors" => self.memory_graph_neighbors(arguments).await,
             "memory_graph_relate" => self.memory_graph_relate(arguments).await,
+            "env_set" => self.env_set(arguments).await,
+            "env_get" => self.env_get(arguments).await,
+            "env_list" => self.env_list(arguments).await,
+            "env_delete" => self.env_delete(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
         }
     }
@@ -640,6 +730,129 @@ impl McpServer {
             }]
         }))
     }
+
+    async fn env_set(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let key = args["key"].as_str().context("missing key")?.to_string();
+        let value = args["value"].as_str().context("missing value")?.to_string();
+        let is_secret = args["is_secret"].as_bool().unwrap_or(false);
+        let description = args["description"].as_str().map(|s| s.to_string());
+
+        let encrypted = encrypt_value(&self.encryption_key, &value);
+        let now = Utc::now();
+
+        sqlx::query(
+            r#"
+            INSERT INTO env_params (key, value_encrypted, is_secret, description, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $5)
+            ON CONFLICT (key) DO UPDATE SET
+                value_encrypted = EXCLUDED.value_encrypted,
+                description = COALESCE(EXCLUDED.description, env_params.description),
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&key)
+        .bind(&encrypted)
+        .bind(is_secret)
+        .bind(&description)
+        .bind(now)
+        .execute(&self.db)
+        .await
+        .context("failed to set env param")?;
+
+        let type_label = if is_secret { "secret" } else { "normal" };
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Set {} parameter '{}'{}", type_label, key,
+                    description.as_deref().map(|d| format!(" ({})", d)).unwrap_or_default())
+            }]
+        }))
+    }
+
+    async fn env_get(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let key = args["key"].as_str().context("missing key")?.to_string();
+
+        let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT value_encrypted, is_secret FROM env_params WHERE key = $1",
+        )
+        .bind(&key)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to query env param")?;
+
+        match row {
+            None => anyhow::bail!("Parameter '{}' not found", key),
+            Some((_, true)) => {
+                // Secret params are blocked from agent reads — agents must call env_list
+                // to confirm the key exists, then use it indirectly (e.g. pass to a tool)
+                Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("'{}' is a secret parameter — its value cannot be read by agents. Use env_list to confirm it exists.", key)
+                    }],
+                    "isError": true
+                }))
+            }
+            Some((encrypted, false)) => {
+                let value = decrypt_value(&self.encryption_key, &encrypted)
+                    .context("failed to decrypt parameter")?;
+                Ok(json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("{}={}", key, value)
+                    }]
+                }))
+            }
+        }
+    }
+
+    async fn env_list(&mut self, _args: &serde_json::Value) -> Result<serde_json::Value> {
+        let params: Vec<EnvParamRow> = sqlx::query_as(
+            "SELECT id, key, is_secret, description, created_at, updated_at FROM env_params ORDER BY key ASC",
+        )
+        .fetch_all(&self.db)
+        .await
+        .context("failed to list env params")?;
+
+        if params.is_empty() {
+            return Ok(json!({
+                "content": [{ "type": "text", "text": "No environment parameters configured." }]
+            }));
+        }
+
+        let mut text = format!("Environment parameters ({}):\n\n", params.len());
+        for p in &params {
+            text.push_str(&format!(
+                "• {} [{}]{}\n",
+                p.key,
+                if p.is_secret { "secret" } else { "normal" },
+                p.description.as_deref().map(|d| format!(" — {}", d)).unwrap_or_default()
+            ));
+        }
+
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    async fn env_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let key = args["key"].as_str().context("missing key")?.to_string();
+
+        let result = sqlx::query("DELETE FROM env_params WHERE key = $1")
+            .bind(&key)
+            .execute(&self.db)
+            .await
+            .context("failed to delete env param")?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("Parameter '{}' not found", key);
+        }
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Deleted parameter '{}'", key)
+            }]
+        }))
+    }
 }
 
 fn compute_combined_score(importance: f32, created_at: DateTime<Utc>) -> f32 {
@@ -652,6 +865,7 @@ fn recency_score(created_at: DateTime<Utc>) -> f32 {
     let age_days = age.num_seconds().max(0) as f32 / (60.0 * 60.0 * 24.0);
     (-age_days / 30.0).exp().clamp(0.0, 1.0)
 }
+
 
 #[tokio::main]
 async fn main() -> Result<()> {

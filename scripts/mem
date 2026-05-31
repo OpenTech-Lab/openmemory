@@ -44,12 +44,18 @@ _usage() {
     cat >&2 <<'EOF'
 usage: mem <command> [args]
 
-Commands:
+Memory commands:
   save <content> [--importance 0.5] [--tags tag1,tag2] [--summary TEXT]
   search <query> [--limit 5]
   list [--limit 20]
   get <uuid>
   delete <uuid>
+
+Environment parameter commands:
+  env-set <key> <value> [--secret] [--description TEXT]
+  env-get <key>           (normal params only; secret params return an error)
+  env-list
+  env-delete <key>
 
 Config:
   OPENMEMORY_URL  (default: http://localhost:8080)
@@ -132,6 +138,58 @@ case "$CMD" in
     shift
     ID="${1:?error: uuid required — usage: mem delete <uuid>}"
     PAYLOAD=$(jq -n --arg id "$ID" '{type:"memory.delete",id:$id}')
+    _post "$PAYLOAD"
+    ;;
+
+  env-set)
+    _require_jq
+    shift
+    ENV_KEY="${1:?error: key required — usage: mem env-set <key> <value> [--secret] [--description TEXT]}"
+    shift
+    ENV_VALUE="${1:?error: value required — usage: mem env-set <key> <value> [--secret] [--description TEXT]}"
+    case "$ENV_VALUE" in
+        --*) echo "error: value argument looks like a flag ('$ENV_VALUE') — did you forget the value?" >&2; exit 1 ;;
+    esac
+    shift
+    IS_SECRET="false"
+    ENV_DESC="null"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --secret) IS_SECRET="true"; shift ;;
+            --description)
+                ENV_DESC=$(jq -n --arg v "$2" '$v')
+                shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PAYLOAD=$(jq -n \
+        --arg key "$ENV_KEY" \
+        --arg value "$ENV_VALUE" \
+        --argjson is_secret "$IS_SECRET" \
+        --argjson description "$ENV_DESC" \
+        '{type:"env.set",key:$key,value:$value,is_secret:$is_secret,description:$description}')
+    _post "$PAYLOAD"
+    ;;
+
+  env-get)
+    _require_jq
+    shift
+    ENV_KEY="${1:?error: key required — usage: mem env-get <key>}"
+    PAYLOAD=$(jq -n --arg key "$ENV_KEY" '{type:"env.get",key:$key}')
+    _post "$PAYLOAD"
+    ;;
+
+  env-list)
+    _require_jq
+    shift
+    _post '{"type":"env.list"}'
+    ;;
+
+  env-delete)
+    _require_jq
+    shift
+    ENV_KEY="${1:?error: key required — usage: mem env-delete <key>}"
+    PAYLOAD=$(jq -n --arg key "$ENV_KEY" '{type:"env.delete",key:$key}')
     _post "$PAYLOAD"
     ;;
 

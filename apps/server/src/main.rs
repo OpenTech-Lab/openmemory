@@ -1,3 +1,4 @@
+mod crypto;
 mod falkordb;
 
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
@@ -5,11 +6,12 @@ use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 use anyhow::Context;
 use axum::{
     extract::State,
-    http::{HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use crypto::{decrypt_value, derive_key, encrypt_value, EnvParamRow};
 use chrono::{DateTime, Utc};
 use falkordb::FalkorDbClient;
 use redis::AsyncCommands;
@@ -54,6 +56,8 @@ struct AppState {
     opensearch: OpenSearchClient,
     redis: Option<redis::aio::ConnectionManager>,
     falkordb: Option<FalkorDbClient>,
+    api_token: String,
+    encryption_key: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -335,6 +339,25 @@ enum McpRequest {
         to_id: Uuid,
         relationship: String,
     },
+
+    #[serde(rename = "env.set")]
+    EnvSet {
+        key: String,
+        value: String,
+        #[serde(default)]
+        is_secret: Option<bool>,
+        #[serde(default)]
+        description: Option<String>,
+    },
+
+    #[serde(rename = "env.get")]
+    EnvGet { key: String },
+
+    #[serde(rename = "env.list")]
+    EnvList {},
+
+    #[serde(rename = "env.delete")]
+    EnvDelete { key: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -394,6 +417,18 @@ enum McpResponse {
         to_id: Uuid,
         relationship: String,
     },
+
+    #[serde(rename = "env.set.result")]
+    EnvSetResult { key: String },
+
+    #[serde(rename = "env.get.result")]
+    EnvGetResult { key: String, value: String },
+
+    #[serde(rename = "env.list.result")]
+    EnvListResult { params: Vec<EnvParamRow>, total: usize },
+
+    #[serde(rename = "env.delete.result")]
+    EnvDeleteResult { key: String },
 }
 
 // List result - combined from both stores
@@ -434,6 +469,7 @@ struct FullMemory {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
+
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -525,7 +561,20 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let state = AppState { db, opensearch, redis, falkordb };
+    let api_token = std::env::var("OPENMEMORY_API_TOKEN")
+        .unwrap_or_else(|_| {
+            warn!("OPENMEMORY_API_TOKEN not set — using insecure dev default. Set this in production.");
+            "dev-token-change-me".to_string()
+        });
+
+    let secret_key = std::env::var("OPENMEMORY_SECRET_KEY")
+        .unwrap_or_else(|_| {
+            warn!("OPENMEMORY_SECRET_KEY not set — using insecure dev default. Set this in production.");
+            "dev-secret-key-change-me".to_string()
+        });
+    let encryption_key = derive_key(&secret_key);
+
+    let state = AppState { db, opensearch, redis, falkordb, api_token, encryption_key };
 
     let app = Router::new()
         .route("/health", get(health))
@@ -601,6 +650,29 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .await
         .ok();
 
+    // env_params table for user-managed environment variables and secrets
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS env_params (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            key TEXT NOT NULL UNIQUE,
+            value_encrypted BYTEA NOT NULL,
+            is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+            description TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create env_params table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_env_params_key ON env_params(key)")
+        .execute(db)
+        .await
+        .ok();
+
     info!("PostgreSQL migrations complete");
     Ok(())
 }
@@ -616,6 +688,7 @@ async fn health() -> impl IntoResponse {
 
 async fn mcp(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<McpRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     match req {
@@ -1177,6 +1250,116 @@ async fn mcp(
                 }
             }
         }
+
+        McpRequest::EnvSet { key, value, is_secret, description } => {
+            let is_secret = is_secret.unwrap_or(false);
+            let encrypted = encrypt_value(&state.encryption_key, &value);
+            let now = Utc::now();
+
+            let result = sqlx::query(
+                r#"
+                INSERT INTO env_params (key, value_encrypted, is_secret, description, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $5)
+                ON CONFLICT (key) DO UPDATE SET
+                    value_encrypted = EXCLUDED.value_encrypted,
+                    description = COALESCE(EXCLUDED.description, env_params.description),
+                    updated_at = EXCLUDED.updated_at
+                "#,
+            )
+            .bind(&key)
+            .bind(&encrypted)
+            .bind(is_secret)
+            .bind(&description)
+            .bind(now)
+            .execute(&state.db)
+            .await;
+
+            match result {
+                Ok(_) => Ok((StatusCode::OK, Json(McpResponse::EnvSetResult { key }))),
+                Err(e) => {
+                    error!("Failed to set env param: {e}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "Failed to set parameter" })),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::EnvGet { key } => {
+            let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
+                "SELECT value_encrypted, is_secret FROM env_params WHERE key = $1",
+            )
+            .bind(&key)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| {
+                error!("EnvGet DB query failed: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Database error" })))
+            })?;
+
+            match row {
+                None => Err((
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "Parameter not found" })),
+                )),
+                Some((encrypted, is_secret)) => {
+                    if is_secret && !is_authenticated(&headers, &state.api_token) {
+                        return Err((
+                            StatusCode::FORBIDDEN,
+                            Json(serde_json::json!({ "error": "read blocked: secret param" })),
+                        ));
+                    }
+                    match decrypt_value(&state.encryption_key, &encrypted) {
+                        Ok(value) => Ok((StatusCode::OK, Json(McpResponse::EnvGetResult { key, value }))),
+                        Err(e) => {
+                            error!("Failed to decrypt env param: {e}");
+                            Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({ "error": "Failed to decrypt parameter" })),
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+
+        McpRequest::EnvList {} => {
+            let params: Vec<EnvParamRow> = sqlx::query_as(
+                "SELECT id, key, is_secret, description, created_at, updated_at FROM env_params ORDER BY key ASC",
+            )
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| {
+                error!("EnvList DB query failed: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Database error" })))
+            })?;
+
+            let total = params.len();
+            Ok((StatusCode::OK, Json(McpResponse::EnvListResult { params, total })))
+        }
+
+        McpRequest::EnvDelete { key } => {
+            let result = sqlx::query("DELETE FROM env_params WHERE key = $1")
+                .bind(&key)
+                .execute(&state.db)
+                .await;
+
+            match result {
+                Ok(r) if r.rows_affected() == 0 => Err((
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "Parameter not found" })),
+                )),
+                Ok(_) => Ok((StatusCode::OK, Json(McpResponse::EnvDeleteResult { key }))),
+                Err(e) => {
+                    error!("Failed to delete env param: {e}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "Failed to delete parameter" })),
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -1194,6 +1377,28 @@ fn recency_score(created_at: DateTime<Utc>) -> f32 {
 
 fn clamp01(v: f32) -> f32 {
     v.clamp(0.0, 1.0)
+}
+
+
+fn is_authenticated(headers: &HeaderMap, token: &str) -> bool {
+    let expected = format!("Bearer {}", token);
+    let expected_bytes = expected.as_bytes();
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            let v_bytes = v.as_bytes();
+            // Constant-time comparison: avoid early-exit that leaks token length/prefix
+            if v_bytes.len() != expected_bytes.len() {
+                return false;
+            }
+            v_bytes
+                .iter()
+                .zip(expected_bytes.iter())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+        })
+        .unwrap_or(false)
 }
 
 #[allow(dead_code)]
