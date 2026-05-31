@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVER_CARGO="${PROJECT_ROOT}/apps/server/Cargo.toml"
 WEB_PKG="${PROJECT_ROOT}/apps/web/package.json"
-VERSION_DIR="${SCRIPT_DIR}/version"
+VERSION_DIR="${PROJECT_ROOT}/version"
 
 INPUT_VERSION=""
 FORCE=false
@@ -181,6 +181,12 @@ if [ "${PUSH_CHANGES}" = "true" ]; then
   if [ "${CREATE_TAG}" = "true" ]; then
     git -C "${PROJECT_ROOT}" push origin "${TAG_NAME}"
     echo "✓ Pushed ${TAG_NAME}"
+    if command -v gh >/dev/null 2>&1; then
+      gh release create "${TAG_NAME}" --title "Release ${TAG_NAME}" --notes-file "${VERSION_FILE}"
+      echo "✓ Created GitHub release: ${TAG_NAME}"
+    else
+      echo "⚠ gh CLI not found; skipping GitHub release creation"
+    fi
   fi
 fi
 
