@@ -113,6 +113,64 @@ mkdir -p .claude/skills && cp -r skills/openmemory .claude/skills/openmemory
 
 ---
 
+### Mode 3: Session Watcher
+
+Best for: passively recording AI agent conversations into PostgreSQL without any agent involvement — no MCP tools, no `memory_save` calls required.
+
+The watcher tails JSONL log files written by supported tools, parses user/assistant events, and stores them in the `sessions` and `session_messages` tables automatically.
+
+**Supported tools**
+
+| Tool | Log path | Enabled by default |
+|------|----------|--------------------|
+| Claude Code | `~/.claude/projects/**/*.jsonl` | Yes |
+| Gemini CLI | `~/.gemini/**/*.jsonl` | Yes |
+| Codex CLI | `~/.codex/**/*.jsonl` | Yes |
+| GitHub Copilot | `~/.config/github-copilot/` | No — no local JSONL logs |
+
+Tools not installed on the host are silently skipped — no configuration needed. GitHub Copilot is listed in Agent Settings but disabled: it does not write local conversation logs. Enable it and set a custom path if you configure a local log exporter.
+
+**1. Start infrastructure + watcher**
+
+```bash
+docker compose --profile watcher up -d
+```
+
+Or combine with the API server:
+
+```bash
+docker compose --profile api --profile watcher up -d
+```
+
+> First run compiles Rust inside Docker (~3 min). Subsequent starts use the build cache.
+
+**2. Query recorded sessions via CLI**
+
+```bash
+# List recent sessions
+mem sessions [--limit 50]
+
+# Show details for a specific session
+mem sessions <uuid>
+
+# List messages in a session
+mem sessions messages <uuid> [--limit 200] [--after N]
+```
+
+**3. Configure watcher agents via web UI**
+
+Open the web dashboard and navigate to **Agent Settings** to enable/disable tools or add custom directory paths for the watcher to monitor.
+
+**Environment variables**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WATCHER_POLL_INTERVAL_SEC` | _(unset)_ | Enable periodic re-scan fallback (recommended for Docker Desktop / macOS / WSL where inotify may miss events through bind mounts) |
+
+> **Note:** Tool directories are mounted read-only. If you see permission errors, add `user: "${UID}:${GID}"` to the `openmemory-watcher` service in `docker-compose.yml`.
+
+---
+
 ### Optional: OpenSearch dashboard
 
 ```bash

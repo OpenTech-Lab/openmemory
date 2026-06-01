@@ -122,6 +122,43 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Mode 3: Session Watcher — passively records AI agent conversations
+  # from tool log directories into PostgreSQL without agent involvement.
+  #
+  # Supported tools (enabled automatically if the directory exists on the host):
+  #   Claude Code  ~/.claude/projects/**/*.jsonl
+  #   Gemini CLI   ~/.gemini/**/*.jsonl
+  #   Codex CLI    ~/.codex/**/*.jsonl
+  #
+  # Run with:  docker compose --profile watcher up -d
+  # Combined:  docker compose --profile api --profile watcher up -d
+  #
+  # Tool directories are mounted read-only under /home-sessions so that
+  # ~/.xxx paths in the DB expand correctly via HOME=/home-sessions.
+  # Tools not installed on the host are silently skipped.
+  #
+  # On Docker Desktop / macOS / WSL, inotify may miss events through bind
+  # mounts. Set WATCHER_POLL_INTERVAL_SEC=30 to enable periodic re-scan.
+  # If permission errors occur, add: user: "${UID}:${GID}"
+  openmemory-watcher:
+    profiles: [watcher]
+    build:
+      context: .
+      dockerfile: Dockerfile.watcher
+    environment:
+      DATABASE_URL: postgres://openmemory:openmemory@postgres:5432/openmemory
+      HOME: /home-sessions
+      # WATCHER_POLL_INTERVAL_SEC: "30"
+    volumes:
+      - ${HOME}/.claude:/home-sessions/.claude:ro
+      - ${HOME}/.gemini:/home-sessions/.gemini:ro
+      - ${HOME}/.codex:/home-sessions/.codex:ro
+      - ${HOME}/.config/github-copilot:/home-sessions/.config/github-copilot:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   opensearch_data:

@@ -40,6 +40,29 @@ _post() {
     printf '%s' "$body" | jq . 2>/dev/null || printf '%s\n' "$body"
 }
 
+_get() {
+    local path="$1"
+    local http_code body response
+    response=$(curl -s -w "\n__STATUS__%{http_code}" \
+        -X GET "$BASE_URL$path" \
+        -H 'accept: application/json')
+    http_code=$(printf '%s' "$response" | tail -1 | sed 's/__STATUS__//')
+    body=$(printf '%s' "$response" | sed '$d' | sed 's/__STATUS__[0-9]*//')
+
+    if [ "${http_code:-0}" -ge 400 ] 2>/dev/null; then
+        local err
+        err=$(printf '%s' "$body" | jq -r '.error // empty' 2>/dev/null)
+        if [ -n "$err" ]; then
+            echo "error: $err" >&2
+        else
+            echo "error (HTTP $http_code): $body" >&2
+        fi
+        exit 1
+    fi
+
+    printf '%s' "$body" | jq . 2>/dev/null || printf '%s\n' "$body"
+}
+
 _usage() {
     cat >&2 <<'EOF'
 usage: mem <command> [args]
@@ -56,6 +79,11 @@ Environment parameter commands:
   env-get <key>           (normal params only; secret params return an error)
   env-list
   env-delete <key>
+
+Session watcher commands (Mode 3):
+  sessions [--limit 50]                list recorded sessions
+  sessions <uuid>                      show session details
+  sessions messages <uuid> [--limit 200] [--after N]  list messages for a session
 
 Config:
   OPENMEMORY_URL  (default: http://localhost:8080)
@@ -195,6 +223,44 @@ case "$CMD" in
 
   help|--help|-h|"")
     _usage
+    ;;
+
+  sessions)
+    _require_jq
+    shift
+    SUBCMD="${1:-}"
+    case "$SUBCMD" in
+      messages)
+        shift
+        SID="${1:?error: session uuid required — usage: mem sessions messages <uuid>}"
+        shift
+        LIMIT="200"
+        AFTER=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --limit) LIMIT="$2"; shift 2 ;;
+            --after) AFTER="$2"; shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+          esac
+        done
+        QUERY="/sessions/${SID}/messages?limit=${LIMIT}"
+        [ -n "$AFTER" ] && QUERY="${QUERY}&after=${AFTER}"
+        _get "$QUERY"
+        ;;
+      ""|-*|--limit)
+        LIMIT="50"
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --limit) LIMIT="$2"; shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+          esac
+        done
+        _get "/sessions?limit=${LIMIT}"
+        ;;
+      *)
+        _get "/sessions/${SUBCMD}"
+        ;;
+    esac
     ;;
 
   *)

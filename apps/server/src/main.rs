@@ -1,11 +1,13 @@
 mod crypto;
 mod falkordb;
 
+use openmemory_server::run_session_migrations;
+
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
 use anyhow::Context;
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -58,6 +60,75 @@ struct AppState {
     falkordb: Option<FalkorDbClient>,
     api_token: String,
     encryption_key: [u8; 32],
+}
+
+// Session query response types
+#[derive(Serialize, FromRow)]
+struct SessionRow {
+    id: String,
+    project_name: Option<String>,
+    git_branch: Option<String>,
+    cwd: Option<String>,
+    started_at: Option<DateTime<Utc>>,
+    last_event_at: Option<DateTime<Utc>>,
+    message_count: i32,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, FromRow)]
+struct SessionMessageRow {
+    id: Uuid,
+    event_type: String,
+    role: Option<String>,
+    content_text: Option<String>,
+    event_timestamp: Option<DateTime<Utc>>,
+    sequence_num: i32,
+    byte_start: i64,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct SessionListParams {
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+#[derive(Deserialize)]
+struct MessagesParams {
+    #[serde(default = "default_messages_limit")]
+    limit: i64,
+    after: Option<i32>,
+}
+
+fn default_limit() -> i64 { 50 }
+fn default_messages_limit() -> i64 { 200 }
+
+// Watcher agent config types
+#[derive(Serialize, FromRow)]
+struct WatcherAgentRow {
+    id: Uuid,
+    name: String,
+    path: String,
+    enabled: bool,
+    is_builtin: bool,
+    description: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct CreateAgentPayload {
+    name: String,
+    path: String,
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateAgentPayload {
+    name: Option<String>,
+    path: Option<String>,
+    enabled: Option<bool>,
+    description: Option<String>,
 }
 
 #[derive(Clone)]
@@ -575,6 +646,11 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/mcp", post(mcp))
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/:id", get(get_session))
+        .route("/sessions/:id/messages", get(get_session_messages))
+        .route("/agents", get(list_agents).post(create_agent))
+        .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
@@ -670,7 +746,238 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .ok();
 
     info!("PostgreSQL migrations complete");
+    run_session_migrations(db).await?;
     Ok(())
+}
+
+async fn list_sessions(
+    State(state): State<AppState>,
+    Query(params): Query<SessionListParams>,
+) -> impl IntoResponse {
+    let limit = params.limit.clamp(1, 200);
+    let rows = sqlx::query_as::<_, SessionRow>(
+        "SELECT id, project_name, git_branch, cwd, started_at, last_event_at, message_count, created_at \
+         FROM sessions ORDER BY last_event_at DESC NULLS LAST LIMIT $1"
+    )
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(sessions) => {
+            let total = sessions.len();
+            Json(serde_json::json!({"sessions": sessions, "total": total})).into_response()
+        }
+        Err(e) => {
+            error!("list_sessions error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn get_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let row = sqlx::query_as::<_, SessionRow>(
+        "SELECT id, project_name, git_branch, cwd, started_at, last_event_at, message_count, created_at \
+         FROM sessions WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(session)) => Json(session).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "session not found"}))).into_response(),
+        Err(e) => {
+            error!("get_session error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn get_session_messages(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<MessagesParams>,
+) -> impl IntoResponse {
+    let limit = params.limit.clamp(1, 500);
+    let after = params.after.unwrap_or(0);
+
+    let rows = sqlx::query_as::<_, SessionMessageRow>(
+        "SELECT id, event_type, role, content_text, event_timestamp, sequence_num, byte_start, created_at \
+         FROM session_messages \
+         WHERE session_id = $1 AND sequence_num > $2 \
+         ORDER BY sequence_num ASC LIMIT $3"
+    )
+    .bind(&id)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(messages) => {
+            let total = messages.len();
+            let next_after = messages.last().map(|m| m.sequence_num);
+            Json(serde_json::json!({
+                "session_id": id,
+                "messages": messages,
+                "total": total,
+                "next_after": next_after,
+            })).into_response()
+        }
+        Err(e) => {
+            error!("get_session_messages error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_agents(State(state): State<AppState>) -> impl IntoResponse {
+    let rows = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents ORDER BY is_builtin DESC, name ASC"
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(agents) => Json(serde_json::json!({"agents": agents, "total": agents.len()})).into_response(),
+        Err(e) => {
+            error!("list_agents error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn get_agent(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let row = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(agent)) => Json(agent).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn create_agent(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateAgentPayload>,
+) -> impl IntoResponse {
+    let name = payload.name.trim().to_string();
+    let path = payload.path.trim().to_string();
+    if name.is_empty() || path.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name and path are required"}))).into_response();
+    }
+
+    let row = sqlx::query_as::<_, WatcherAgentRow>(
+        "INSERT INTO watcher_agents (name, path, enabled, is_builtin, description) \
+         VALUES ($1, $2, TRUE, FALSE, $3) \
+         RETURNING id, name, path, enabled, is_builtin, description, created_at, updated_at"
+    )
+    .bind(&name)
+    .bind(&path)
+    .bind(payload.description.as_deref())
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(agent) => (StatusCode::CREATED, Json(agent)).into_response(),
+        Err(e) if e.to_string().contains("unique") => {
+            (StatusCode::CONFLICT, Json(serde_json::json!({"error": "agent name already exists"}))).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_agent(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateAgentPayload>,
+) -> impl IntoResponse {
+    // Check if agent exists and whether it's built-in
+    let existing = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let agent = match existing {
+        Ok(Some(a)) => a,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    if agent.is_builtin && payload.name.is_some() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "cannot rename a built-in agent"}))).into_response();
+    }
+
+    let new_name = payload.name.as_deref().unwrap_or(&agent.name);
+    let new_path = payload.path.as_deref().unwrap_or(&agent.path);
+    let new_enabled = payload.enabled.unwrap_or(agent.enabled);
+    let new_desc = payload.description.as_deref().or(agent.description.as_deref());
+
+    let row = sqlx::query_as::<_, WatcherAgentRow>(
+        "UPDATE watcher_agents SET name=$2, path=$3, enabled=$4, description=$5, updated_at=NOW() \
+         WHERE id=$1 \
+         RETURNING id, name, path, enabled, is_builtin, description, created_at, updated_at"
+    )
+    .bind(id)
+    .bind(new_name)
+    .bind(new_path)
+    .bind(new_enabled)
+    .bind(new_desc)
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(agent) => Json(agent).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_agent(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let existing = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match existing {
+        Ok(Some(agent)) if agent.is_builtin => {
+            (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "cannot delete a built-in agent"}))).into_response()
+        }
+        Ok(Some(_)) => {
+            let result = sqlx::query("DELETE FROM watcher_agents WHERE id = $1")
+                .bind(id)
+                .execute(&state.db)
+                .await;
+            match result {
+                Ok(_) => (StatusCode::OK, Json(serde_json::json!({"deleted": id.to_string()}))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 async fn shutdown_signal() {

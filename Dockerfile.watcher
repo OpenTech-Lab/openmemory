@@ -1,0 +1,31 @@
+# ── Stage 1: build ──────────────────────────────────────────────────────────
+FROM rust:1-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y ca-certificates pkg-config && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN cargo build --release --bin openmemory-watcher
+
+# ── Stage 2: runtime ────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Run as non-root (uid 10001 matches the server image for consistency)
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
+
+COPY --from=builder /build/target/release/openmemory-watcher /usr/local/bin/openmemory-watcher
+
+# Default: watch $HOME/.claude/projects (override with CLAUDE_PROJECTS_DIR)
+ENV CLAUDE_PROJECTS_DIR=/claude-sessions/projects
+
+# Optional: set WATCHER_POLL_INTERVAL_SEC=30 to enable periodic re-scan
+# alongside inotify (recommended for Docker Desktop / macOS / NFS mounts).
+
+USER 10001:10001
+CMD ["openmemory-watcher"]
