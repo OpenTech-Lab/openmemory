@@ -145,8 +145,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.watcher
+    user: "1000:1000"
     environment:
       DATABASE_URL: postgres://openmemory:openmemory@postgres:5432/openmemory
+      OPENMEMORY_URL: http://openmemory-server:8080
       HOME: /home-sessions
       # WATCHER_POLL_INTERVAL_SEC: "30"
     volumes:

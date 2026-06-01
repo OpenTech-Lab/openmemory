@@ -11,6 +11,7 @@ use std::{
 use anyhow::Context;
 use notify::{EventKind, RecursiveMode, Watcher};
 use openmemory_server::run_session_migrations;
+use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -21,6 +22,32 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Memory saving
+// ---------------------------------------------------------------------------
+
+/// Pending user turns keyed by session_id — used to pair user+assistant into memories.
+type PendingUserText = Arc<Mutex<HashMap<String, String>>>;
+
+async fn save_memory(client: &HttpClient, server_url: &str, content: String, tags: Vec<String>) {
+    let body = serde_json::json!({
+        "type": "memory.save",
+        "content": content,
+        "importance": 0.5,
+        "tags": tags,
+    });
+    match client
+        .post(format!("{server_url}/mcp"))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => warn!("memory save returned {}", r.status()),
+        Err(e) => warn!("memory save request failed: {e}"),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Claude Code JSONL event types
@@ -152,6 +179,7 @@ async fn process_file(
     start_offset: i64,
     start_line: i32,
     projects_root: &Path,
+    memory: Option<(&HttpClient, &str, &PendingUserText)>,
 ) -> anyhow::Result<(i64, i32)> {
     let file_path_str = path
         .strip_prefix(projects_root)
@@ -349,6 +377,29 @@ async fn process_file(
 
         tx.commit().await.context("commit transaction")?;
 
+        // Pair user+assistant messages into memories (live path only).
+        if let Some((http, server_url, pending)) = memory {
+            match (role.as_deref(), content_text.as_ref()) {
+                (Some("user"), Some(text)) => {
+                    pending.lock().await.insert(eff_session_id.clone(), text.clone());
+                }
+                (Some("assistant"), Some(text)) => {
+                    let user_text = pending.lock().await.remove(&eff_session_id);
+                    let content = if let Some(u) = user_text {
+                        format!("User: {u}\n\nAssistant: {text}")
+                    } else {
+                        format!("Assistant: {text}")
+                    };
+                    let mut tags = vec!["session".to_string(), "watcher".to_string()];
+                    if let Some(ref pname) = project_name {
+                        tags.push(pname.clone());
+                    }
+                    save_memory(http, server_url, content, tags).await;
+                }
+                _ => {}
+            }
+        }
+
         sequence_num += 1;
         debug!("processed {event_type} at offset {line_start}");
     }
@@ -399,10 +450,10 @@ async fn startup_catchup(db: &PgPool, projects_root: &Path) -> anyhow::Result<()
 
             let (offset, line_count) = get_cursor(db, &file_path_str).await;
             let (new_offset, new_line_count) =
-                process_file(db, &path, offset, line_count, projects_root)
+                process_file(db, &path, offset, line_count, projects_root, None)
                     .await
                     .unwrap_or_else(|e| {
-                        warn!("process_file error for {:?}: {e}", path);
+                        warn!("process_file error for {:?}: {e:#}", path);
                         (offset, line_count)
                     });
 
@@ -479,6 +530,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("connected to PostgreSQL");
     run_watcher_migrations(&db).await?;
+
+    let server_url = std::env::var("OPENMEMORY_URL")
+        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let http_client = HttpClient::new();
+    let pending_user_text: PendingUserText = Arc::new(Mutex::new(HashMap::new()));
 
     // Optional polling fallback (for Docker bind mounts that miss inotify events).
     let poll_interval: Option<Duration> = std::env::var("WATCHER_POLL_INTERVAL_SEC")
@@ -609,6 +665,9 @@ async fn main() -> anyhow::Result<()> {
 
                             let db2 = db.clone();
                             let in_flight2 = Arc::clone(&in_flight);
+                            let http2 = http_client.clone();
+                            let server_url2 = server_url.clone();
+                            let pending2 = Arc::clone(&pending_user_text);
 
                             tokio::spawn(async move {
                                 {
@@ -626,9 +685,18 @@ async fn main() -> anyhow::Result<()> {
                                     .into_owned();
 
                                 let (offset, line_count) = get_cursor(&db2, &file_path_str).await;
-                                let _ = process_file(&db2, &path, offset, line_count, &root)
-                                    .await
-                                    .map_err(|e| warn!("process_file error for {:?}: {e}", path));
+                                match process_file(&db2, &path, offset, line_count, &root, Some((&http2, &server_url2, &pending2))).await {
+                                    Ok((new_offset, new_lines)) if new_offset > offset => {
+                                        info!(
+                                            "ingested {:?}: +{} bytes, +{} lines",
+                                            path.file_name().unwrap_or_default(),
+                                            new_offset - offset,
+                                            new_lines - line_count,
+                                        );
+                                    }
+                                    Err(e) => warn!("process_file error for {:?}: {e:#}", path),
+                                    _ => {}
+                                }
 
                                 in_flight2.lock().await.remove(&path);
                             });

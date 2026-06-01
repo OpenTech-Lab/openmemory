@@ -30,9 +30,19 @@ mem search "user preferences" --limit 10
 
 Search is fast (<10ms). When in doubt, search — empty results cost nothing.
 
+## What NOT to Save
+
+**Never write conversation content, chat logs, or turn-by-turn dialogue into memory.** The session watcher handles that automatically — writing it again creates duplicates and pollutes search results.
+
+Do not save:
+- Summaries of what you just said or did in this conversation
+- Paraphrases of the user's messages
+- Progress updates like "implemented feature X in this session"
+- Anything that describes *the conversation itself* rather than a lasting fact
+
 ## When to Save
 
-Save anything worth remembering **before ending a session**:
+Save durable facts worth knowing in **future** sessions:
 - User preferences ("prefers X over Y")
 - Project decisions ("chose approach A because B")
 - Constraints ("can't use library X due to license")
