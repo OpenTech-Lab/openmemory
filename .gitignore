@@ -6,6 +6,10 @@ node_modules/
 .pnp
 .pnp.js
 .yarn/install-state.gz
+mise.toml
+
+# graph
+graphify-out
 
 # Rust
 /target
