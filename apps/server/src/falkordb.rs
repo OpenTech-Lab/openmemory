@@ -22,6 +22,42 @@ pub struct NeighborInfo {
     pub tags: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct EpisodeInfo {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub content: String,
+    pub group_id: String,
+    pub created_at: String,
+    pub valid_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EntityInfo {
+    pub id: String,
+    pub name: String,
+    pub entity_type: String,
+    pub summary: Option<String>,
+    pub group_id: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FactResult {
+    pub fact_id: String,
+    pub subject_name: String,
+    pub subject_type: String,
+    pub relationship: String,
+    pub fact: String,
+    pub object_name: String,
+    pub object_type: String,
+    pub valid_at: String,
+    pub invalid_at: Option<String>,
+    pub episode_id: Option<String>,
+    pub is_current: bool,
+}
+
 #[derive(Clone)]
 pub struct FalkorDbClient {
     conn: redis::aio::ConnectionManager,
