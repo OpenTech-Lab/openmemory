@@ -3,6 +3,7 @@ mod falkordb;
 mod llm;
 
 use openmemory_server::run_session_migrations;
+use openmemory_server::project_graphs;
 
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
@@ -14,13 +15,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use crypto::{decrypt_value, derive_key, encrypt_value, EnvParamRow};
 use chrono::{DateTime, Utc};
 use falkordb::FalkorDbClient;
 use redis::AsyncCommands;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool, FromRow};
+use sqlx::{postgres::PgPoolOptions, PgPool, FromRow, Row};
 use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
@@ -61,6 +64,7 @@ struct AppState {
     falkordb: Option<FalkorDbClient>,
     api_token: String,
     encryption_key: [u8; 32],
+    pg_cache: Arc<Mutex<HashMap<uuid::Uuid, (String, serde_json::Value)>>>,
 }
 
 // Session query response types
@@ -103,6 +107,24 @@ struct MessagesParams {
 
 fn default_limit() -> i64 { 50 }
 fn default_messages_limit() -> i64 { 200 }
+
+#[derive(Debug, Deserialize)]
+struct CreateProjectGraphPayload {
+    name: String,
+    path: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryProjectGraphParams {
+    q: String,
+    #[serde(default = "default_pg_hops")]
+    hops: u8,
+    #[serde(default = "default_pg_limit")]
+    limit: usize,
+}
+fn default_pg_hops() -> u8 { 2 }
+fn default_pg_limit() -> usize { 50 }
 
 // Watcher agent config types
 #[derive(Serialize, FromRow)]
@@ -824,7 +846,15 @@ async fn main() -> anyhow::Result<()> {
         });
     let encryption_key = derive_key(&secret_key);
 
-    let state = AppState { db, opensearch, redis, falkordb, api_token, encryption_key };
+    let state = AppState {
+        db,
+        opensearch,
+        redis,
+        falkordb,
+        api_token,
+        encryption_key,
+        pg_cache: Arc::new(Mutex::new(HashMap::new())),
+    };
 
     let app = Router::new()
         .route("/health", get(health))
@@ -834,6 +864,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/:id/messages", get(get_session_messages))
         .route("/agents", get(list_agents).post(create_agent))
         .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
+        .route("/graph/projects", get(list_project_graphs).post(create_project_graph))
+        .route("/graph/projects/:id", get(get_project_graph).delete(delete_project_graph))
+        .route("/graph/projects/:id/rebuild", post(rebuild_project_graph))
+        .route("/graph/projects/:id/query", get(query_project_graph))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
@@ -935,6 +969,39 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .ok();
+
+    // project_graphs table for knowledge graph storage
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_graphs (
+            id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            name            TEXT        NOT NULL,
+            path            TEXT        NOT NULL UNIQUE,
+            canonical_path  TEXT        NOT NULL UNIQUE,
+            description     TEXT,
+            node_count      INTEGER     NOT NULL DEFAULT 0 CHECK (node_count >= 0),
+            edge_count      INTEGER     NOT NULL DEFAULT 0 CHECK (edge_count >= 0),
+            graph_data      JSONB       NOT NULL DEFAULT '{}',
+            graph_hash      TEXT,
+            graph_file_size BIGINT,
+            imported_at     TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_graphs table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_graphs_path ON project_graphs(path)")
+        .execute(db)
+        .await
+        .ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_graphs_created_at ON project_graphs(created_at DESC)")
+        .execute(db)
+        .await
+        .ok();
 
     info!("PostgreSQL migrations complete");
     run_session_migrations(db).await?;
@@ -2552,6 +2619,321 @@ fn is_authenticated(headers: &HeaderMap, token: &str) -> bool {
                 == 0
         })
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Project Graph handlers
+// ---------------------------------------------------------------------------
+
+async fn list_project_graphs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let rows = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
+        "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
+         graph_hash, graph_file_size, imported_at, created_at, updated_at \
+         FROM project_graphs ORDER BY created_at DESC"
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(projects) => {
+            let total = projects.len();
+            Json(serde_json::json!({"projects": projects, "total": total})).into_response()
+        }
+        Err(e) => {
+            error!("list_project_graphs error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_graph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateProjectGraphPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if payload.name.trim().is_empty() || payload.path.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name and path must be non-empty"}))).into_response();
+    }
+
+    let (graph_data, graph_hash, file_size) = match project_graphs::load_graph_json(&payload.path).await {
+        Ok(result) => result,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let canonical = match tokio::fs::canonicalize(&payload.path).await {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => payload.path.clone(),
+    };
+
+    let (node_count, edge_count) = project_graphs::count_nodes_edges(&graph_data);
+
+    let row = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
+        "INSERT INTO project_graphs \
+         (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
+         ON CONFLICT (canonical_path) DO UPDATE SET \
+           name = $1, description = $4, graph_data = $5, graph_hash = $6, \
+           graph_file_size = $7, node_count = $8, edge_count = $9, \
+           imported_at = NOW(), updated_at = NOW() \
+         RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
+                   graph_hash, graph_file_size, imported_at, created_at, updated_at"
+    )
+    .bind(&payload.name)
+    .bind(&payload.path)
+    .bind(&canonical)
+    .bind(&payload.description)
+    .bind(&graph_data)
+    .bind(&graph_hash)
+    .bind(file_size as i64)
+    .bind(node_count)
+    .bind(edge_count)
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(project) => (StatusCode::CREATED, Json(serde_json::json!(project))).into_response(),
+        Err(e) => {
+            error!("create_project_graph error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn get_project_graph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let row = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
+        "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
+         graph_hash, graph_file_size, imported_at, created_at, updated_at \
+         FROM project_graphs WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(project)) => Json(serde_json::json!(project)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
+        Err(e) => {
+            error!("get_project_graph error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_project_graph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let row = sqlx::query("DELETE FROM project_graphs WHERE id = $1 RETURNING name")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await;
+
+    // Invalidate cache
+    if let Ok(mut cache) = state.pg_cache.lock() {
+        cache.remove(&id);
+    }
+
+    match row {
+        Ok(Some(r)) => {
+            let name: String = r.try_get("name").unwrap_or_default();
+            Json(serde_json::json!({"deleted": id, "name": name})).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_graph error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn rebuild_project_graph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    // Get existing project to find path and old hash
+    let existing = sqlx::query(
+        "SELECT path, graph_hash FROM project_graphs WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let row = match existing {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
+        Err(e) => {
+            error!("rebuild_project_graph fetch error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let path: String = row.try_get("path").unwrap_or_default();
+    let old_hash: Option<String> = row.try_get("graph_hash").unwrap_or(None);
+
+    let (graph_data, graph_hash, file_size) = match project_graphs::load_graph_json(&path).await {
+        Ok(result) => result,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    // Skip update if hash unchanged
+    if old_hash.as_deref() == Some(graph_hash.as_str()) {
+        return Json(serde_json::json!({
+            "id": id,
+            "status": "unchanged",
+            "graph_hash": graph_hash,
+        })).into_response();
+    }
+
+    let (node_count, edge_count) = project_graphs::count_nodes_edges(&graph_data);
+
+    let update = sqlx::query(
+        "UPDATE project_graphs SET \
+         graph_data = $1, graph_hash = $2, graph_file_size = $3, \
+         node_count = $4, edge_count = $5, imported_at = NOW(), updated_at = NOW() \
+         WHERE id = $6"
+    )
+    .bind(&graph_data)
+    .bind(&graph_hash)
+    .bind(file_size as i64)
+    .bind(node_count)
+    .bind(edge_count)
+    .bind(id)
+    .execute(&state.db)
+    .await;
+
+    // Invalidate cache
+    if let Ok(mut cache) = state.pg_cache.lock() {
+        cache.remove(&id);
+    }
+
+    match update {
+        Ok(_) => Json(serde_json::json!({
+            "id": id,
+            "status": "rebuilt",
+            "graph_hash": graph_hash,
+            "node_count": node_count,
+            "edge_count": edge_count,
+        })).into_response(),
+        Err(e) => {
+            error!("rebuild_project_graph update error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn query_project_graph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(params): Query<QueryProjectGraphParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if params.q.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "q must be non-empty"}))).into_response();
+    }
+
+    // Check cache first (don't hold lock across await)
+    let cached = {
+        if let Ok(cache) = state.pg_cache.lock() {
+            cache.get(&id).cloned()
+        } else {
+            None
+        }
+    };
+
+    let graph_data = if let Some((cached_hash, cached_data)) = cached {
+        // Verify hash still matches DB
+        let db_hash: Option<String> = sqlx::query("SELECT graph_hash FROM project_graphs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.try_get::<Option<String>, _>("graph_hash").ok().flatten());
+
+        if db_hash.as_deref() == Some(cached_hash.as_str()) {
+            cached_data
+        } else {
+            // Cache stale — reload
+            let row = sqlx::query("SELECT graph_data, graph_hash FROM project_graphs WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await;
+
+            match row {
+                Ok(Some(r)) => {
+                    let data: serde_json::Value = r.try_get("graph_data").unwrap_or(serde_json::Value::Null);
+                    let hash: String = r.try_get("graph_hash").ok().flatten().unwrap_or_default();
+                    if let Ok(mut cache) = state.pg_cache.lock() {
+                        cache.insert(id, (hash, data.clone()));
+                    }
+                    data
+                }
+                Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+            }
+        }
+    } else {
+        // Cache miss — fetch from DB
+        let row = sqlx::query("SELECT graph_data, graph_hash FROM project_graphs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await;
+
+        match row {
+            Ok(Some(r)) => {
+                let data: serde_json::Value = r.try_get("graph_data").unwrap_or(serde_json::Value::Null);
+                let hash: String = r.try_get("graph_hash").ok().flatten().unwrap_or_default();
+                if let Ok(mut cache) = state.pg_cache.lock() {
+                    cache.insert(id, (hash, data.clone()));
+                }
+                data
+            }
+            Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        }
+    };
+
+    let hops = params.hops.min(4);
+    let limit = params.limit.min(200);
+    let result = project_graphs::bfs_query(&graph_data, &params.q, hops, limit);
+    Json(serde_json::json!(result)).into_response()
 }
 
 #[allow(dead_code)]
