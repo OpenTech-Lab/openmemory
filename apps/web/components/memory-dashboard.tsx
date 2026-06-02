@@ -39,12 +39,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2, Settings2, Bot, History, GitBranch, FolderOpen, MessageSquare, ChevronLeft, ChevronRight } from 'lucide-react';
-import { type GraphEdge } from '@/components/memory-graph';
+import { type KnowledgeEntity, type KnowledgeFact } from '@/components/knowledge-graph';
 import { EnvParamsPanel } from '@/components/env-params-panel';
 import { AgentSettings } from '@/components/agent-settings';
 import { ThemeToggle } from '@/components/theme-toggle';
 
-const MemoryGraph = dynamic(() => import('@/components/memory-graph').then((m) => m.MemoryGraph), {
+const KnowledgeGraph = dynamic(() => import('@/components/knowledge-graph').then((m) => m.KnowledgeGraph), {
   ssr: false,
   loading: () => (
     <div className="flex h-[580px] items-center justify-center rounded-lg border bg-slate-950 text-sm text-muted-foreground">
@@ -73,8 +73,10 @@ export function MemoryDashboard() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Graph state
-  const [graphEdges, setGraphEdges] = useState<GraphEdge[]>([]);
+  // Knowledge graph state
+  const [graphEntities, setGraphEntities] = useState<KnowledgeEntity[]>([]);
+  const [graphFacts, setGraphFacts] = useState<KnowledgeFact[]>([]);
+  const [showHistorical, setShowHistorical] = useState(true);
   const [isGraphLoading, setIsGraphLoading] = useState(false);
 
   // Sessions state
@@ -161,23 +163,20 @@ export function MemoryDashboard() {
     }
   };
 
-  const fetchGraphEdges = async () => {
+  const fetchGraphData = async () => {
     setIsGraphLoading(true);
     try {
       const response = await fetch('/api/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'memory.graph_all' }),
+        body: JSON.stringify({ type: 'graph.get_graph', limit: 500 }),
       });
       const data = await response.json();
-      if (data.edges && data.edges.length > 0) {
-        setGraphEdges(data.edges);
-      } else {
-        // FalkorDB not running or no edges — compute edges from shared tags as fallback
-        setGraphEdges(computeTagEdges(allMemories));
-      }
+      setGraphEntities(data.entities ?? []);
+      setGraphFacts(data.facts ?? []);
     } catch {
-      setGraphEdges(computeTagEdges(allMemories));
+      setGraphEntities([]);
+      setGraphFacts([]);
     } finally {
       setIsGraphLoading(false);
     }
@@ -344,8 +343,7 @@ export function MemoryDashboard() {
       setCurrentPage(0);
       fetchAllMemories(dataSource, 0);
     } else if (activeTab === 'graph') {
-      if (allMemories.length === 0) fetchAllMemories('all', 0);
-      fetchGraphEdges();
+      fetchGraphData();
     }
   }, [activeTab, dataSource]);
 
@@ -575,23 +573,29 @@ export function MemoryDashboard() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <CardTitle className="text-base">Memory Graph</CardTitle>
+                    <CardTitle className="text-base">Knowledge Graph</CardTitle>
                     <CardDescription>
-                      Relationships from FalkorDB — nodes sized by importance, coloured by tag
+                      Temporal entity–fact graph — green edges are current, grey are historical
                     </CardDescription>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      fetchAllMemories('all');
-                      fetchGraphEdges();
-                    }}
-                    disabled={isGraphLoading}
-                  >
-                    <RefreshCw className={`h-4 w-4 mr-2 ${isGraphLoading ? 'animate-spin' : ''}`} />
-                    Refresh
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant={showHistorical ? 'secondary' : 'outline'}
+                      size="sm"
+                      onClick={() => setShowHistorical(v => !v)}
+                    >
+                      {showHistorical ? 'Hide historical' : 'Show historical'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={fetchGraphData}
+                      disabled={isGraphLoading}
+                    >
+                      <RefreshCw className={`h-4 w-4 mr-2 ${isGraphLoading ? 'animate-spin' : ''}`} />
+                      Refresh
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -601,7 +605,11 @@ export function MemoryDashboard() {
                     Loading graph…
                   </div>
                 ) : (
-                  <MemoryGraph memories={allMemories} edges={graphEdges} />
+                  <KnowledgeGraph
+                    entities={graphEntities}
+                    facts={graphFacts}
+                    showHistorical={showHistorical}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -930,18 +938,3 @@ export function MemoryDashboard() {
   );
 }
 
-// Fallback: derive RELATED_TO edges from shared tags when FalkorDB is unavailable.
-function computeTagEdges(memories: Memory[]): GraphEdge[] {
-  const edges: GraphEdge[] = [];
-  for (let i = 0; i < memories.length; i++) {
-    for (let j = i + 1; j < memories.length; j++) {
-      const a = memories[i];
-      const b = memories[j];
-      const shared = a.tags.some((t) => b.tags.includes(t));
-      if (shared) {
-        edges.push({ from_id: a.id, to_id: b.id, rel_type: 'RELATED_TO' });
-      }
-    }
-  }
-  return edges;
-}

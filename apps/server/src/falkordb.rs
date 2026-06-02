@@ -680,6 +680,52 @@ impl FalkorDbClient {
         Ok(parse_edge_rows(result))
     }
 
+    /// Return all Entity nodes and FACT edges for the knowledge graph visualization.
+    /// Includes both current and historical (invalidated) facts so the UI can show temporal change.
+    pub async fn get_graph_data(
+        &mut self,
+        group_id: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<EntityInfo>, Vec<FactResult>)> {
+        let group_filter = group_id
+            .map(|g| format!(" WHERE n.group_id = {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+        let group_filter_fact = group_id
+            .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+
+        let q_entities = format!(
+            "MATCH (n:Entity){group_filter} \
+             RETURN n.id, n.name, n.entity_type, n.summary, n.group_id, n.created_at \
+             LIMIT {limit}"
+        );
+        let ent_result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q_entities)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB get_graph_data entities failed")?;
+        let entities = parse_entity_rows(ent_result);
+
+        let q_facts = format!(
+            "MATCH (a:Entity)-[f:FACT]->(b:Entity) \
+             WHERE 1=1{group_filter_fact} \
+             RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
+                    f.valid_at, f.invalid_at, f.episode_id, f.id \
+             ORDER BY f.valid_at DESC \
+             LIMIT {limit}"
+        );
+        let fact_result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q_facts)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB get_graph_data facts failed")?;
+        let facts = parse_fact_rows(fact_result);
+
+        Ok((entities, facts))
+    }
+
     /// Return neighbor memories via 1–2 hop graph traversal, scoped to the same user.
     pub async fn get_neighbors(
         &mut self,

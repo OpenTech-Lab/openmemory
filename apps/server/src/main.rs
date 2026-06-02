@@ -498,6 +498,14 @@ enum McpRequest {
         group_id: Option<String>,
     },
 
+    #[serde(rename = "graph.get_graph")]
+    GraphGetGraph {
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
     #[serde(rename = "env.set")]
     EnvSet {
         key: String,
@@ -618,6 +626,12 @@ enum McpResponse {
     #[serde(rename = "graph.get_entity.result")]
     GraphGetEntityResult {
         entity: Option<falkordb::EntityInfo>,
+    },
+
+    #[serde(rename = "graph.get_graph.result")]
+    GraphGetGraphResult {
+        entities: Vec<falkordb::EntityInfo>,
+        facts: Vec<falkordb::FactResult>,
     },
 
     #[serde(rename = "env.set.result")]
@@ -1921,6 +1935,30 @@ async fn mcp(
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
             Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityResult { entity })))
+        }
+
+        McpRequest::GraphGetGraph { group_id, limit } => {
+            let limit = limit.unwrap_or(500).clamp(1, 2000);
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::GraphGetGraphResult { entities: vec![], facts: vec![] }),
+                )),
+            };
+            match fdb.get_graph_data(group_id.as_deref(), limit).await {
+                Ok((entities, facts)) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::GraphGetGraphResult { entities, facts }),
+                )),
+                Err(e) => {
+                    error!("FalkorDB get_graph_data failed: {e}");
+                    Ok((
+                        StatusCode::OK,
+                        Json(McpResponse::GraphGetGraphResult { entities: vec![], facts: vec![] }),
+                    ))
+                }
+            }
         }
 
         McpRequest::EnvSet { key, value, is_secret, description } => {
