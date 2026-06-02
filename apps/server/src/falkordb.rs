@@ -180,11 +180,14 @@ impl FalkorDbClient {
                     gid = escape_option_str(Some(group_id)),
                     summary = escape_option_str(Some(s)),
                 );
-                let _ = redis::cmd("GRAPH.QUERY")
+                if let Err(e) = redis::cmd("GRAPH.QUERY")
                     .arg(GRAPH_NAME)
                     .arg(&update_q)
                     .query_async::<redis::Value>(&mut self.conn)
-                    .await;
+                    .await
+                {
+                    warn!("FalkorDB update entity summary failed: {e}");
+                }
             }
             return Ok((id, false));
         }
@@ -310,6 +313,33 @@ impl FalkorDbClient {
             created_at_val = escape_option_str(Some(created_at)),
             episode_id = episode_lit,
         );
+        // Verify both entities exist in the same group before creating the fact
+        let check_q = format!(
+            "MATCH (a:Entity {{name: {sname}, entity_type: {stype}, group_id: {gid}}}), \
+                   (b:Entity {{name: {oname}, entity_type: {otype}, group_id: {gid2}}}) \
+             RETURN count(*) AS n",
+            sname = escape_option_str(Some(subject_name)),
+            stype = escape_option_str(Some(subject_type)),
+            oname = escape_option_str(Some(object_name)),
+            otype = escape_option_str(Some(object_type)),
+            gid = escape_option_str(Some(group_id)),
+            gid2 = escape_option_str(Some(group_id)),
+        );
+        let check_result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&check_q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB add_fact entity check failed")?;
+
+        if parse_count(check_result) < 1 {
+            anyhow::bail!(
+                "One or both entities ({} '{}', {} '{}') not found in group '{}'. \
+                 Call add_entity first.",
+                subject_type, subject_name, object_type, object_name, group_id
+            );
+        }
+
         redis::cmd("GRAPH.QUERY")
             .arg(GRAPH_NAME)
             .arg(&q)
@@ -357,12 +387,12 @@ impl FalkorDbClient {
             .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
             .unwrap_or_default();
         let valid_filter = if valid_only { " AND f.invalid_at IS NULL" } else { "" };
-        let q_escaped = escape_str(query);
+        let q_lit = escape_option_str(Some(query));
 
         let q = format!(
             "MATCH (a:Entity)-[f:FACT]->(b:Entity) \
-             WHERE (f.fact CONTAINS \"{q_escaped}\" OR f.name CONTAINS \"{q_escaped}\" \
-                    OR a.name CONTAINS \"{q_escaped}\" OR b.name CONTAINS \"{q_escaped}\") \
+             WHERE (toLower(f.fact) CONTAINS toLower({q_lit}) OR toLower(f.name) CONTAINS toLower({q_lit}) \
+                    OR toLower(a.name) CONTAINS toLower({q_lit}) OR toLower(b.name) CONTAINS toLower({q_lit})) \
              {group_filter}{valid_filter} \
              RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
                     f.valid_at, f.invalid_at, f.episode_id, f.id \
@@ -387,7 +417,7 @@ impl FalkorDbClient {
         group_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<FactResult>> {
-        let ts = escape_str(timestamp);
+        let ts = escape_option_str(Some(timestamp));
         let entity_filter = entity_name
             .map(|n| format!(
                 " AND (a.name = {} OR b.name = {})",
@@ -401,8 +431,8 @@ impl FalkorDbClient {
 
         let q = format!(
             "MATCH (a:Entity)-[f:FACT]->(b:Entity) \
-             WHERE f.valid_at <= \"{ts}\" \
-               AND (f.invalid_at IS NULL OR f.invalid_at > \"{ts}\") \
+             WHERE f.valid_at <= {ts} \
+               AND (f.invalid_at IS NULL OR f.invalid_at > {ts}) \
                {entity_filter}{group_filter} \
              RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
                     f.valid_at, f.invalid_at, f.episode_id, f.id \
@@ -425,14 +455,17 @@ impl FalkorDbClient {
         group_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<FactResult>> {
-        let name_esc = escape_str(entity_name);
+        let name_lit = escape_option_str(Some(entity_name));
         let group_filter = group_id
             .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+        let group_filter_b = group_id
+            .map(|g| format!(" AND b.group_id = {}", escape_option_str(Some(g))))
             .unwrap_or_default();
 
         // Outgoing facts (entity as subject)
         let q1 = format!(
-            "MATCH (a:Entity {{name: \"{name_esc}\"}})-[f:FACT]->(b:Entity) \
+            "MATCH (a:Entity {{name: {name_lit}}})-[f:FACT]->(b:Entity) \
              WHERE 1=1{group_filter} \
              RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
                     f.valid_at, f.invalid_at, f.episode_id, f.id \
@@ -449,8 +482,8 @@ impl FalkorDbClient {
 
         // Incoming facts (entity as object)
         let q2 = format!(
-            "MATCH (a:Entity)-[f:FACT]->(b:Entity {{name: \"{name_esc}\"}}) \
-             WHERE 1=1{group_filter} \
+            "MATCH (a:Entity)-[f:FACT]->(b:Entity {{name: {name_lit}}}) \
+             WHERE 1=1{group_filter_b} \
              RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
                     f.valid_at, f.invalid_at, f.episode_id, f.id \
              ORDER BY f.valid_at DESC \
@@ -918,7 +951,7 @@ fn parse_fact_rows(result: redis::Value) -> Vec<FactResult> {
         };
         if cols.len() < 10 { return None; }
         let invalid_at = extract_string(&cols[7]);
-        let is_current = invalid_at.is_none();
+        let is_current = invalid_at.as_deref().map(|s| s.is_empty()).unwrap_or(true);
         Some(FactResult {
             subject_name: extract_string(&cols[0]).unwrap_or_default(),
             subject_type: extract_string(&cols[1]).unwrap_or_default(),
