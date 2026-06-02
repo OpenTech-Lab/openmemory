@@ -32,7 +32,7 @@ interface ProjectGraph {
   imported_at: string | null;
   created_at: string;
   updated_at: string;
-  graph_data: unknown;
+  graph_data?: { nodes?: unknown[] } | null; // present from GET /api/project-graphs/:id
 }
 
 interface GraphQueryResult {
@@ -175,56 +175,72 @@ export default function ProjectDetailPage() {
 
       {/* Graph + Query Panel */}
       <div className="flex-1 relative overflow-hidden">
-        {/* Full-screen graph */}
-        <ProjectKnowledgeGraph
-          graphData={project.graph_data as never}
-          queryResult={queryResult}
-        />
-
-        {/* Floating query panel at bottom */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-lg px-4">
-          <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg p-3">
-            <div className="flex gap-2">
-              <Input
-                value={queryInput}
-                onChange={e => setQueryInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleQuery()}
-                placeholder="Search the graph... (e.g. auth, database, handler)"
-                className="flex-1 text-sm"
-                disabled={isQuerying}
-              />
-              <Button
-                onClick={handleQuery}
-                disabled={isQuerying || !queryInput.trim()}
-                size="sm"
-              >
-                {isQuerying ? (
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Search className="h-4 w-4" />
-                )}
-              </Button>
-              {queryResult && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setQueryResult(null);
-                    setQueryInput('');
-                  }}
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-            {queryResult && (
-              <p className="text-xs text-muted-foreground mt-2">
-                Found {queryResult.nodes.length} nodes from {queryResult.seed_nodes.length} seed(s)
-                {queryResult.truncated && ' (truncated)'}
-              </p>
-            )}
+        {/* Full-screen graph or empty state */}
+        {!project.graph_data ||
+         (project.graph_data as { nodes?: unknown }).nodes === undefined ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
+            <p>No graph data available.</p>
+            <p className="text-sm">
+              Run <code className="bg-muted px-1 rounded">/graphify {project.path}</code> then click Rebuild.
+            </p>
+            <Button variant="outline" size="sm" onClick={handleRebuild} disabled={isRebuilding}>
+              {isRebuilding ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : null}
+              Rebuild
+            </Button>
           </div>
-        </div>
+        ) : (
+          <>
+            <ProjectKnowledgeGraph
+              graphData={project.graph_data as import('@/components/project-knowledge-graph').GraphifyData}
+              queryResult={queryResult}
+            />
+
+            {/* Floating query panel at bottom */}
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-lg px-4">
+              <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg p-3">
+                <div className="flex gap-2">
+                  <Input
+                    value={queryInput}
+                    onChange={e => setQueryInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleQuery()}
+                    placeholder="Search the graph... (e.g. auth, database, handler)"
+                    className="flex-1 text-sm"
+                    disabled={isQuerying}
+                  />
+                  <Button
+                    onClick={handleQuery}
+                    disabled={isQuerying || !queryInput.trim()}
+                    size="sm"
+                  >
+                    {isQuerying ? (
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Search className="h-4 w-4" />
+                    )}
+                  </Button>
+                  {queryResult && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setQueryResult(null);
+                        setQueryInput('');
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+                {queryResult && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Found {queryResult.nodes.length} nodes from {queryResult.seed_nodes.length} seed(s)
+                    {queryResult.truncated && ' (truncated)'}
+                  </p>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

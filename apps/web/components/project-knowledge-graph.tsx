@@ -30,7 +30,7 @@ interface GraphifyEdge {
   [key: string]: unknown;
 }
 
-interface GraphifyData {
+export interface GraphifyData {
   nodes: GraphifyNode[];
   links?: GraphifyEdge[];
   edges?: GraphifyEdge[];
@@ -210,7 +210,7 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
       const { graph: g, nodeMap } = buildCommunityGraph(graphData);
       const edgeList: GraphifyEdge[] = [];
       g.edges().forEach(edgeId => {
-        const { source, target } = g.extremities(edgeId) as unknown as { source: string; target: string };
+        const [source, target] = g.extremities(edgeId);
         edgeList.push({ source, target, relation: 'inter-community' });
       });
       return { graph: g, nodeMap, edgeList, isCommunity: true };

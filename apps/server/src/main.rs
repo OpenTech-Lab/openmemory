@@ -2735,9 +2735,9 @@ async fn get_project_graph(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    let row = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
+    let row = sqlx::query(
         "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
-         graph_hash, graph_file_size, imported_at, created_at, updated_at \
+         graph_data, graph_hash, graph_file_size, imported_at, created_at, updated_at \
          FROM project_graphs WHERE id = $1"
     )
     .bind(id)
@@ -2745,7 +2745,26 @@ async fn get_project_graph(
     .await;
 
     match row {
-        Ok(Some(project)) => Json(serde_json::json!(project)).into_response(),
+        Ok(Some(r)) => {
+            let graph_data: serde_json::Value = r.try_get("graph_data")
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let project = serde_json::json!({
+                "id": r.try_get::<Uuid, _>("id").ok().map(|u| u.to_string()),
+                "name": r.try_get::<String, _>("name").unwrap_or_default(),
+                "path": r.try_get::<String, _>("path").unwrap_or_default(),
+                "canonical_path": r.try_get::<String, _>("canonical_path").ok(),
+                "description": r.try_get::<Option<String>, _>("description").ok().flatten(),
+                "node_count": r.try_get::<i32, _>("node_count").unwrap_or(0),
+                "edge_count": r.try_get::<i32, _>("edge_count").unwrap_or(0),
+                "graph_data": graph_data,
+                "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
+                "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
+                "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
+                "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+                "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
+            });
+            Json(project).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
         Err(e) => {
             error!("get_project_graph error: {e}");
