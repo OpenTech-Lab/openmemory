@@ -98,6 +98,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "${OPENMEMORY_PORT:-8080}:8080"
+    volumes:
+      - ${HOME}:${HOME}:ro
     environment:
       OPENMEMORY_HOST: "0.0.0.0"
       DATABASE_URL: postgres://openmemory:openmemory@postgres:5432/openmemory
@@ -106,6 +108,7 @@ services:
       FALKORDB_URL: redis://falkordb:6379
       OPENMEMORY_SECRET_KEY: ${OPENMEMORY_SECRET_KEY:-dev-secret-key-change-me}
       OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
+      OPENMEMORY_PROJECTS_ROOT: ${HOME}
     depends_on:
       postgres:
         condition: service_healthy
