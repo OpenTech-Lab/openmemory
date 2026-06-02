@@ -143,6 +143,102 @@ impl FalkorDbClient {
         Ok(())
     }
 
+    /// Upsert an Entity node. Deduplicates on (name, entity_type, group_id).
+    /// Returns (entity_id, was_created): was_created=true if new, false if existing.
+    pub async fn add_entity(
+        &mut self,
+        new_id: Uuid,
+        name: &str,
+        entity_type: &str,
+        group_id: &str,
+        summary: Option<&str>,
+        created_at: &str,
+    ) -> Result<(String, bool)> {
+        // Check if entity already exists
+        let check_q = format!(
+            "MATCH (n:Entity {{name: {name}, entity_type: {etype}, group_id: {gid}}}) \
+             RETURN n.id AS id",
+            name = escape_option_str(Some(name)),
+            etype = escape_option_str(Some(entity_type)),
+            gid = escape_option_str(Some(group_id)),
+        );
+        let existing: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&check_q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB add_entity check failed")?;
+
+        if let Some(id) = parse_first_string(existing) {
+            // Entity exists — update summary if provided
+            if let Some(s) = summary {
+                let update_q = format!(
+                    "MATCH (n:Entity {{name: {name}, entity_type: {etype}, group_id: {gid}}}) \
+                     SET n.summary = {summary}",
+                    name = escape_option_str(Some(name)),
+                    etype = escape_option_str(Some(entity_type)),
+                    gid = escape_option_str(Some(group_id)),
+                    summary = escape_option_str(Some(s)),
+                );
+                let _ = redis::cmd("GRAPH.QUERY")
+                    .arg(GRAPH_NAME)
+                    .arg(&update_q)
+                    .query_async::<redis::Value>(&mut self.conn)
+                    .await;
+            }
+            return Ok((id, false));
+        }
+
+        // Entity does not exist — create it
+        let create_q = format!(
+            "CREATE (n:Entity {{id: \"{new_id}\", name: {name}, entity_type: {etype}, \
+              group_id: {gid}, summary: {summary}, created_at: {created_at}}})",
+            name = escape_option_str(Some(name)),
+            etype = escape_option_str(Some(entity_type)),
+            gid = escape_option_str(Some(group_id)),
+            summary = escape_option_str(summary),
+            created_at = escape_option_str(Some(created_at)),
+        );
+        redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&create_q)
+            .query_async::<redis::Value>(&mut self.conn)
+            .await
+            .context("FalkorDB add_entity create failed")?;
+
+        Ok((new_id.to_string(), true))
+    }
+
+    /// Look up a single entity by name (and optionally type and group_id).
+    pub async fn get_entity(
+        &mut self,
+        name: &str,
+        entity_type: Option<&str>,
+        group_id: Option<&str>,
+    ) -> Result<Option<EntityInfo>> {
+        let type_filter = entity_type
+            .map(|t| format!(", entity_type: {}", escape_option_str(Some(t))))
+            .unwrap_or_default();
+        let group_filter = group_id
+            .map(|g| format!(", group_id: {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+
+        let q = format!(
+            "MATCH (n:Entity {{name: {name}{type_filter}{group_filter}}}) \
+             RETURN n.id, n.name, n.entity_type, n.summary, n.group_id, n.created_at \
+             LIMIT 1",
+            name = escape_option_str(Some(name)),
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB get_entity failed")?;
+
+        Ok(parse_entity_rows(result).into_iter().next())
+    }
+
     /// Upsert a memory node and auto-create RELATED_TO edges to nodes sharing ≥1 tag.
     pub async fn save_node(
         &mut self,
@@ -515,4 +611,46 @@ fn extract_string_list(v: &redis::Value) -> Vec<String> {
         }
         _ => vec![],
     }
+}
+
+fn parse_first_string(result: redis::Value) -> Option<String> {
+    let outer = match result {
+        redis::Value::Array(v) => v,
+        _ => return None,
+    };
+    let rows = match outer.get(1) {
+        Some(redis::Value::Array(r)) => r,
+        _ => return None,
+    };
+    let first_row = match rows.first() {
+        Some(redis::Value::Array(cols)) => cols,
+        _ => return None,
+    };
+    first_row.first().and_then(extract_string)
+}
+
+fn parse_entity_rows(result: redis::Value) -> Vec<EntityInfo> {
+    let outer = match result {
+        redis::Value::Array(v) => v,
+        _ => return vec![],
+    };
+    let rows = match outer.get(1) {
+        Some(redis::Value::Array(r)) => r,
+        _ => return vec![],
+    };
+    rows.iter().filter_map(|row| {
+        let cols = match row {
+            redis::Value::Array(c) => c,
+            _ => return None,
+        };
+        if cols.len() < 6 { return None; }
+        Some(EntityInfo {
+            id: extract_string(&cols[0])?,
+            name: extract_string(&cols[1])?,
+            entity_type: extract_string(&cols[2]).unwrap_or_default(),
+            summary: extract_string(&cols[3]),
+            group_id: extract_string(&cols[4]).unwrap_or_default(),
+            created_at: extract_string(&cols[5]).unwrap_or_default(),
+        })
+    }).collect()
 }
