@@ -406,6 +406,111 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "graph_add_episode",
+                    "description": "Add an immutable source episode to the knowledge graph (ground truth record)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Episode name"},
+                            "source": {"type": "string", "description": "message | json | text | event"},
+                            "source_description": {"type": "string", "description": "Description of the data source"},
+                            "content": {"type": "string", "description": "Raw episode content"},
+                            "group_id": {"type": "string", "description": "Namespace (default: 'default')"},
+                            "valid_at": {"type": "string", "description": "ISO8601 UTC timestamp when this became true"}
+                        },
+                        "required": ["name", "source", "source_description", "content"]
+                    }
+                },
+                {
+                    "name": "graph_add_entity",
+                    "description": "Upsert a real-world entity into the knowledge graph (deduped on name+type+group_id)",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "entity_type": {"type": "string", "description": "e.g. Person, Place, Organization, Concept"},
+                            "group_id": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "episode_id": {"type": "string", "description": "UUID of source episode for provenance"}
+                        },
+                        "required": ["name", "entity_type"]
+                    }
+                },
+                {
+                    "name": "graph_add_fact",
+                    "description": "Create a temporal fact (relationship) between two entities",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {"type": "string", "description": "Subject entity name"},
+                            "subject_type": {"type": "string"},
+                            "object": {"type": "string", "description": "Object entity name"},
+                            "object_type": {"type": "string"},
+                            "name": {"type": "string", "description": "Relationship name e.g. manages, lives_in, owns"},
+                            "fact": {"type": "string", "description": "Human-readable fact statement"},
+                            "group_id": {"type": "string"},
+                            "episode_id": {"type": "string"},
+                            "valid_at": {"type": "string", "description": "ISO8601 UTC timestamp"},
+                            "invalidate_previous": {"type": "boolean", "description": "If true, expire prior facts with same name between these entities"}
+                        },
+                        "required": ["subject", "subject_type", "object", "object_type", "name", "fact"]
+                    }
+                },
+                {
+                    "name": "graph_query_facts",
+                    "description": "Search facts by keyword across entity names, relationship names, and fact text",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "group_id": {"type": "string"},
+                            "limit": {"type": "number"},
+                            "valid_only": {"type": "boolean", "description": "If true, only return currently valid facts"}
+                        },
+                        "required": ["query"]
+                    }
+                },
+                {
+                    "name": "graph_query_at",
+                    "description": "Retrieve all facts that were valid at a specific point in time",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "timestamp": {"type": "string", "description": "ISO8601 UTC timestamp to query at"},
+                            "entity_name": {"type": "string", "description": "Filter by entity name"},
+                            "group_id": {"type": "string"},
+                            "limit": {"type": "number"}
+                        },
+                        "required": ["timestamp"]
+                    }
+                },
+                {
+                    "name": "graph_get_entity_history",
+                    "description": "Get the full history of facts (current and historical) involving an entity",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_name": {"type": "string"},
+                            "group_id": {"type": "string"},
+                            "limit": {"type": "number"}
+                        },
+                        "required": ["entity_name"]
+                    }
+                },
+                {
+                    "name": "graph_get_entity",
+                    "description": "Look up a single entity by name, optionally filtered by type and group",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_name": {"type": "string"},
+                            "entity_type": {"type": "string"},
+                            "group_id": {"type": "string"}
+                        },
+                        "required": ["entity_name"]
+                    }
+                },
+                {
                     "name": "env_set",
                     "description": "Store an environment parameter or secret. Use is_secret=true for sensitive values like API keys — secret values cannot be read back by agents, only by the web UI.",
                     "inputSchema": {
@@ -482,6 +587,13 @@ impl McpServer {
             "memory_graph_all" => self.memory_graph_all(arguments).await,
             "memory_graph_neighbors" => self.memory_graph_neighbors(arguments).await,
             "memory_graph_relate" => self.memory_graph_relate(arguments).await,
+            "graph_add_episode" => self.graph_add_episode(arguments).await,
+            "graph_add_entity" => self.graph_add_entity(arguments).await,
+            "graph_add_fact" => self.graph_add_fact(arguments).await,
+            "graph_query_facts" => self.graph_query_facts(arguments).await,
+            "graph_query_at" => self.graph_query_at(arguments).await,
+            "graph_get_entity_history" => self.graph_get_entity_history(arguments).await,
+            "graph_get_entity" => self.graph_get_entity(arguments).await,
             "env_set" => self.env_set(arguments).await,
             "env_get" => self.env_get(arguments).await,
             "env_list" => self.env_list(arguments).await,
@@ -853,6 +965,160 @@ impl McpServer {
             }]
         }))
     }
+
+    async fn graph_add_episode(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let name = args["name"].as_str().context("missing name")?.to_string();
+        let source = args["source"].as_str().context("missing source")?.to_string();
+        let source_description = args["source_description"].as_str().context("missing source_description")?.to_string();
+        let content = args["content"].as_str().context("missing content")?.to_string();
+        let group_id = args["group_id"].as_str().unwrap_or("default").to_string();
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let valid_at = args["valid_at"].as_str().map(|s| s.to_string()).unwrap_or_else(|| now.to_rfc3339());
+
+        if let Some(fdb) = &self.falkordb {
+            let mut fdb = fdb.clone();
+            fdb.add_episode(id, &name, &source, &source_description, &content, &group_id, &now.to_rfc3339(), &valid_at).await?;
+        }
+
+        Ok(json!({"content": [{"type": "text", "text": format!("Episode added: '{}' (id: {})", name, id)}]}))
+    }
+
+    async fn graph_add_entity(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let name = args["name"].as_str().context("missing name")?.to_string();
+        let entity_type = args["entity_type"].as_str().context("missing entity_type")?.to_string();
+        let group_id = args["group_id"].as_str().unwrap_or("default").to_string();
+        let summary = args["summary"].as_str().map(|s| s.to_string());
+        let episode_id = args["episode_id"].as_str().map(|s| s.to_string());
+        let new_id = Uuid::new_v4();
+        let now = Utc::now();
+
+        let mut fdb = self.falkordb.as_ref().context("Graph layer not configured (FALKORDB_URL not set)")?.clone();
+        let (entity_id, created) = fdb.add_entity(new_id, &name, &entity_type, &group_id, summary.as_deref(), &now.to_rfc3339()).await?;
+
+        if let Some(ep_id_str) = episode_id {
+            if let Ok(ep_uuid) = Uuid::parse_str(&ep_id_str) {
+                let _ = fdb.link_episode_to_entity(ep_uuid, &name, &entity_type, &group_id).await;
+            }
+        }
+
+        let action = if created { "Created" } else { "Found existing" };
+        Ok(json!({"content": [{"type": "text", "text": format!("{} entity '{}' ({}) id={}", action, name, entity_type, entity_id)}]}))
+    }
+
+    async fn graph_add_fact(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let subject = args["subject"].as_str().context("missing subject")?.to_string();
+        let subject_type = args["subject_type"].as_str().context("missing subject_type")?.to_string();
+        let object = args["object"].as_str().context("missing object")?.to_string();
+        let object_type = args["object_type"].as_str().context("missing object_type")?.to_string();
+        let name = args["name"].as_str().context("missing name")?.to_string();
+        let fact = args["fact"].as_str().context("missing fact")?.to_string();
+        let group_id = args["group_id"].as_str().unwrap_or("default").to_string();
+        let episode_id = args["episode_id"].as_str().map(|s| s.to_string());
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        let valid_at = args["valid_at"].as_str().map(|s| s.to_string()).unwrap_or_else(|| now_str.clone());
+        let invalidate = args["invalidate_previous"].as_bool().unwrap_or(false);
+        let id = Uuid::new_v4();
+
+        let mut fdb = self.falkordb.as_ref().context("Graph layer not configured (FALKORDB_URL not set)")?.clone();
+        let (fact_id, invalidated) = fdb.add_fact(
+            id, &subject, &subject_type, &object, &object_type,
+            &group_id, &name, &fact, episode_id.as_deref(), &valid_at, &now_str, invalidate,
+        ).await?;
+
+        Ok(json!({"content": [{"type": "text", "text":
+            format!("Fact added: '{}' -[{}]-> '{}' (id={}, invalidated: {})", subject, name, object, fact_id, invalidated)}]}))
+    }
+
+    async fn graph_query_facts(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let query = args["query"].as_str().context("missing query")?.to_string();
+        let group_id = args["group_id"].as_str().map(|s| s.to_string());
+        let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+        let valid_only = args["valid_only"].as_bool().unwrap_or(false);
+
+        let mut fdb = match &self.falkordb {
+            Some(f) => f.clone(),
+            None => return Ok(json!({"content": [{"type": "text", "text": "No results (graph layer not configured)"}]})),
+        };
+
+        let facts = fdb.query_facts(&query, group_id.as_deref(), limit, valid_only).await.unwrap_or_default();
+        let text = format_facts(&facts, &format!("\"{}\"", query));
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn graph_query_at(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let timestamp = args["timestamp"].as_str().context("missing timestamp")?.to_string();
+        let entity_name = args["entity_name"].as_str().map(|s| s.to_string());
+        let group_id = args["group_id"].as_str().map(|s| s.to_string());
+        let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+
+        let mut fdb = match &self.falkordb {
+            Some(f) => f.clone(),
+            None => return Ok(json!({"content": [{"type": "text", "text": "No results (graph layer not configured)"}]})),
+        };
+
+        let facts = fdb.query_at(&timestamp, entity_name.as_deref(), group_id.as_deref(), limit).await.unwrap_or_default();
+        let text = format_facts(&facts, &format!("at {}", timestamp));
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn graph_get_entity_history(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let entity_name = args["entity_name"].as_str().context("missing entity_name")?.to_string();
+        let group_id = args["group_id"].as_str().map(|s| s.to_string());
+        let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+
+        let mut fdb = match &self.falkordb {
+            Some(f) => f.clone(),
+            None => return Ok(json!({"content": [{"type": "text", "text": "No history (graph layer not configured)"}]})),
+        };
+
+        let facts = fdb.get_entity_history(&entity_name, group_id.as_deref(), limit).await.unwrap_or_default();
+        let text = format_facts(&facts, &format!("history of '{}'", entity_name));
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn graph_get_entity(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let entity_name = args["entity_name"].as_str().context("missing entity_name")?.to_string();
+        let entity_type = args["entity_type"].as_str().map(|s| s.to_string());
+        let group_id = args["group_id"].as_str().map(|s| s.to_string());
+
+        let mut fdb = match &self.falkordb {
+            Some(f) => f.clone(),
+            None => return Ok(json!({"content": [{"type": "text", "text": "Entity not found (graph layer not configured)"}]})),
+        };
+
+        match fdb.get_entity(&entity_name, entity_type.as_deref(), group_id.as_deref()).await? {
+            None => Ok(json!({"content": [{"type": "text", "text": format!("Entity '{}' not found", entity_name)}]})),
+            Some(e) => Ok(json!({"content": [{"type": "text", "text":
+                format!("Entity: {} ({})\nID: {}\nGroup: {}\nSummary: {}\nCreated: {}",
+                    e.name, e.entity_type, e.id, e.group_id,
+                    e.summary.as_deref().unwrap_or("-"),
+                    e.created_at)}]})),
+        }
+    }
+}
+
+fn format_facts(facts: &[falkordb::FactResult], label: &str) -> String {
+    if facts.is_empty() {
+        return format!("No facts found for {}.", label);
+    }
+    let mut text = format!("Found {} fact(s) for {}:\n\n", facts.len(), label);
+    for (i, f) in facts.iter().enumerate() {
+        let status = if f.is_current { "current" } else { "expired" };
+        text.push_str(&format!(
+            "{}. [{}] {} -[{}]-> {}\n   Fact: {}\n   Valid: {}{}\n\n",
+            i + 1,
+            status,
+            f.subject_name,
+            f.relationship,
+            f.object_name,
+            f.fact,
+            f.valid_at,
+            f.invalid_at.as_deref().map(|t| format!(" → {}", t)).unwrap_or_default(),
+        ));
+    }
+    text
 }
 
 fn compute_combined_score(importance: f32, created_at: DateTime<Utc>) -> f32 {
