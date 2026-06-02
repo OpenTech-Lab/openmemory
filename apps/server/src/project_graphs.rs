@@ -64,8 +64,8 @@ pub struct GraphQueryResponse {
 
 /// Read and validate a graphify `graph.json` from a project path.
 ///
-/// Returns `(json_data, sha256_hex_hash, file_size_bytes)`.
-pub async fn load_graph_json(path: &str) -> Result<(serde_json::Value, String, u64)> {
+/// Returns `(json_data, sha256_hex_hash, file_size_bytes, canonical_path_string)`.
+pub async fn load_graph_json(path: &str) -> Result<(serde_json::Value, String, u64, String)> {
     // 1. Canonicalize project directory
     let canonical = tokio::fs::canonicalize(path).await
         .with_context(|| format!("Path does not exist or is not accessible: {path}"))?;
@@ -122,7 +122,7 @@ pub async fn load_graph_json(path: &str) -> Result<(serde_json::Value, String, u
     let data: serde_json::Value =
         serde_json::from_slice(&bytes).context("graph.json is not valid JSON")?;
 
-    Ok((data, hex_hash, size as u64))
+    Ok((data, hex_hash, size as u64, canonical.to_string_lossy().to_string()))
 }
 
 /// Count nodes and edges in a NetworkX node-link JSON object.

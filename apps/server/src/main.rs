@@ -2666,21 +2666,16 @@ async fn create_project_graph(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name and path must be non-empty"}))).into_response();
     }
 
-    let (graph_data, graph_hash, file_size) = match project_graphs::load_graph_json(&payload.path).await {
+    let (graph_data, graph_hash, file_size, canonical) = match project_graphs::load_graph_json(&payload.path).await {
         Ok(result) => result,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
         }
     };
 
-    let canonical = match tokio::fs::canonicalize(&payload.path).await {
-        Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) => payload.path.clone(),
-    };
-
     let (node_count, edge_count) = project_graphs::count_nodes_edges(&graph_data);
 
-    let row = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
+    let row = sqlx::query(
         "INSERT INTO project_graphs \
          (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
@@ -2689,7 +2684,8 @@ async fn create_project_graph(
            graph_file_size = $7, node_count = $8, edge_count = $9, \
            imported_at = NOW(), updated_at = NOW() \
          RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                   graph_hash, graph_file_size, imported_at, created_at, updated_at"
+                   graph_hash, graph_file_size, imported_at, created_at, updated_at, \
+                   (xmax = 0) AS was_inserted"
     )
     .bind(&payload.name)
     .bind(&payload.path)
@@ -2704,7 +2700,25 @@ async fn create_project_graph(
     .await;
 
     match row {
-        Ok(project) => (StatusCode::CREATED, Json(serde_json::json!(project))).into_response(),
+        Ok(r) => {
+            let was_inserted: bool = r.try_get("was_inserted").unwrap_or(true);
+            let status = if was_inserted { StatusCode::CREATED } else { StatusCode::OK };
+            let project = serde_json::json!({
+                "id": r.try_get::<uuid::Uuid, _>("id").ok(),
+                "name": r.try_get::<String, _>("name").ok(),
+                "path": r.try_get::<String, _>("path").ok(),
+                "canonical_path": r.try_get::<String, _>("canonical_path").ok(),
+                "description": r.try_get::<Option<String>, _>("description").ok().flatten(),
+                "node_count": r.try_get::<i32, _>("node_count").ok(),
+                "edge_count": r.try_get::<i32, _>("edge_count").ok(),
+                "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
+                "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
+                "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
+                "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+                "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
+            });
+            (status, Json(project)).into_response()
+        }
         Err(e) => {
             error!("create_project_graph error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
@@ -2754,15 +2768,14 @@ async fn delete_project_graph(
         .fetch_optional(&state.db)
         .await;
 
-    // Invalidate cache
-    if let Ok(mut cache) = state.pg_cache.lock() {
-        cache.remove(&id);
-    }
-
     match row {
         Ok(Some(r)) => {
+            // Invalidate cache only on confirmed deletion
+            if let Ok(mut cache) = state.pg_cache.lock() {
+                cache.remove(&id);
+            }
             let name: String = r.try_get("name").unwrap_or_default();
-            Json(serde_json::json!({"deleted": id, "name": name})).into_response()
+            (StatusCode::OK, Json(serde_json::json!({"deleted": id, "name": name}))).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
         Err(e) => {
@@ -2801,7 +2814,7 @@ async fn rebuild_project_graph(
     let path: String = row.try_get("path").unwrap_or_default();
     let old_hash: Option<String> = row.try_get("graph_hash").unwrap_or(None);
 
-    let (graph_data, graph_hash, file_size) = match project_graphs::load_graph_json(&path).await {
+    let (graph_data, graph_hash, file_size, _canonical) = match project_graphs::load_graph_json(&path).await {
         Ok(result) => result,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
@@ -2879,13 +2892,20 @@ async fn query_project_graph(
 
     let graph_data = if let Some((cached_hash, cached_data)) = cached {
         // Verify hash still matches DB
-        let db_hash: Option<String> = sqlx::query("SELECT graph_hash FROM project_graphs WHERE id = $1")
+        let hash_check = sqlx::query("SELECT graph_hash FROM project_graphs WHERE id = $1")
             .bind(id)
             .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|r| r.try_get::<Option<String>, _>("graph_hash").ok().flatten());
+            .await;
+
+        let db_hash = match hash_check {
+            Ok(Some(r)) => r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
+            Ok(None) => {
+                return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project not found"}))).into_response();
+            }
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        };
 
         if db_hash.as_deref() == Some(cached_hash.as_str()) {
             cached_data
