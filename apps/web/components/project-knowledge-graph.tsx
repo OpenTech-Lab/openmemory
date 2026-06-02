@@ -286,7 +286,7 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
 
       const NodeBorderProgram = createNodeBorderProgram({
         borders: [
-          { size: { value: 0.12, mode: 'relative' }, color: { attribute: 'borderColor' } },
+          { size: { value: 0.04, mode: 'relative' }, color: { attribute: 'borderColor' } },
           { size: { fill: true }, color: { attribute: 'color' } },
         ],
       });
