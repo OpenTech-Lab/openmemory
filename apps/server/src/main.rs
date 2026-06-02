@@ -1093,7 +1093,10 @@ async fn get_session_messages(
     }
 }
 
-async fn list_agents(State(state): State<AppState>) -> impl IntoResponse {
+async fn list_agents(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
     let rows = sqlx::query_as::<_, WatcherAgentRow>(
         "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
          FROM watcher_agents ORDER BY is_builtin DESC, name ASC"
@@ -1112,8 +1115,12 @@ async fn list_agents(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn get_agent(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
     let row = sqlx::query_as::<_, WatcherAgentRow>(
         "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
          FROM watcher_agents WHERE id = $1"
@@ -1131,8 +1138,12 @@ async fn get_agent(
 
 async fn create_agent(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<CreateAgentPayload>,
 ) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
     let name = payload.name.trim().to_string();
     let path = payload.path.trim().to_string();
     if name.is_empty() || path.is_empty() {
@@ -1161,9 +1172,13 @@ async fn create_agent(
 
 async fn update_agent(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateAgentPayload>,
 ) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
     // Check if agent exists and whether it's built-in
     let existing = sqlx::query_as::<_, WatcherAgentRow>(
         "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
@@ -1209,8 +1224,12 @@ async fn update_agent(
 
 async fn delete_agent(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
     let existing = sqlx::query_as::<_, WatcherAgentRow>(
         "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
          FROM watcher_agents WHERE id = $1"

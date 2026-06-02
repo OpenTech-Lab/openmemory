@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
+const API_TOKEN = process.env.OPENMEMORY_API_TOKEN || 'dev-token-change-me';
 
 async function proxyAgents(method: string, body?: unknown) {
   try {
     const response = await fetch(`${API_URL}/agents`, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_TOKEN}` },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const contentType = response.headers.get('content-type') ?? '';
