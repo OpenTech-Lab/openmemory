@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Share2, Bot, History, SlidersHorizontal, Settings2, ChevronRight, MoreHorizontal, Sun, Moon } from 'lucide-react';
+import { Database, FolderOpen, Search, Share2, Bot, History, SlidersHorizontal, Settings2, ChevronRight, MoreHorizontal, Sun, Moon, FolderGit2 } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -30,7 +30,13 @@ const NAV_GROUPS = [
     items: [
       { href: '/memory', label: 'Browse', icon: FolderOpen },
       { href: '/memory/search', label: 'Search', icon: Search },
-      { href: '/graph', label: 'Graph', icon: Share2 },
+    ],
+  },
+  {
+    label: 'Graph',
+    items: [
+      { href: '/graph', label: 'Memory Graph', icon: Share2 },
+      { href: '/graph/projects', label: 'Projects', icon: FolderGit2 },
     ],
   },
   {
@@ -74,7 +80,9 @@ export function AppSidebar() {
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
                 {group.items.map((item) => {
-                  const isActive = pathname === item.href;
+                  const isActive = item.href === '/graph/projects'
+                    ? pathname.startsWith('/graph/projects')
+                    : pathname === item.href;
                   return (
                     <SidebarMenuItem key={item.href}>
                       <SidebarMenuButton

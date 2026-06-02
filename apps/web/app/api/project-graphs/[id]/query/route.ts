@@ -1,0 +1,39 @@
+import { NextResponse } from 'next/server';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
+const API_TOKEN = process.env.OPENMEMORY_API_TOKEN || 'dev-token-change-me';
+
+type Params = { params: Promise<{ id: string }> };
+
+// auth headers (always required for project-graphs)
+function authHeaders(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${API_TOKEN}`,
+  };
+}
+
+async function proxy(url: string, method: string, body?: unknown) {
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: authHeaders(),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    const data = contentType.includes('application/json')
+      ? await response.json()
+      : { error: `Upstream error (${response.status}): ${(await response.text()).slice(0, 200)}` };
+    return NextResponse.json(data, { status: response.status });
+  } catch (error) {
+    console.error('project-graphs/[id]/query proxy error:', error);
+    return NextResponse.json({ error: 'Failed to fetch from server' }, { status: 500 });
+  }
+}
+
+export async function GET(request: Request, { params }: Params) {
+  const { id } = await params;
+  const { searchParams } = new URL(request.url);
+  const backendUrl = `${API_URL}/graph/projects/${id}/query?${searchParams.toString()}`;
+  return proxy(backendUrl, 'GET');
+}
