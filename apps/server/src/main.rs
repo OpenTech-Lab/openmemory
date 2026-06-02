@@ -266,10 +266,12 @@ impl OpenSearchClient {
         Ok(docs)
     }
 
-    async fn list_all(&self, limit: usize) -> anyhow::Result<Vec<MemoryDocument>> {
+    /// Returns (docs, total_hits) where total_hits is the full index count from OpenSearch.
+    async fn list_all(&self, limit: usize, from: usize) -> anyhow::Result<(Vec<MemoryDocument>, usize)> {
         let url = format!("{}/{}/_search", self.base_url, self.index);
 
         let search_body = serde_json::json!({
+            "from": from,
             "size": limit,
             "query": {
                 "match_all": {}
@@ -288,6 +290,7 @@ impl OpenSearchClient {
         }
 
         let result: serde_json::Value = resp.json().await?;
+        let total_hits = result["hits"]["total"]["value"].as_u64().unwrap_or(0) as usize;
         let hits = result["hits"]["hits"].as_array();
 
         let docs: Vec<MemoryDocument> = hits
@@ -298,7 +301,7 @@ impl OpenSearchClient {
             })
             .unwrap_or_default();
 
-        Ok(docs)
+        Ok((docs, total_hits))
     }
 
     async fn get_document(&self, id: &str) -> anyhow::Result<Option<MemoryDocument>> {
@@ -358,6 +361,8 @@ enum McpRequest {
     MemoryList {
         #[serde(default)]
         limit: Option<usize>,
+        #[serde(default)]
+        offset: Option<usize>,
         #[serde(default)]
         user_id: Option<String>,
         #[serde(default)]
@@ -532,6 +537,7 @@ enum McpResponse {
     MemoryListResult {
         memories: Vec<ListResult>,
         total: usize,
+        total_count: usize,
         source: String,
     },
 
@@ -1358,28 +1364,47 @@ async fn mcp(
             ))
         }
 
-        McpRequest::MemoryList { limit, user_id, source } => {
-            let limit = limit.unwrap_or(100).clamp(1, 500);
+        McpRequest::MemoryList { limit, offset, user_id, source } => {
+            let limit = limit.unwrap_or(20).clamp(1, 500);
+            let offset = offset.unwrap_or(0) as i64;
             let source = source.as_deref().unwrap_or("all");
+
+            // Total count always comes from PostgreSQL (authoritative index)
+            let total_count: i64 = match &user_id {
+                Some(uid) => sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM memory_index WHERE user_id = $1",
+                )
+                .bind(uid)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(0),
+                None => sqlx::query_scalar("SELECT COUNT(*) FROM memory_index")
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap_or(0),
+            };
 
             match source {
                 "postgres" => {
-                    // List from PostgreSQL only (index data)
                     let indexes: Vec<MemoryIndex> = match &user_id {
                         Some(uid) => {
                             sqlx::query_as(
-                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at \
+                                 FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
                             )
                             .bind(uid)
                             .bind(limit as i64)
+                            .bind(offset)
                             .fetch_all(&state.db)
                             .await
                         }
                         None => {
                             sqlx::query_as(
-                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1",
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at \
+                                 FROM memory_index ORDER BY created_at DESC LIMIT $1 OFFSET $2",
                             )
                             .bind(limit as i64)
+                            .bind(offset)
                             .fetch_all(&state.db)
                             .await
                         }
@@ -1402,13 +1427,20 @@ async fn mcp(
 
                     Ok((
                         StatusCode::OK,
-                        Json(McpResponse::MemoryListResult { memories: results, total, source: "postgres".to_string() }),
+                        Json(McpResponse::MemoryListResult {
+                            memories: results,
+                            total,
+                            total_count: total_count as usize,
+                            source: "postgres".to_string(),
+                        }),
                     ))
                 }
 
                 "opensearch" => {
-                    // List from OpenSearch only (full documents)
-                    let docs = state.opensearch.list_all(limit).await.unwrap_or_default();
+                    let (docs, os_total) = state.opensearch
+                        .list_all(limit, offset as usize)
+                        .await
+                        .unwrap_or_default();
 
                     let total = docs.len();
                     let results: Vec<ListResult> = docs
@@ -1436,34 +1468,42 @@ async fn mcp(
 
                     Ok((
                         StatusCode::OK,
-                        Json(McpResponse::MemoryListResult { memories: results, total, source: "opensearch".to_string() }),
+                        Json(McpResponse::MemoryListResult {
+                            memories: results,
+                            total,
+                            total_count: os_total.max(total_count as usize),
+                            source: "opensearch".to_string(),
+                        }),
                     ))
                 }
 
                 _ => {
-                    // "all" - Combined: Get index from PostgreSQL, content from OpenSearch
+                    // "all" — index from PostgreSQL, content from OpenSearch
                     let indexes: Vec<MemoryIndex> = match &user_id {
                         Some(uid) => {
                             sqlx::query_as(
-                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at \
+                                 FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
                             )
                             .bind(uid)
                             .bind(limit as i64)
+                            .bind(offset)
                             .fetch_all(&state.db)
                             .await
                         }
                         None => {
                             sqlx::query_as(
-                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1",
+                                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at \
+                                 FROM memory_index ORDER BY created_at DESC LIMIT $1 OFFSET $2",
                             )
                             .bind(limit as i64)
+                            .bind(offset)
                             .fetch_all(&state.db)
                             .await
                         }
                     }
                     .unwrap_or_default();
 
-                    // Fetch content from OpenSearch for each
                     let mut results: Vec<ListResult> = Vec::with_capacity(indexes.len());
                     for idx in &indexes {
                         let content = state.opensearch
@@ -1487,7 +1527,12 @@ async fn mcp(
                     let total = results.len();
                     Ok((
                         StatusCode::OK,
-                        Json(McpResponse::MemoryListResult { memories: results, total, source: "all".to_string() }),
+                        Json(McpResponse::MemoryListResult {
+                            memories: results,
+                            total,
+                            total_count: total_count as usize,
+                            source: "all".to_string(),
+                        }),
                     ))
                 }
             }

@@ -38,7 +38,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2, Settings2, Bot, History, GitBranch, FolderOpen, MessageSquare } from 'lucide-react';
+import { Search, Database, RefreshCw, Plus, AlertCircle, HardDrive, Cloud, Share2, Settings2, Bot, History, GitBranch, FolderOpen, MessageSquare, ChevronLeft, ChevronRight } from 'lucide-react';
 import { type GraphEdge } from '@/components/memory-graph';
 import { EnvParamsPanel } from '@/components/env-params-panel';
 import { AgentSettings } from '@/components/agent-settings';
@@ -54,8 +54,11 @@ const MemoryGraph = dynamic(() => import('@/components/memory-graph').then((m) =
 });
 
 export function MemoryDashboard() {
+  const PAGE_SIZE = 20;
   const [memories, setMemories] = useState<Memory[]>([]);
   const [allMemories, setAllMemories] = useState<Memory[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -123,7 +126,10 @@ export function MemoryDashboard() {
     []
   );
 
-  const fetchAllMemories = async (source: 'all' | 'postgres' | 'opensearch' = dataSource) => {
+  const fetchAllMemories = async (
+    source: 'all' | 'postgres' | 'opensearch' = dataSource,
+    page: number = currentPage
+  ) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -132,7 +138,8 @@ export function MemoryDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'memory.list',
-          limit: 100,
+          limit: PAGE_SIZE,
+          offset: page * PAGE_SIZE,
           source,
         }),
       });
@@ -144,6 +151,7 @@ export function MemoryDashboard() {
       }
       if (data.type === 'memory.list.result' || data.memories) {
         setAllMemories(data.memories || data.results || []);
+        setTotalCount(data.total_count ?? data.memories?.length ?? 0);
       }
     } catch (err) {
       console.error('Failed to fetch memories:', err);
@@ -333,9 +341,10 @@ export function MemoryDashboard() {
 
   useEffect(() => {
     if (activeTab === 'browse') {
-      fetchAllMemories(dataSource);
+      setCurrentPage(0);
+      fetchAllMemories(dataSource, 0);
     } else if (activeTab === 'graph') {
-      if (allMemories.length === 0) fetchAllMemories('all');
+      if (allMemories.length === 0) fetchAllMemories('all', 0);
       fetchGraphEdges();
     }
   }, [activeTab, dataSource]);
@@ -349,7 +358,9 @@ export function MemoryDashboard() {
             <Database className="h-5 w-5 text-primary" />
             <h1 className="text-lg font-semibold">Memory</h1>
             <Badge variant="secondary" className="text-xs">
-              {activeTab === 'browse' ? allMemories.length : memories.length} records
+              {activeTab === 'browse'
+                ? `${totalCount > 0 ? totalCount : allMemories.length} total`
+                : `${memories.length} results`}
             </Badge>
           </div>
           <div className="flex items-center gap-2">
@@ -445,12 +456,53 @@ export function MemoryDashboard() {
                     <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
                   </div>
                 ) : (
-                  <DataTable
-                    columns={columns}
-                    data={allMemories}
-                    searchKey="content"
-                    searchPlaceholder="Filter by content..."
-                  />
+                  <>
+                    <DataTable
+                      columns={columns}
+                      data={allMemories}
+                      searchKey="content"
+                      searchPlaceholder="Filter by content..."
+                    />
+                    {totalCount > PAGE_SIZE && (
+                      <div className="flex items-center justify-between mt-4 pt-4 border-t">
+                        <span className="text-sm text-muted-foreground">
+                          Showing {currentPage * PAGE_SIZE + 1}–{Math.min((currentPage + 1) * PAGE_SIZE, totalCount)} of{' '}
+                          <span className="font-medium text-foreground">{totalCount}</span> memories
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={currentPage === 0}
+                            onClick={() => {
+                              const next = currentPage - 1;
+                              setCurrentPage(next);
+                              fetchAllMemories(dataSource, next);
+                            }}
+                          >
+                            <ChevronLeft className="h-4 w-4 mr-1" />
+                            Previous
+                          </Button>
+                          <span className="text-sm text-muted-foreground">
+                            Page {currentPage + 1} of {Math.ceil(totalCount / PAGE_SIZE)}
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={(currentPage + 1) * PAGE_SIZE >= totalCount}
+                            onClick={() => {
+                              const next = currentPage + 1;
+                              setCurrentPage(next);
+                              fetchAllMemories(dataSource, next);
+                            }}
+                          >
+                            Next
+                            <ChevronRight className="h-4 w-4 ml-1" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </CardContent>
             </Card>
