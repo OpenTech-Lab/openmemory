@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { resolveApiToken } from '@/lib/api-token';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
+const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
 const API_TOKEN = resolveApiToken();
 
 async function proxyAgents(method: string, body?: unknown) {
