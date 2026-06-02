@@ -345,6 +345,130 @@ impl FalkorDbClient {
         Ok(())
     }
 
+    /// Search facts by substring match, optionally filtered by group and validity.
+    pub async fn query_facts(
+        &mut self,
+        query: &str,
+        group_id: Option<&str>,
+        limit: usize,
+        valid_only: bool,
+    ) -> Result<Vec<FactResult>> {
+        let group_filter = group_id
+            .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+        let valid_filter = if valid_only { " AND f.invalid_at IS NULL" } else { "" };
+        let q_escaped = escape_str(query);
+
+        let q = format!(
+            "MATCH (a:Entity)-[f:FACT]->(b:Entity) \
+             WHERE (f.fact CONTAINS \"{q_escaped}\" OR f.name CONTAINS \"{q_escaped}\" \
+                    OR a.name CONTAINS \"{q_escaped}\" OR b.name CONTAINS \"{q_escaped}\") \
+             {group_filter}{valid_filter} \
+             RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
+                    f.valid_at, f.invalid_at, f.episode_id, f.id \
+             ORDER BY f.valid_at DESC \
+             LIMIT {limit}",
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB query_facts failed")?;
+        Ok(parse_fact_rows(result))
+    }
+
+    /// Return all facts that were valid at a specific ISO8601 timestamp.
+    /// Valid = valid_at <= timestamp AND (invalid_at IS NULL OR invalid_at > timestamp)
+    pub async fn query_at(
+        &mut self,
+        timestamp: &str,
+        entity_name: Option<&str>,
+        group_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<FactResult>> {
+        let ts = escape_str(timestamp);
+        let entity_filter = entity_name
+            .map(|n| format!(
+                " AND (a.name = {} OR b.name = {})",
+                escape_option_str(Some(n)),
+                escape_option_str(Some(n))
+            ))
+            .unwrap_or_default();
+        let group_filter = group_id
+            .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+
+        let q = format!(
+            "MATCH (a:Entity)-[f:FACT]->(b:Entity) \
+             WHERE f.valid_at <= \"{ts}\" \
+               AND (f.invalid_at IS NULL OR f.invalid_at > \"{ts}\") \
+               {entity_filter}{group_filter} \
+             RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
+                    f.valid_at, f.invalid_at, f.episode_id, f.id \
+             ORDER BY f.valid_at DESC \
+             LIMIT {limit}",
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB query_at failed")?;
+        Ok(parse_fact_rows(result))
+    }
+
+    /// Return all facts (current and historical) involving an entity by name.
+    pub async fn get_entity_history(
+        &mut self,
+        entity_name: &str,
+        group_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<FactResult>> {
+        let name_esc = escape_str(entity_name);
+        let group_filter = group_id
+            .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
+            .unwrap_or_default();
+
+        // Outgoing facts (entity as subject)
+        let q1 = format!(
+            "MATCH (a:Entity {{name: \"{name_esc}\"}})-[f:FACT]->(b:Entity) \
+             WHERE 1=1{group_filter} \
+             RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
+                    f.valid_at, f.invalid_at, f.episode_id, f.id \
+             ORDER BY f.valid_at DESC \
+             LIMIT {limit}",
+        );
+        let r1: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q1)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB get_entity_history outgoing failed")?;
+        let mut facts = parse_fact_rows(r1);
+
+        // Incoming facts (entity as object)
+        let q2 = format!(
+            "MATCH (a:Entity)-[f:FACT]->(b:Entity {{name: \"{name_esc}\"}}) \
+             WHERE 1=1{group_filter} \
+             RETURN a.name, a.entity_type, f.name, f.fact, b.name, b.entity_type, \
+                    f.valid_at, f.invalid_at, f.episode_id, f.id \
+             ORDER BY f.valid_at DESC \
+             LIMIT {limit}",
+        );
+        let r2: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q2)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB get_entity_history incoming failed")?;
+        facts.extend(parse_fact_rows(r2));
+
+        facts.sort_by(|a, b| b.valid_at.cmp(&a.valid_at));
+        facts.truncate(limit);
+        Ok(facts)
+    }
+
     /// Upsert a memory node and auto-create RELATED_TO edges to nodes sharing ≥1 tag.
     pub async fn save_node(
         &mut self,
@@ -776,4 +900,37 @@ fn parse_count(result: redis::Value) -> u32 {
             _ => None,
         })
         .unwrap_or(0.0) as u32
+}
+
+fn parse_fact_rows(result: redis::Value) -> Vec<FactResult> {
+    let outer = match result {
+        redis::Value::Array(v) => v,
+        _ => return vec![],
+    };
+    let rows = match outer.get(1) {
+        Some(redis::Value::Array(r)) => r,
+        _ => return vec![],
+    };
+    rows.iter().filter_map(|row| {
+        let cols = match row {
+            redis::Value::Array(c) => c,
+            _ => return None,
+        };
+        if cols.len() < 10 { return None; }
+        let invalid_at = extract_string(&cols[7]);
+        let is_current = invalid_at.is_none();
+        Some(FactResult {
+            subject_name: extract_string(&cols[0]).unwrap_or_default(),
+            subject_type: extract_string(&cols[1]).unwrap_or_default(),
+            relationship: extract_string(&cols[2]).unwrap_or_default(),
+            fact: extract_string(&cols[3]).unwrap_or_default(),
+            object_name: extract_string(&cols[4]).unwrap_or_default(),
+            object_type: extract_string(&cols[5]).unwrap_or_default(),
+            valid_at: extract_string(&cols[6]).unwrap_or_default(),
+            invalid_at,
+            episode_id: extract_string(&cols[8]),
+            fact_id: extract_string(&cols[9]).unwrap_or_default(),
+            is_current,
+        })
+    }).collect()
 }
