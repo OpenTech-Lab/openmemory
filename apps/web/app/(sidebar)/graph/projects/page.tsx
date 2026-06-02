@@ -259,9 +259,8 @@ export default function ProjectGraphsPage() {
               Point to a folder that already has a{' '}
               <code>graphify-out/graph.json</code> file. Run{' '}
               <code>/graphify &lt;path&gt;</code> in Claude Code first to generate it.
-              {' '}In Docker, paths are relative to <code>OPENMEMORY_PROJECTS_ROOT</code>{' '}
-              and appear under <code>/projects/</code> (e.g.{' '}
-              <code>/projects/my-repo</code>).
+              {' '}In Docker, set <code>OPENMEMORY_PROJECTS_ROOT=/your/code/dir</code>{' '}
+              when starting the server — paths you enter here must be inside that directory.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

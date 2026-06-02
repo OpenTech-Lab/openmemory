@@ -70,12 +70,17 @@ pub async fn load_graph_json(path: &str) -> Result<(serde_json::Value, String, u
     let canonical = tokio::fs::canonicalize(path).await
         .with_context(|| format!("Path does not exist or is not accessible: {path}"))?;
 
+    // Filter empty string so a misconfigured OPENMEMORY_PROJECTS_ROOT=""
+    // doesn't trivially match every path.
     let allowed_root = std::env::var("OPENMEMORY_PROJECTS_ROOT")
-        .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
     let allowed_path = std::path::Path::new(&allowed_root);
     if !canonical.starts_with(allowed_path) {
         anyhow::bail!(
-            "Path '{}' is outside the allowed projects root '{}'. Set OPENMEMORY_PROJECTS_ROOT to change this.",
+            "Path '{}' is outside the allowed projects root '{}'. \
+             Set OPENMEMORY_PROJECTS_ROOT to the directory containing your projects.",
             canonical.display(),
             allowed_root
         );
