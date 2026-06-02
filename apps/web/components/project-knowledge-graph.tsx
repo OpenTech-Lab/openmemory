@@ -85,8 +85,17 @@ function shouldShowCommunityView(data: GraphifyData, queryResult: GraphQueryResu
 // ─── Community aggregation ────────────────────────────────────────────────────
 
 function buildCommunityGraph(data: GraphifyData): { graph: Graph; nodeMap: Map<string, GraphifyNode> } {
-  const communityGroups = new Map<number, GraphifyNode[]>();
+  const edgeList = data.links ?? data.edges ?? [];
 
+  // Compute degree per node to find each community's most-connected member
+  const degree = new Map<string, number>();
+  for (const e of edgeList) {
+    degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+    degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+  }
+
+  // Group nodes by community
+  const communityGroups = new Map<number, GraphifyNode[]>();
   for (const n of data.nodes ?? []) {
     const cid = n.community ?? 0;
     if (!communityGroups.has(cid)) communityGroups.set(cid, []);
@@ -95,57 +104,59 @@ function buildCommunityGraph(data: GraphifyData): { graph: Graph; nodeMap: Map<s
 
   const graph = new Graph({ multi: false, type: 'undirected' });
   const nodeMap = new Map<string, GraphifyNode>();
+  const nodeToComm = new Map<string, number>();
+  for (const n of data.nodes ?? []) nodeToComm.set(n.id, n.community ?? 0);
 
   for (const [cid, members] of communityGroups) {
     const count = members.length;
     const superNodeId = `community_${cid}`;
-    // Stable seed position based on community id
+
+    // Label: most-connected node's label (most useful name for the cluster)
+    const sorted = [...members].sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
+    const topLabel = sorted[0]?.label ?? `Community ${cid}`;
+    // Show top 3 labels as subtitle so user gets context
+    const subtitle = sorted.slice(0, 3).map(n => n.label ?? n.id).join(', ');
+
     const x = (cid * 37) % 200 - 100;
     const y = (cid * 53) % 200 - 100;
     const size = 8 + Math.min(count * 0.5, 30);
 
-    // Hash-based color for community
-    let h = cid * 2654435761;
-    const colors = Object.values(FILE_TYPE_PALETTE);
-    const color = colors[Math.abs(h) % colors.length];
+    // Color by dominant file_type in the community
+    const ftCounts: Record<string, number> = {};
+    for (const n of members) ftCounts[n.file_type ?? 'unknown'] = (ftCounts[n.file_type ?? 'unknown'] ?? 0) + 1;
+    const dominantFt = Object.entries(ftCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+    const color = fileTypeColor(dominantFt);
+
+    // Store top members (by degree) on the synthetic node for the detail panel
+    const topMembers = sorted.slice(0, 20);
 
     const syntheticNode: GraphifyNode = {
       id: superNodeId,
-      label: `Community ${cid} (${count} nodes)`,
-      file_type: undefined,
+      label: topLabel,
+      file_type: dominantFt,
       community: cid,
+      _count: count,
+      _subtitle: subtitle,
+      _members: topMembers,
     };
 
     nodeMap.set(superNodeId, syntheticNode);
     graph.addNode(superNodeId, {
-      label: `Community ${cid} (${count} nodes)`,
-      x,
-      y,
-      size,
-      color,
+      label: topLabel,
+      x, y, size, color,
       community: cid,
     });
   }
 
-  // Add edges between communities based on cross-community links
-  const edgeList = data.links ?? data.edges ?? [];
-  // Build node → community map
-  const nodeToComm = new Map<string, number>();
-  for (const n of data.nodes ?? []) {
-    nodeToComm.set(n.id, n.community ?? 0);
-  }
-
+  // Cross-community edges
   for (const e of edgeList) {
     const srcComm = nodeToComm.get(e.source);
     const tgtComm = nodeToComm.get(e.target);
-    if (srcComm === undefined || tgtComm === undefined) continue;
-    if (srcComm === tgtComm) continue;
+    if (srcComm === undefined || tgtComm === undefined || srcComm === tgtComm) continue;
     const srcId = `community_${srcComm}`;
     const tgtId = `community_${tgtComm}`;
     if (!graph.hasEdge(srcId, tgtId)) {
-      try {
-        graph.addEdge(srcId, tgtId, { relation: 'inter-community', weight: 1 });
-      } catch { /* ignore */ }
+      try { graph.addEdge(srcId, tgtId, { relation: 'cross-community', weight: 1 }); } catch { /* ignore */ }
     }
   }
 
@@ -334,36 +345,19 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
   }, [buildGraph, labelColor]);
 
   const totalNodeCount = graphData.nodes?.length ?? 0;
-  const isTooBig = shouldShowCommunityView(graphData, queryResult);
-
-  // When the full graph is too large and no query is active, skip the sigma
-  // canvas entirely — community super-nodes with "inter-community" edges are
-  // confusing rather than useful. The search panel below handles exploration.
-  if (isTooBig) {
-    return (
-      <div className="relative w-full h-full flex flex-col items-center justify-center gap-3 text-center px-8">
-        <p className="text-4xl font-bold text-muted-foreground/30">{totalNodeCount.toLocaleString()}</p>
-        <p className="text-sm font-medium">nodes in this graph</p>
-        <p className="text-xs text-muted-foreground max-w-xs">
-          Too large to visualize all at once. Use the search below to explore a subgraph — type a function name, module, or concept.
-        </p>
-        {/* File type legend still useful as reference */}
-        <div className="absolute top-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs space-y-1">
-          {Object.entries(FILE_TYPE_PALETTE).map(([type, color]) => (
-            <div key={type} className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: color }} />
-              <span className="text-muted-foreground capitalize">{type}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
+  const isCommunityViewActive = shouldShowCommunityView(graphData, queryResult);
 
   return (
     <div className="relative w-full h-full">
       {/* Sigma container — full size */}
       <div ref={containerRef} className="w-full h-full" />
+
+      {/* Community view banner */}
+      {isCommunityViewActive && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-background/80 backdrop-blur border rounded px-3 py-1.5 text-xs text-muted-foreground text-center max-w-sm">
+          Showing {stats.nodes} communities of {totalNodeCount.toLocaleString()} total nodes. Click a cluster to see its members, or search below.
+        </div>
+      )}
 
       {/* Stats overlay (bottom-left) */}
       <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs text-muted-foreground">
@@ -405,34 +399,62 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
           {selected.node.source_file && (
             <p className="text-xs text-muted-foreground font-mono mb-3 truncate">{selected.node.source_file}</p>
           )}
-          {selected.outgoing.length > 0 && (
-            <div className="mb-3">
-              <p className="text-xs font-medium text-muted-foreground mb-1">Outgoing ({selected.outgoing.length})</p>
-              <ul className="space-y-1">
-                {selected.outgoing.slice(0, 10).map((e, i) => (
-                  <li key={i} className="text-xs">
-                    <span className="text-muted-foreground">{e.relation || '→'}</span>{' '}
-                    <span className="font-medium truncate">{e.targetLabel}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {selected.incoming.length > 0 && (
+
+          {/* Community super-node: show top members instead of inter-community edges */}
+          {selected.node._members ? (
             <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1">Incoming ({selected.incoming.length})</p>
+              <p className="text-xs font-medium text-muted-foreground mb-1">
+                Top members ({(selected.node._count as number) ?? 0} total)
+              </p>
               <ul className="space-y-1">
-                {selected.incoming.slice(0, 10).map((e, i) => (
-                  <li key={i} className="text-xs">
-                    <span className="font-medium truncate">{e.sourceLabel}</span>{' '}
-                    <span className="text-muted-foreground">{e.relation || '→'}</span>
+                {(selected.node._members as GraphifyNode[]).map((m) => (
+                  <li key={m.id} className="text-xs flex items-center gap-1.5">
+                    {m.file_type && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0 inline-block"
+                        style={{ backgroundColor: fileTypeColor(m.file_type) }}
+                      />
+                    )}
+                    <span className="font-medium truncate">{m.label ?? m.id}</span>
+                    {m.source_file && (
+                      <span className="text-muted-foreground truncate font-mono text-[10px]">{m.source_file}</span>
+                    )}
                   </li>
                 ))}
               </ul>
             </div>
-          )}
-          {selected.outgoing.length === 0 && selected.incoming.length === 0 && (
-            <p className="text-xs text-muted-foreground">No connections recorded for this node.</p>
+          ) : (
+            <>
+              {selected.outgoing.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Outgoing ({selected.outgoing.length})</p>
+                  <ul className="space-y-1">
+                    {selected.outgoing.slice(0, 10).map((e, i) => (
+                      <li key={i} className="text-xs">
+                        <span className="text-muted-foreground">{e.relation || '→'}</span>{' '}
+                        <span className="font-medium truncate">{e.targetLabel}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {selected.incoming.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Incoming ({selected.incoming.length})</p>
+                  <ul className="space-y-1">
+                    {selected.incoming.slice(0, 10).map((e, i) => (
+                      <li key={i} className="text-xs">
+                        <span className="font-medium truncate">{e.sourceLabel}</span>{' '}
+                        <span className="text-muted-foreground">{e.relation || '→'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {selected.outgoing.length === 0 && selected.incoming.length === 0 && (
+                <p className="text-xs text-muted-foreground">No connections recorded for this node.</p>
+              )}
+            </>
           )}
         </div>
       )}
