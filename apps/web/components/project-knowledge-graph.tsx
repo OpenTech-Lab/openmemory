@@ -365,13 +365,6 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
       {/* Sigma container — full size */}
       <div ref={containerRef} className="w-full h-full" />
 
-      {/* Community view banner */}
-      {isCommunityViewActive && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-background/80 backdrop-blur border rounded px-3 py-1.5 text-xs text-muted-foreground text-center max-w-sm">
-          Showing {stats.nodes} communities of {totalNodeCount.toLocaleString()} total nodes. Click a cluster to see its members, or search below.
-        </div>
-      )}
-
       {/* Stats overlay (bottom-left) */}
       <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs text-muted-foreground">
         {stats.nodes.toLocaleString()} nodes · {stats.edges.toLocaleString()} edges
