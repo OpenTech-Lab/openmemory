@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -642,6 +643,93 @@ impl FalkorDbClient {
         Ok(())
     }
 
+    /// Atomically upsert an Entity node using MERGE on (canonical_name, entity_type, group_id).
+    /// Creates if absent; updates summary/display_name if present.
+    /// Returns the entity's id string.
+    pub async fn merge_entity(
+        &mut self,
+        new_id: Uuid,
+        canonical_name: &str,
+        display_name: &str,
+        entity_type: &str,
+        group_id: &str,
+        summary: Option<&str>,
+        created_at: &str,
+    ) -> Result<String> {
+        let name_lit = escape_option_str(Some(canonical_name));
+        let display_lit = escape_option_str(Some(display_name));
+        let etype_lit = escape_option_str(Some(entity_type));
+        let gid_lit = escape_option_str(Some(group_id));
+        let summary_lit = escape_option_str(summary);
+        let created_lit = escape_option_str(Some(created_at));
+
+        let q = format!(
+            "MERGE (n:Entity {{name: {name_lit}, entity_type: {etype_lit}, group_id: {gid_lit}}}) \
+             ON CREATE SET n.id = \"{new_id}\", n.display_name = {display_lit}, \
+                           n.summary = {summary_lit}, n.created_at = {created_lit} \
+             ON MATCH SET n.display_name = COALESCE({display_lit}, n.display_name), \
+                          n.summary = COALESCE({summary_lit}, n.summary) \
+             RETURN n.id AS id",
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB merge_entity failed")?;
+
+        Ok(parse_first_string(result).unwrap_or_else(|| new_id.to_string()))
+    }
+
+    /// Upsert a FACT edge between two entities using a deterministic fingerprint
+    /// (SHA-256 of subject|subject_type|object|object_type|relation|group_id).
+    /// Safe to call multiple times for the same logical fact — won't duplicate.
+    pub async fn merge_extracted_fact(
+        &mut self,
+        subject_name: &str,
+        subject_type: &str,
+        object_name: &str,
+        object_type: &str,
+        relation: &str,
+        fact: &str,
+        group_id: &str,
+        episode_id: Option<&str>,
+        created_at: &str,
+    ) -> Result<()> {
+        let fingerprint = fact_fingerprint(subject_name, subject_type, object_name, object_type, relation, group_id);
+        let new_id = Uuid::new_v4();
+        let valid_at = normalize_ts(created_at);
+
+        let sname_lit = escape_option_str(Some(subject_name));
+        let stype_lit = escape_option_str(Some(subject_type));
+        let oname_lit = escape_option_str(Some(object_name));
+        let otype_lit = escape_option_str(Some(object_type));
+        let gid_lit = escape_option_str(Some(group_id));
+        let rel_lit = escape_option_str(Some(relation));
+        let fact_lit = escape_option_str(Some(fact));
+        let ep_lit = escape_option_str(episode_id);
+        let valid_lit = escape_option_str(Some(&valid_at));
+        let created_lit = escape_option_str(Some(created_at));
+
+        let q = format!(
+            "MATCH (a:Entity {{name: {sname_lit}, entity_type: {stype_lit}, group_id: {gid_lit}}}), \
+                   (b:Entity {{name: {oname_lit}, entity_type: {otype_lit}, group_id: {gid_lit2}}}) \
+             MERGE (a)-[f:FACT {{fingerprint: \"{fingerprint}\"}}]->(b) \
+             ON CREATE SET f.id = \"{new_id}\", f.name = {rel_lit}, f.fact = {fact_lit}, \
+                           f.valid_at = {valid_lit}, f.created_at = {created_lit}, \
+                           f.episode_id = {ep_lit}, f.invalid_at = null \
+             ON MATCH SET f.fact = {fact_lit}, f.valid_at = {valid_lit}",
+            gid_lit2 = gid_lit,
+        );
+        redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async::<redis::Value>(&mut self.conn)
+            .await
+            .context("FalkorDB merge_extracted_fact failed")?;
+        Ok(())
+    }
+
     /// Remove a memory node and all its edges.
     pub async fn delete_node(&mut self, id: Uuid) -> Result<()> {
         let q = format!("MATCH (m:Memory {{id: \"{id}\"}}) DETACH DELETE m");
@@ -705,7 +793,13 @@ impl FalkorDbClient {
             .query_async(&mut self.conn)
             .await
             .context("FalkorDB get_graph_data entities failed")?;
-        let entities = parse_entity_rows(ent_result);
+        // Deduplicate by canonical name: keep first occurrence per name to prevent
+        // the graph visualizer from crashing on duplicate node IDs.
+        let mut seen_names = std::collections::HashSet::new();
+        let entities: Vec<EntityInfo> = parse_entity_rows(ent_result)
+            .into_iter()
+            .filter(|e| seen_names.insert(e.name.clone()))
+            .collect();
 
         let q_facts = format!(
             "MATCH (a:Entity)-[f:FACT]->(b:Entity) \
@@ -819,6 +913,29 @@ fn cypher_string_list(tags: &[String]) -> String {
         .map(|t| format!("\"{}\"", escape_str(t)))
         .collect();
     format!("[{}]", items.join(", "))
+}
+
+fn fact_fingerprint(
+    subject: &str,
+    subject_type: &str,
+    object: &str,
+    object_type: &str,
+    relation: &str,
+    group_id: &str,
+) -> String {
+    let mut h = Sha256::new();
+    h.update(subject);
+    h.update("|");
+    h.update(subject_type);
+    h.update("|");
+    h.update(object);
+    h.update("|");
+    h.update(object_type);
+    h.update("|");
+    h.update(relation);
+    h.update("|");
+    h.update(group_id);
+    format!("{:x}", h.finalize())
 }
 
 fn parse_edge_rows(result: redis::Value) -> Vec<EdgeInfo> {

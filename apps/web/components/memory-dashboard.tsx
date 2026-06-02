@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ import { type KnowledgeEntity, type KnowledgeFact } from '@/components/knowledge
 import { EnvParamsPanel } from '@/components/env-params-panel';
 import { AgentSettings } from '@/components/agent-settings';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { GraphLlmSettings } from '@/components/graph-llm-settings';
 
 const KnowledgeGraph = dynamic(() => import('@/components/knowledge-graph').then((m) => m.KnowledgeGraph), {
   ssr: false,
@@ -78,6 +79,10 @@ export function MemoryDashboard() {
   const [graphFacts, setGraphFacts] = useState<KnowledgeFact[]>([]);
   const [showHistorical, setShowHistorical] = useState(true);
   const [isGraphLoading, setIsGraphLoading] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeResult, setAnalyzeResult] = useState<{ processed: number; entities: number; facts: number; errors: number } | null>(null);
+  const [llmConfigured, setLlmConfigured] = useState(false);
+  const [showLlmSettings, setShowLlmSettings] = useState(false);
 
   // Sessions state
   interface Session {
@@ -179,6 +184,44 @@ export function MemoryDashboard() {
       setGraphFacts([]);
     } finally {
       setIsGraphLoading(false);
+    }
+  };
+
+  const checkLlmConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'graph.get_llm_config' }),
+      });
+      const data = await res.json();
+      setLlmConfigured(data.configured === true);
+    } catch {
+      setLlmConfigured(false);
+    }
+  }, []);
+
+  const handleAnalyzeAll = async () => {
+    setIsAnalyzing(true);
+    setAnalyzeResult(null);
+    try {
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'graph.analyze_all', limit: 50 }),
+      });
+      const data = await res.json();
+      setAnalyzeResult({
+        processed: data.processed ?? 0,
+        entities: data.entities_created ?? 0,
+        facts: data.facts_created ?? 0,
+        errors: data.errors ?? 0,
+      });
+      fetchGraphData();
+    } catch {
+      setAnalyzeResult(null);
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -344,8 +387,9 @@ export function MemoryDashboard() {
       fetchAllMemories(dataSource, 0);
     } else if (activeTab === 'graph') {
       fetchGraphData();
+      checkLlmConfig();
     }
-  }, [activeTab, dataSource]);
+  }, [activeTab, dataSource, checkLlmConfig]);
 
   return (
     <div className="flex flex-col h-full">
@@ -589,6 +633,24 @@ export function MemoryDashboard() {
                     <Button
                       variant="outline"
                       size="sm"
+                      onClick={() => setShowLlmSettings(v => !v)}
+                    >
+                      <Settings2 className="h-4 w-4 mr-2" />
+                      {showLlmSettings ? 'Hide LLM Settings' : 'LLM Settings'}
+                    </Button>
+                    <Button
+                      variant={llmConfigured ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={handleAnalyzeAll}
+                      disabled={isAnalyzing || !llmConfigured}
+                      title={!llmConfigured ? 'Configure LLM provider first' : undefined}
+                    >
+                      <GitBranch className="h-4 w-4 mr-2" />
+                      {isAnalyzing ? 'Analyzing…' : 'Build from Memories'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={fetchGraphData}
                       disabled={isGraphLoading}
                     >
@@ -599,6 +661,23 @@ export function MemoryDashboard() {
                 </div>
               </CardHeader>
               <CardContent>
+                {showLlmSettings && (
+                  <div className="mb-4">
+                    <GraphLlmSettings
+                      onSaved={() => {
+                        setLlmConfigured(true);
+                        setShowLlmSettings(false);
+                        checkLlmConfig();
+                      }}
+                    />
+                  </div>
+                )}
+                {analyzeResult && (
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    Last build: {analyzeResult.processed} memories processed → {analyzeResult.entities} entities, {analyzeResult.facts} facts added
+                    {analyzeResult.errors > 0 && ` (${analyzeResult.errors} errors)`}
+                  </p>
+                )}
                 {isGraphLoading ? (
                   <div className="flex h-[580px] items-center justify-center rounded-lg border bg-slate-950 text-sm text-muted-foreground">
                     <RefreshCw className="mr-2 h-5 w-5 animate-spin" />
@@ -610,6 +689,13 @@ export function MemoryDashboard() {
                     facts={graphFacts}
                     showHistorical={showHistorical}
                   />
+                )}
+                {!isGraphLoading && graphEntities.length === 0 && !showLlmSettings && (
+                  <p className="mt-3 text-center text-sm text-muted-foreground">
+                    {llmConfigured
+                      ? 'No graph data yet. Click "Build from Memories" to extract entities from your memories.'
+                      : 'Configure an LLM provider via "LLM Settings" to enable automatic knowledge graph extraction.'}
+                  </p>
                 )}
               </CardContent>
             </Card>

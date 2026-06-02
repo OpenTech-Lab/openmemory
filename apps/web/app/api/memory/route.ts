@@ -11,9 +11,13 @@ export async function POST(request: Request) {
       'Content-Type': 'application/json',
     };
 
-    // Inject auth token only for env.get — the only endpoint that checks it (secret reads).
-    // Write ops (env.set, env.delete, env.list) are intentionally open; no token needed.
-    if (body?.type === 'env.get') {
+    // Endpoints that require Bearer auth on the backend
+    const AUTH_REQUIRED = new Set([
+      'env.get',
+      'graph.set_llm_config',
+      'graph.analyze_all',
+    ]);
+    if (body?.type && AUTH_REQUIRED.has(body.type)) {
       headers['Authorization'] = `Bearer ${API_TOKEN}`;
     }
 

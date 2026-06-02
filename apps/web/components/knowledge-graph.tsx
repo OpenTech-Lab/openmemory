@@ -89,9 +89,18 @@ export function KnowledgeGraph({ entities, facts, showHistorical }: Props) {
 
     const graph = new Graph({ multi: true, type: 'directed' });
 
+    // Deduplicate by name (keep first occurrence per canonical name) to prevent
+    // graphology from throwing when the same entity name appears with different types.
+    const seen = new Set<string>();
+    const uniqueEntities = entities.filter(e => {
+      if (seen.has(e.name)) return false;
+      seen.add(e.name);
+      return true;
+    });
+
     // Build entity name → entity map for fast lookup
     const entityByName = new Map<string, KnowledgeEntity>();
-    for (const e of entities) {
+    for (const e of uniqueEntities) {
       entityByName.set(e.name, e);
       graph.addNode(e.name, {
         label: e.name,
@@ -148,7 +157,7 @@ export function KnowledgeGraph({ entities, facts, showHistorical }: Props) {
     });
 
     setStats({ nodes: graph.order, edges: graph.size, historical: historicalCount });
-    return { graph, entityByName };
+    return { graph, entityByName, uniqueEntities };
   }, [entities, facts, showHistorical, currentColor, historicalColor]);
 
   useEffect(() => {
@@ -183,6 +192,8 @@ export function KnowledgeGraph({ entities, facts, showHistorical }: Props) {
   }, [buildGraph, facts, showHistorical, labelColor]);
 
   const entityTypes = Array.from(new Set(entities.map(e => e.entity_type))).sort();
+  // deduplicated count for display (may differ from entities.length if types conflict)
+  const uniqueCount = new Set(entities.map(e => e.name)).size;
 
   return (
     <div className="flex gap-4">

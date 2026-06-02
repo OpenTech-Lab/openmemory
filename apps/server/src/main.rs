@@ -1,5 +1,6 @@
 mod crypto;
 mod falkordb;
+mod llm;
 
 use openmemory_server::run_session_migrations;
 
@@ -506,6 +507,25 @@ enum McpRequest {
         limit: Option<usize>,
     },
 
+    #[serde(rename = "graph.analyze_all")]
+    GraphAnalyzeAll {
+        #[serde(default)]
+        user_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    #[serde(rename = "graph.get_llm_config")]
+    GraphGetLlmConfig {},
+
+    #[serde(rename = "graph.set_llm_config")]
+    GraphSetLlmConfig {
+        provider: String,
+        model: String,
+        #[serde(default)]
+        api_key: Option<String>,
+    },
+
     #[serde(rename = "env.set")]
     EnvSet {
         key: String,
@@ -633,6 +653,24 @@ enum McpResponse {
         entities: Vec<falkordb::EntityInfo>,
         facts: Vec<falkordb::FactResult>,
     },
+
+    #[serde(rename = "graph.analyze_all.result")]
+    GraphAnalyzeAllResult {
+        processed: usize,
+        entities_created: usize,
+        facts_created: usize,
+        errors: usize,
+    },
+
+    #[serde(rename = "graph.get_llm_config.result")]
+    GraphGetLlmConfigResult {
+        provider: String,
+        model: String,
+        configured: bool,
+    },
+
+    #[serde(rename = "graph.set_llm_config.result")]
+    GraphSetLlmConfigResult { provider: String },
 
     #[serde(rename = "env.set.result")]
     EnvSetResult { key: String },
@@ -889,6 +927,14 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .execute(db)
         .await
         .ok();
+
+    // Add graph_analyzed_at column if not present (tracks which memories have been LLM-extracted)
+    sqlx::query(
+        "ALTER TABLE memory_index ADD COLUMN IF NOT EXISTS graph_analyzed_at TIMESTAMPTZ",
+    )
+    .execute(db)
+    .await
+    .ok();
 
     info!("PostgreSQL migrations complete");
     run_session_migrations(db).await?;
@@ -1261,7 +1307,7 @@ async fn mcp(
                 ));
             }
 
-            // 3. Save graph node (non-blocking — failure is logged, not fatal)
+            // 3. Save graph node + LLM entity extraction (non-blocking — failure is logged, not fatal)
             if let Some(fdb) = &state.falkordb {
                 let mut fdb = fdb.clone();
                 let (id_c, uid_c, sum_c, tags_c, ts) = (
@@ -1277,6 +1323,23 @@ async fn mcp(
                         .await
                     {
                         warn!("FalkorDB save_node failed: {e}");
+                    }
+                });
+            }
+
+            // 4. LLM entity/fact extraction (non-blocking — runs if LLM is configured)
+            if let Some(mut fdb_c) = state.falkordb.clone() {
+                let db_c = state.db.clone();
+                let ek_c = state.encryption_key;
+                let content_c = content.clone();
+                let uid_c = user_id.clone();
+                tokio::spawn(async move {
+                    if let Some(cfg) = load_llm_config(&db_c, &ek_c).await {
+                        let (entities, facts) =
+                            analyze_and_upsert(&content_c, id, uid_c.as_deref(), &mut fdb_c, &db_c, &cfg).await;
+                        if entities > 0 || facts > 0 {
+                            info!("graph extraction: {entities} entities, {facts} facts from memory {id}");
+                        }
                     }
                 });
             }
@@ -1962,6 +2025,16 @@ async fn mcp(
         }
 
         McpRequest::EnvSet { key, value, is_secret, description } => {
+            // Prevent unauthenticated callers from overwriting LLM config keys,
+            // which would bypass the auth gate on graph.set_llm_config.
+            const LLM_RESERVED: &[&str] = &["GRAPH_LLM_PROVIDER", "GRAPH_LLM_API_KEY", "GRAPH_LLM_MODEL"];
+            if LLM_RESERVED.contains(&key.as_str()) && !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"error": "authentication required to set LLM config keys"})),
+                ));
+            }
+
             let is_secret = is_secret.unwrap_or(false);
             let encrypted = encrypt_value(&state.encryption_key, &value);
             let now = Utc::now();
@@ -2070,7 +2143,377 @@ async fn mcp(
                 }
             }
         }
+
+        McpRequest::GraphGetLlmConfig {} => {
+            let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+                "SELECT key, value_encrypted FROM env_params \
+                 WHERE key IN ('GRAPH_LLM_PROVIDER', 'GRAPH_LLM_API_KEY', 'GRAPH_LLM_MODEL')",
+            )
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| {
+                error!("GraphGetLlmConfig DB error: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Database error"})))
+            })?;
+
+            let mut provider = "openrouter".to_string();
+            let mut model: Option<String> = None;
+            let mut configured = false;
+
+            for (key, encrypted) in rows {
+                match decrypt_value(&state.encryption_key, &encrypted) {
+                    Ok(val) => match key.as_str() {
+                        "GRAPH_LLM_PROVIDER" => provider = val,
+                        "GRAPH_LLM_MODEL" => model = Some(val),
+                        "GRAPH_LLM_API_KEY" => configured = !val.is_empty(),
+                        _ => {}
+                    },
+                    Err(_) => {}
+                }
+            }
+
+            let model = model.unwrap_or_else(|| match provider.as_str() {
+                "anthropic" => "claude-haiku-4-5-20251001".to_string(),
+                "openai" => "gpt-4o-mini".to_string(),
+                _ => "anthropic/claude-haiku-4".to_string(),
+            });
+
+            Ok((
+                StatusCode::OK,
+                Json(McpResponse::GraphGetLlmConfigResult { provider, model, configured }),
+            ))
+        }
+
+        McpRequest::GraphSetLlmConfig { provider, model, api_key } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            let now = Utc::now();
+            let upsert = |key: &str, val: &str, secret: bool| {
+                let encrypted = encrypt_value(&state.encryption_key, val);
+                sqlx::query(
+                    "INSERT INTO env_params (key, value_encrypted, is_secret, updated_at) \
+                     VALUES ($1, $2, $3, $4) \
+                     ON CONFLICT (key) DO UPDATE SET \
+                         value_encrypted = EXCLUDED.value_encrypted, \
+                         is_secret = EXCLUDED.is_secret, \
+                         updated_at = EXCLUDED.updated_at",
+                )
+                .bind(key.to_string())
+                .bind(encrypted)
+                .bind(secret)
+                .bind(now)
+            };
+
+            upsert("GRAPH_LLM_PROVIDER", &provider, false)
+                .execute(&state.db)
+                .await
+                .map_err(|e| {
+                    error!("Failed to save GRAPH_LLM_PROVIDER: {e}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"DB error"})))
+                })?;
+
+            upsert("GRAPH_LLM_MODEL", &model, false)
+                .execute(&state.db)
+                .await
+                .map_err(|e| {
+                    error!("Failed to save GRAPH_LLM_MODEL: {e}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"DB error"})))
+                })?;
+
+            if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+                upsert("GRAPH_LLM_API_KEY", &key, true)
+                    .execute(&state.db)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to save GRAPH_LLM_API_KEY: {e}");
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"DB error"})))
+                    })?;
+            }
+
+            Ok((StatusCode::OK, Json(McpResponse::GraphSetLlmConfigResult { provider })))
+        }
+
+        McpRequest::GraphAnalyzeAll { user_id, limit } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            let cfg = match load_llm_config(&state.db, &state.encryption_key).await {
+                Some(c) => c,
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                    ));
+                }
+            };
+
+            let fdb = match &state.falkordb {
+                Some(f) => f.clone(),
+                None => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({"error": "FalkorDB not connected"})),
+                    ));
+                }
+            };
+
+            let limit = limit.unwrap_or(50).clamp(1, 200);
+
+            // Fetch IDs of memories not yet analyzed, optionally scoped to a user
+            let unanalyzed: Vec<(Uuid, Option<String>)> = if let Some(ref uid) = user_id {
+                sqlx::query_as(
+                    "SELECT id, user_id FROM memory_index \
+                     WHERE graph_analyzed_at IS NULL AND user_id = $1 \
+                     ORDER BY created_at DESC LIMIT $2",
+                )
+                .bind(uid)
+                .bind(limit as i64)
+                .fetch_all(&state.db)
+                .await
+            } else {
+                sqlx::query_as(
+                    "SELECT id, user_id FROM memory_index \
+                     WHERE graph_analyzed_at IS NULL \
+                     ORDER BY created_at DESC LIMIT $1",
+                )
+                .bind(limit as i64)
+                .fetch_all(&state.db)
+                .await
+            }
+            .map_err(|e| {
+                error!("GraphAnalyzeAll DB query failed: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Database error"})))
+            })?;
+
+            let total = unanalyzed.len();
+            let mut processed = 0usize;
+            let mut total_entities = 0usize;
+            let mut total_facts = 0usize;
+            let mut errors = 0usize;
+
+            for (mem_id, mem_user_id) in unanalyzed {
+                match state.opensearch.get_document(&mem_id.to_string()).await {
+                    Ok(Some(doc)) => {
+                        let mut fdb_c = fdb.clone();
+                        let (e, f) = analyze_and_upsert(
+                            &doc.content,
+                            mem_id,
+                            mem_user_id.as_deref(),
+                            &mut fdb_c,
+                            &state.db,
+                            &cfg,
+                        )
+                        .await;
+                        total_entities += e;
+                        total_facts += f;
+                        processed += 1;
+                    }
+                    Ok(None) => {
+                        // Document missing from OpenSearch — mark as analyzed to skip on next run
+                        let _ = sqlx::query(
+                            "UPDATE memory_index SET graph_analyzed_at = NOW() WHERE id = $1",
+                        )
+                        .bind(mem_id)
+                        .execute(&state.db)
+                        .await;
+                        processed += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch document {mem_id} from OpenSearch: {e}");
+                        errors += 1;
+                    }
+                }
+            }
+
+            info!(
+                "graph.analyze_all: {processed}/{total} processed, {total_entities} entities, \
+                 {total_facts} facts, {errors} errors"
+            );
+
+            Ok((
+                StatusCode::OK,
+                Json(McpResponse::GraphAnalyzeAllResult {
+                    processed,
+                    entities_created: total_entities,
+                    facts_created: total_facts,
+                    errors,
+                }),
+            ))
+        }
     }
+}
+
+async fn load_llm_config(db: &PgPool, encryption_key: &[u8; 32]) -> Option<llm::LlmConfig> {
+    let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT key, value_encrypted FROM env_params \
+         WHERE key IN ('GRAPH_LLM_PROVIDER', 'GRAPH_LLM_API_KEY', 'GRAPH_LLM_MODEL')",
+    )
+    .fetch_all(db)
+    .await
+    .ok()?;
+
+    let mut provider = "openrouter".to_string();
+    let mut api_key: Option<String> = None;
+    let mut model: Option<String> = None;
+
+    for (key, encrypted) in rows {
+        match decrypt_value(encryption_key, &encrypted) {
+            Ok(val) => match key.as_str() {
+                "GRAPH_LLM_PROVIDER" => provider = val,
+                "GRAPH_LLM_API_KEY" => api_key = Some(val),
+                "GRAPH_LLM_MODEL" => model = Some(val),
+                _ => {}
+            },
+            Err(e) => warn!("Failed to decrypt {key}: {e}"),
+        }
+    }
+
+    let api_key = api_key?;
+    let model = model.unwrap_or_else(|| match provider.as_str() {
+        "anthropic" => "claude-haiku-4-5-20251001".to_string(),
+        "openai" => "gpt-4o-mini".to_string(),
+        _ => "anthropic/claude-haiku-4".to_string(),
+    });
+
+    Some(llm::LlmConfig { provider, api_key, model })
+}
+
+async fn analyze_and_upsert(
+    content: &str,
+    memory_id: Uuid,
+    user_id: Option<&str>,
+    fdb: &mut FalkorDbClient,
+    db: &PgPool,
+    cfg: &llm::LlmConfig,
+) -> (usize, usize) {
+    let extraction = llm::extract_graph(content, cfg).await;
+
+    let group_id = user_id.unwrap_or("default");
+    let now = Utc::now().to_rfc3339();
+    let mut entity_count = 0usize;
+    let mut fact_count = 0usize;
+
+    // Create an Episode node for provenance tracking
+    let episode_id = Uuid::new_v4();
+    let episode_id_str = episode_id.to_string();
+    let episode_name: String = content.chars().take(120).collect();
+    let content_preview: String = content.chars().take(1000).collect();
+    if let Err(e) = fdb
+        .add_episode(
+            episode_id,
+            &episode_name,
+            "memory",
+            "LLM-extracted memory",
+            &content_preview,
+            group_id,
+            &now,
+            &now,
+        )
+        .await
+    {
+        warn!("Episode creation failed (continuing without provenance): {e}");
+    }
+
+    // Build a canonical_name → entity_type map so facts use the same type as their entities,
+    // preventing duplicate Entity nodes from type disagreements between the entities and facts lists.
+    let entity_type_map: std::collections::HashMap<String, String> = extraction
+        .entities
+        .iter()
+        .map(|e| (e.canonical_name.clone(), e.entity_type.clone()))
+        .collect();
+
+    for entity in &extraction.entities {
+        match fdb
+            .merge_entity(
+                Uuid::new_v4(),
+                &entity.canonical_name,
+                &entity.display_name,
+                &entity.entity_type,
+                group_id,
+                entity.summary.as_deref(),
+                &now,
+            )
+            .await
+        {
+            Ok(_) => entity_count += 1,
+            Err(e) => warn!("merge_entity '{}' failed: {e}", entity.canonical_name),
+        }
+    }
+
+    for fact in &extraction.facts {
+        // Use entity_type from the extracted entity list when available; fall back to fact's own type.
+        let subj_type = entity_type_map
+            .get(&fact.subject)
+            .map(|s| s.as_str())
+            .unwrap_or(&fact.subject_type);
+        let obj_type = entity_type_map
+            .get(&fact.object)
+            .map(|s| s.as_str())
+            .unwrap_or(&fact.object_type);
+
+        // Ensure both endpoint entities exist before creating the fact edge
+        let _ = fdb
+            .merge_entity(
+                Uuid::new_v4(),
+                &fact.subject,
+                &fact.subject,
+                subj_type,
+                group_id,
+                None,
+                &now,
+            )
+            .await;
+        let _ = fdb
+            .merge_entity(
+                Uuid::new_v4(),
+                &fact.object,
+                &fact.object,
+                obj_type,
+                group_id,
+                None,
+                &now,
+            )
+            .await;
+
+        match fdb
+            .merge_extracted_fact(
+                &fact.subject,
+                subj_type,
+                &fact.object,
+                obj_type,
+                &fact.relation,
+                &fact.fact,
+                group_id,
+                Some(&episode_id_str),
+                &now,
+            )
+            .await
+        {
+            Ok(_) => fact_count += 1,
+            Err(e) => warn!("merge_extracted_fact failed: {e}"),
+        }
+    }
+
+    // Only mark as analyzed when the LLM call itself succeeded (even if no entities found).
+    // Transport errors (network, auth, rate-limit) leave graph_analyzed_at NULL so the
+    // memory gets retried on the next analyze_all run.
+    if extraction.ok {
+        let _ = sqlx::query("UPDATE memory_index SET graph_analyzed_at = NOW() WHERE id = $1")
+            .bind(memory_id)
+            .execute(db)
+            .await;
+    }
+
+    (entity_count, fact_count)
 }
 
 fn compute_combined_score(importance: f32, created_at: DateTime<Utc>) -> f32 {
