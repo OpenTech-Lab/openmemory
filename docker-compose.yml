@@ -97,9 +97,13 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${OPENMEMORY_PORT:-8080}:8080"
+      - "127.0.0.1:${OPENMEMORY_PORT:-8080}:8080"
+    # Project graphs: mount the directory you want to index at /projects (read-only).
+    # Set OPENMEMORY_PROJECTS_ROOT to a specific folder (e.g. ~/code), not $HOME.
+    # Mounting $HOME exposes .ssh, credentials, and every repo — avoid it.
+    # Example: OPENMEMORY_PROJECTS_ROOT=/home/user/code docker compose --profile api up -d
     volumes:
-      - ${HOME}:${HOME}:ro
+      - ${OPENMEMORY_PROJECTS_ROOT:-./projects}:/projects:ro
     environment:
       OPENMEMORY_HOST: "0.0.0.0"
       DATABASE_URL: postgres://openmemory:openmemory@postgres:5432/openmemory
@@ -108,7 +112,7 @@ services:
       FALKORDB_URL: redis://falkordb:6379
       OPENMEMORY_SECRET_KEY: ${OPENMEMORY_SECRET_KEY:-dev-secret-key-change-me}
       OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
-      OPENMEMORY_PROJECTS_ROOT: ${HOME}
+      OPENMEMORY_PROJECTS_ROOT: /projects
     depends_on:
       postgres:
         condition: service_healthy
