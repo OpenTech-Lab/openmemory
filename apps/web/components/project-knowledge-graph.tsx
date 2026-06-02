@@ -84,7 +84,7 @@ function shouldShowCommunityView(data: GraphifyData, queryResult: GraphQueryResu
 
 // ─── Community aggregation ────────────────────────────────────────────────────
 
-function buildCommunityGraph(data: GraphifyData): { graph: Graph; nodeMap: Map<string, GraphifyNode> } {
+function buildCommunityGraph(data: GraphifyData, borderColor: string): { graph: Graph; nodeMap: Map<string, GraphifyNode> } {
   const edgeList = data.links ?? data.edges ?? [];
 
   // Compute degree per node to find each community's most-connected member
@@ -119,7 +119,7 @@ function buildCommunityGraph(data: GraphifyData): { graph: Graph; nodeMap: Map<s
 
     const x = (cid * 37) % 200 - 100;
     const y = (cid * 53) % 200 - 100;
-    const size = 8 + Math.min(count * 0.5, 30);
+    const size = 4 + Math.min(count * 0.25, 14);
 
     // Color by dominant file_type in the community
     const ftCounts: Record<string, number> = {};
@@ -145,6 +145,8 @@ function buildCommunityGraph(data: GraphifyData): { graph: Graph; nodeMap: Map<s
       label: topLabel,
       x, y, size, color,
       community: cid,
+      borderColor,
+      borderSize: 0.15,
     });
   }
 
@@ -196,8 +198,10 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
           label: n.label ?? n.id,
           x: Math.random() * 200 - 100,
           y: Math.random() * 200 - 100,
-          size: isSeed ? 12 : 6,
+          size: isSeed ? 6 : 3,
           color: isSeed ? '#facc15' : fileTypeColor(n.file_type),
+          borderColor: isDark ? '#ffffff' : '#000000',
+          borderSize: 0.2,
           file_type: n.file_type,
           community: n.community,
           source_file: n.source_file,
@@ -218,7 +222,7 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
 
     // Community view: if full graph exceeds cap
     if (shouldShowCommunityView(graphData, queryResult)) {
-      const { graph: g, nodeMap } = buildCommunityGraph(graphData);
+      const { graph: g, nodeMap } = buildCommunityGraph(graphData, isDark ? '#ffffff' : '#000000');
       const edgeList: GraphifyEdge[] = [];
       g.edges().forEach(edgeId => {
         const [source, target] = g.extremities(edgeId);
@@ -238,8 +242,10 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
         label: n.label ?? n.id,
         x: Math.random() * 200 - 100,
         y: Math.random() * 200 - 100,
-        size: 6,
+        size: 3,
         color: fileTypeColor(n.file_type),
+        borderColor: isDark ? '#ffffff' : '#000000',
+        borderSize: 0.2,
         file_type: n.file_type,
         community: n.community,
         source_file: n.source_file,
