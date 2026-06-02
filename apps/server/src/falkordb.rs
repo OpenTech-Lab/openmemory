@@ -550,13 +550,15 @@ impl FalkorDbClient {
 
         if !tags.is_empty() {
             // Only connect memories belonging to the same tenant.
-            // Cypher: NULL = NULL is NULL (falsy), so we must handle the null-user case explicitly.
+            // FalkorDB bug: ANY() predicate in WHERE is silently dropped in cross-join queries;
+            // use list comprehension + size() in a WITH clause instead. MERGE is idempotent
+            // so we skip the NOT (a)-[:RELATED_TO]-(b) anti-pattern guard.
             let q2 = format!(
                 "MATCH (a:Memory {{id: \"{id}\"}}), (b:Memory) \
                  WHERE b.id <> \"{id}\" \
-                   AND ANY(t IN a.tags WHERE t IN b.tags) \
                    AND (a.user_id = b.user_id OR (a.user_id IS NULL AND b.user_id IS NULL)) \
-                   AND NOT (a)-[:RELATED_TO]-(b) \
+                 WITH a, b, [t IN a.tags WHERE t IN b.tags] AS common \
+                 WHERE size(common) > 0 \
                  MERGE (a)-[:RELATED_TO]->(b) \
                  MERGE (b)-[:RELATED_TO]->(a)"
             );
@@ -622,9 +624,9 @@ impl FalkorDbClient {
                 let q_add = format!(
                     "MATCH (a:Memory {{id: \"{id}\"}}), (b:Memory) \
                      WHERE b.id <> \"{id}\" \
-                       AND ANY(t IN a.tags WHERE t IN b.tags) \
                        AND (a.user_id = b.user_id OR (a.user_id IS NULL AND b.user_id IS NULL)) \
-                       AND NOT (a)-[:RELATED_TO]-(b) \
+                     WITH a, b, [t IN a.tags WHERE t IN b.tags] AS common \
+                     WHERE size(common) > 0 \
                      MERGE (a)-[:RELATED_TO]->(b) \
                      MERGE (b)-[:RELATED_TO]->(a)"
                 );
@@ -665,7 +667,8 @@ impl FalkorDbClient {
         };
         let q = format!(
             "MATCH (a:Memory)-[r]->(b:Memory){user_filter} \
-             RETURN a.id AS from_id, b.id AS to_id, type(r) AS rel_type, r.relationship AS rel_name"
+             RETURN a.id AS from_id, b.id AS to_id, type(r) AS rel_type, r.relationship AS rel_name \
+             LIMIT 5000"
         );
         let result: redis::Value = redis::cmd("GRAPH.QUERY")
             .arg(GRAPH_NAME)
