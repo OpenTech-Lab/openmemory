@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::Serialize;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -117,6 +118,7 @@ impl FalkorDbClient {
         created_at: &str,
         valid_at: &str,
     ) -> Result<()> {
+        let valid_at = normalize_ts(valid_at);
         let q = format!(
             "MERGE (e:Episode {{id: \"{id}\"}}) \
              SET e.name = {name}, \
@@ -132,7 +134,7 @@ impl FalkorDbClient {
             content = escape_option_str(Some(content)),
             group_id = escape_option_str(Some(group_id)),
             created_at = escape_option_str(Some(created_at)),
-            valid_at = escape_option_str(Some(valid_at)),
+            valid_at = escape_option_str(Some(&valid_at)),
         );
         redis::cmd("GRAPH.QUERY")
             .arg(GRAPH_NAME)
@@ -261,6 +263,7 @@ impl FalkorDbClient {
         created_at: &str,
         invalidate_previous: bool,
     ) -> Result<(String, u32)> {
+        let valid_at = normalize_ts(valid_at);
         let mut invalidated: u32 = 0;
 
         // Verify both entities exist in the same group before creating the fact
@@ -313,7 +316,7 @@ impl FalkorDbClient {
             gid2 = escape_option_str(Some(group_id)),
             fname = escape_option_str(Some(fact_name)),
             fact_val = escape_option_str(Some(fact)),
-            valid_at = escape_option_str(Some(valid_at)),
+            valid_at = escape_option_str(Some(&valid_at)),
             created_at_val = escape_option_str(Some(created_at)),
             episode_id = episode_lit,
         );
@@ -341,7 +344,7 @@ impl FalkorDbClient {
                 gid = escape_option_str(Some(group_id)),
                 gid2 = escape_option_str(Some(group_id)),
                 fname = escape_option_str(Some(fact_name)),
-                now = escape_option_str(Some(valid_at)),
+                now = escape_option_str(Some(&valid_at)),
             );
             let inv_result: redis::Value = redis::cmd("GRAPH.QUERY")
                 .arg(GRAPH_NAME)
@@ -391,7 +394,15 @@ impl FalkorDbClient {
         let group_filter = group_id
             .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
             .unwrap_or_default();
-        let valid_filter = if valid_only { " AND f.invalid_at IS NULL" } else { "" };
+        let valid_filter = if valid_only {
+            let now_str = Utc::now().to_rfc3339();
+            format!(
+                " AND f.invalid_at IS NULL AND f.valid_at <= {}",
+                escape_option_str(Some(&now_str))
+            )
+        } else {
+            String::new()
+        };
         let q_lit = escape_option_str(Some(query));
 
         let q = format!(
@@ -422,7 +433,8 @@ impl FalkorDbClient {
         group_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<FactResult>> {
-        let ts = escape_option_str(Some(timestamp));
+        let timestamp = normalize_ts(timestamp);
+        let ts = escape_option_str(Some(&timestamp));
         let entity_filter = entity_name
             .map(|n| format!(
                 " AND (a.name = {} OR b.name = {})",
@@ -973,4 +985,16 @@ fn parse_fact_rows(result: redis::Value) -> Vec<FactResult> {
             is_current,
         })
     }).collect()
+}
+
+/// Parse an RFC3339 timestamp and normalize to UTC. Returns the original string on parse failure
+/// so callers aren't broken by unusual formats — but logs a warning.
+pub(crate) fn normalize_ts(ts: &str) -> String {
+    use chrono::DateTime;
+    ts.parse::<DateTime<Utc>>()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|_| {
+            warn!("normalize_ts: could not parse timestamp {:?}, using as-is", ts);
+            ts.to_string()
+        })
 }
