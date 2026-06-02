@@ -1779,8 +1779,12 @@ async fn mcp(
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
 
             if let Some(ref ep_id) = episode_id {
-                if let Ok(ep_uuid) = Uuid::parse_str(ep_id) {
-                    let _ = fdb.link_episode_to_entity(ep_uuid, &name, &entity_type, gid).await;
+                let ep_uuid = Uuid::parse_str(ep_id).map_err(|_| (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("invalid episode_id UUID: {}", ep_id)})),
+                ))?;
+                if let Err(e) = fdb.link_episode_to_entity(ep_uuid, &name, &entity_type, gid).await {
+                    warn!("link_episode_to_entity failed (entity still saved): {e}");
                 }
             }
 
@@ -1870,7 +1874,7 @@ async fn mcp(
 
             let entity = fdb.get_entity(&entity_name, entity_type.as_deref(), group_id.as_deref())
                 .await
-                .unwrap_or(None);
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
             Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityResult { entity })))
         }
 

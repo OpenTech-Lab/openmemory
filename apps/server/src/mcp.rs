@@ -995,8 +995,10 @@ impl McpServer {
         let (entity_id, created) = fdb.add_entity(new_id, &name, &entity_type, &group_id, summary.as_deref(), &now.to_rfc3339()).await?;
 
         if let Some(ep_id_str) = episode_id {
-            if let Ok(ep_uuid) = Uuid::parse_str(&ep_id_str) {
-                let _ = fdb.link_episode_to_entity(ep_uuid, &name, &entity_type, &group_id).await;
+            let ep_uuid = Uuid::parse_str(&ep_id_str)
+                .map_err(|_| anyhow::anyhow!("invalid episode_id UUID: {}", ep_id_str))?;
+            if let Err(e) = fdb.link_episode_to_entity(ep_uuid, &name, &entity_type, &group_id).await {
+                warn!("link_episode_to_entity failed (entity still saved): {e}");
             }
         }
 
