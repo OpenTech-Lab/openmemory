@@ -183,6 +183,9 @@ docker compose --profile dashboard up -d
 ```bash
 pnpm install
 pnpm turbo run dev
+
+# Just the web
+pnpm --filter web dev
 ```
 
 ### Seed test data

@@ -1,0 +1,470 @@
+'use client';
+
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Slider } from '@/components/ui/slider';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { DataTable } from '@/components/ui/data-table';
+import { createMemoryColumns, type Memory } from '@/components/memory-columns';
+import { Database, HardDrive, Cloud, RefreshCw, Plus, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+
+const PAGE_SIZE = 20;
+
+export default function MemoryBrowsePage() {
+  const [allMemories, setAllMemories] = useState<Memory[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dataSource, setDataSource] = useState<'all' | 'postgres' | 'opensearch'>('all');
+
+  const [viewMemory, setViewMemory] = useState<Memory | null>(null);
+  const [editMemory, setEditMemory] = useState<Memory | null>(null);
+  const [deleteMemory, setDeleteMemory] = useState<Memory | null>(null);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const [formContent, setFormContent] = useState('');
+  const [formSummary, setFormSummary] = useState('');
+  const [formTags, setFormTags] = useState('');
+  const [formImportance, setFormImportance] = useState(0.5);
+
+  const columns = useMemo(
+    () =>
+      createMemoryColumns({
+        onView: (memory) => setViewMemory(memory),
+        onEdit: (memory) => {
+          setEditMemory(memory);
+          setFormContent(memory.content || '');
+          setFormSummary(memory.summary || '');
+          setFormTags(memory.tags.join(', '));
+          setFormImportance(memory.importance_score);
+        },
+        onDelete: (memory) => setDeleteMemory(memory),
+      }),
+    []
+  );
+
+  const fetchAllMemories = useCallback(
+    async (source: 'all' | 'postgres' | 'opensearch' = dataSource, page: number = currentPage) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const response = await fetch('/api/memory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'memory.list', limit: PAGE_SIZE, offset: page * PAGE_SIZE, source }),
+        });
+        const data = await response.json();
+        if (data.error) { setError(data.error); return; }
+        if (data.type === 'memory.list.result' || data.memories) {
+          setAllMemories(data.memories || data.results || []);
+          setTotalCount(data.total_count ?? data.memories?.length ?? 0);
+        }
+      } catch {
+        setError('Failed to connect to the server. Make sure the backend is running.');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [dataSource, currentPage]
+  );
+
+  useEffect(() => {
+    setCurrentPage(0);
+    fetchAllMemories(dataSource, 0);
+  }, [dataSource]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    fetchAllMemories(dataSource, 0);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resetForm = () => {
+    setFormContent('');
+    setFormSummary('');
+    setFormTags('');
+    setFormImportance(0.5);
+  };
+
+  const handleAdd = async () => {
+    if (!formContent.trim()) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'memory.save',
+          content: formContent,
+          summary: formSummary || undefined,
+          tags: formTags.split(',').map((t) => t.trim()).filter(Boolean),
+          importance: formImportance,
+        }),
+      });
+      const data = await response.json();
+      if (data.error) { setError(data.error); return; }
+      setIsAddDialogOpen(false);
+      resetForm();
+      fetchAllMemories(dataSource, 0);
+    } catch {
+      setError('Failed to save memory.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!editMemory) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'memory.update',
+          id: editMemory.id,
+          content: formContent,
+          summary: formSummary || undefined,
+          tags: formTags.split(',').map((t) => t.trim()).filter(Boolean),
+          importance: formImportance,
+        }),
+      });
+      const data = await response.json();
+      if (data.error) { setError(data.error); return; }
+      setEditMemory(null);
+      resetForm();
+      fetchAllMemories(dataSource, currentPage);
+    } catch {
+      setError('Failed to update memory.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteMemory) return;
+    setIsSaving(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'memory.delete', id: deleteMemory.id }),
+      });
+      const data = await response.json();
+      if (data.error) { setError(data.error); return; }
+      setDeleteMemory(null);
+      fetchAllMemories(dataSource, currentPage);
+    } catch {
+      setError('Failed to delete memory.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-auto p-4">
+      {/* Page header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold">Browse</h1>
+          <Badge variant="secondary" className="text-xs">
+            {totalCount > 0 ? totalCount : allMemories.length} total
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => fetchAllMemories()} disabled={isLoading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Button size="sm" onClick={() => { resetForm(); setIsAddDialogOpen(true); }}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add record
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-4">
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Error</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        </div>
+      )}
+
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">All Memories</CardTitle>
+              <CardDescription>Browse and manage all stored memories</CardDescription>
+            </div>
+            <Select value={dataSource} onValueChange={(v) => setDataSource(v as 'all' | 'postgres' | 'opensearch')}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Select source" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
+                  <div className="flex items-center gap-2"><Database className="h-4 w-4" /><span>All (Combined)</span></div>
+                </SelectItem>
+                <SelectItem value="postgres">
+                  <div className="flex items-center gap-2"><HardDrive className="h-4 w-4" /><span>PostgreSQL (Index)</span></div>
+                </SelectItem>
+                <SelectItem value="opensearch">
+                  <div className="flex items-center gap-2"><Cloud className="h-4 w-4" /><span>OpenSearch (Docs)</span></div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="flex items-center justify-center h-[400px]">
+              <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <>
+              <DataTable
+                columns={columns}
+                data={allMemories}
+                searchKey="content"
+                searchPlaceholder="Filter by content..."
+                hidePagination
+              />
+              {totalCount > PAGE_SIZE && (
+                <div className="flex items-center justify-between mt-4 pt-4 border-t">
+                  <span className="text-sm text-muted-foreground">
+                    Showing {currentPage * PAGE_SIZE + 1}–{Math.min((currentPage + 1) * PAGE_SIZE, totalCount)} of{' '}
+                    <span className="font-medium text-foreground">{totalCount}</span> memories
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={currentPage === 0}
+                      onClick={() => {
+                        const next = currentPage - 1;
+                        setCurrentPage(next);
+                        fetchAllMemories(dataSource, next);
+                      }}
+                    >
+                      <ChevronLeft className="h-4 w-4 mr-1" />Previous
+                    </Button>
+                    <span className="text-sm text-muted-foreground">
+                      Page {currentPage + 1} of {Math.ceil(totalCount / PAGE_SIZE)}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={(currentPage + 1) * PAGE_SIZE >= totalCount}
+                      onClick={() => {
+                        const next = currentPage + 1;
+                        setCurrentPage(next);
+                        fetchAllMemories(dataSource, next);
+                      }}
+                    >
+                      Next<ChevronRight className="h-4 w-4 ml-1" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* View Dialog */}
+      <Dialog open={!!viewMemory} onOpenChange={() => setViewMemory(null)}>
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Memory Details</DialogTitle>
+            <DialogDescription>View the full memory content and metadata</DialogDescription>
+          </DialogHeader>
+          {viewMemory && (
+            <div className="space-y-4 py-4">
+              <div className="grid grid-cols-4 items-start gap-4">
+                <Label className="text-right text-muted-foreground">ID</Label>
+                <p className="col-span-3 font-mono text-sm break-all">{viewMemory.id}</p>
+              </div>
+              <div className="grid grid-cols-4 items-start gap-4">
+                <Label className="text-right text-muted-foreground">Content</Label>
+                <p className="col-span-3 whitespace-pre-wrap">
+                  {viewMemory.content || <span className="text-muted-foreground italic">No content (index only)</span>}
+                </p>
+              </div>
+              {viewMemory.summary && (
+                <div className="grid grid-cols-4 items-start gap-4">
+                  <Label className="text-right text-muted-foreground">Summary</Label>
+                  <p className="col-span-3 text-muted-foreground">{viewMemory.summary}</p>
+                </div>
+              )}
+              <div className="grid grid-cols-4 items-start gap-4">
+                <Label className="text-right text-muted-foreground">Tags</Label>
+                <div className="col-span-3 flex flex-wrap gap-1">
+                  {viewMemory.tags.length > 0 ? (
+                    viewMemory.tags.map((tag) => <Badge key={tag} variant="secondary">{tag}</Badge>)
+                  ) : (
+                    <span className="text-muted-foreground">No tags</span>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right text-muted-foreground">Importance</Label>
+                <div className="col-span-3 flex items-center gap-2">
+                  <div className="h-2 w-24 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full bg-primary" style={{ width: `${viewMemory.importance_score * 100}%` }} />
+                  </div>
+                  <span className="text-sm">{viewMemory.importance_score.toFixed(2)}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right text-muted-foreground">Created</Label>
+                <p className="col-span-3 text-sm">{new Date(viewMemory.created_at).toLocaleString()}</p>
+              </div>
+              {viewMemory.score !== undefined && (
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label className="text-right text-muted-foreground">Relevance</Label>
+                  <p className="col-span-3"><Badge variant="outline">{viewMemory.score.toFixed(3)}</Badge></p>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewMemory(null)}>Close</Button>
+            <Button onClick={() => {
+              if (viewMemory) {
+                setEditMemory(viewMemory);
+                setFormContent(viewMemory.content || '');
+                setFormSummary(viewMemory.summary || '');
+                setFormTags(viewMemory.tags.join(', '));
+                setFormImportance(viewMemory.importance_score);
+                setViewMemory(null);
+              }
+            }}>Edit</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Dialog */}
+      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Memory</DialogTitle>
+            <DialogDescription>Create a new memory record</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="content">Content *</Label>
+              <Textarea id="content" placeholder="Enter the memory content..." value={formContent} onChange={(e) => setFormContent(e.target.value)} rows={4} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="summary">Summary</Label>
+              <Input id="summary" placeholder="Brief summary (optional)" value={formSummary} onChange={(e) => setFormSummary(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="tags">Tags</Label>
+              <Input id="tags" placeholder="Comma-separated tags (e.g., preference, coding)" value={formTags} onChange={(e) => setFormTags(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label>Importance: {formImportance.toFixed(1)}</Label>
+              <Slider value={[formImportance]} onValueChange={([v]) => setFormImportance(v)} min={0} max={1} step={0.1} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleAdd} disabled={!formContent.trim() || isSaving}>
+              {isSaving ? 'Saving...' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editMemory} onOpenChange={() => setEditMemory(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Memory</DialogTitle>
+            <DialogDescription>Update the memory record</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="edit-content">Content *</Label>
+              <Textarea id="edit-content" placeholder="Enter the memory content..." value={formContent} onChange={(e) => setFormContent(e.target.value)} rows={4} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-summary">Summary</Label>
+              <Input id="edit-summary" placeholder="Brief summary (optional)" value={formSummary} onChange={(e) => setFormSummary(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-tags">Tags</Label>
+              <Input id="edit-tags" placeholder="Comma-separated tags" value={formTags} onChange={(e) => setFormTags(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label>Importance: {formImportance.toFixed(1)}</Label>
+              <Slider value={[formImportance]} onValueChange={([v]) => setFormImportance(v)} min={0} max={1} step={0.1} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditMemory(null)}>Cancel</Button>
+            <Button onClick={handleUpdate} disabled={!formContent.trim() || isSaving}>
+              {isSaving ? 'Updating...' : 'Update'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Dialog */}
+      <AlertDialog open={!!deleteMemory} onOpenChange={() => setDeleteMemory(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Memory</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this memory? This action cannot be undone.
+              {deleteMemory && <span className="block mt-2 font-mono text-xs">ID: {deleteMemory.id}</span>}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              {isSaving ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
