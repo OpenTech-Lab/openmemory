@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Graph from 'graphology';
 import Sigma from 'sigma';
+import { createNodeBorderProgram } from '@sigma/node-border';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { useTheme } from 'next-themes';
 import { Badge } from '@/components/ui/badge';
@@ -146,7 +147,6 @@ function buildCommunityGraph(data: GraphifyData, borderColor: string): { graph: 
       x, y, size, color,
       community: cid,
       borderColor,
-      borderSize: 0.15,
     });
   }
 
@@ -201,7 +201,6 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
           size: isSeed ? 6 : 3,
           color: isSeed ? '#facc15' : fileTypeColor(n.file_type),
           borderColor: isDark ? '#ffffff' : '#000000',
-          borderSize: 0.2,
           file_type: n.file_type,
           community: n.community,
           source_file: n.source_file,
@@ -245,7 +244,6 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
         size: 3,
         color: fileTypeColor(n.file_type),
         borderColor: isDark ? '#ffffff' : '#000000',
-        borderSize: 0.2,
         file_type: n.file_type,
         community: n.community,
         source_file: n.source_file,
@@ -286,11 +284,20 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
         });
       }
 
+      const NodeBorderProgram = createNodeBorderProgram({
+        borders: [
+          { size: { value: 0.12, mode: 'relative' }, color: { attribute: 'borderColor' } },
+          { size: { fill: true }, color: { attribute: 'color' } },
+        ],
+      });
+
       renderer = new Sigma(graph, container, {
         renderEdgeLabels: false,
         allowInvalidContainer: true,
         labelColor: { color: labelColor },
         defaultEdgeType: 'arrow',
+        defaultNodeType: 'border',
+        nodeProgramClasses: { border: NodeBorderProgram },
       });
 
       renderer.on('clickNode', ({ node }) => {
