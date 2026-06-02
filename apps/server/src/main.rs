@@ -1829,7 +1829,7 @@ async fn mcp(
 
             let facts = fdb.query_facts(&query, group_id.as_deref(), limit, valid_only)
                 .await
-                .unwrap_or_default();
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
             Ok((StatusCode::OK, Json(McpResponse::GraphQueryFactsResult { query, facts })))
         }
 
@@ -1843,7 +1843,7 @@ async fn mcp(
 
             let facts = fdb.query_at(&timestamp, entity_name.as_deref(), group_id.as_deref(), limit)
                 .await
-                .unwrap_or_default();
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
             Ok((StatusCode::OK, Json(McpResponse::GraphQueryAtResult { timestamp, facts })))
         }
 
@@ -1858,7 +1858,7 @@ async fn mcp(
 
             let facts = fdb.get_entity_history(&entity_name, group_id.as_deref(), limit)
                 .await
-                .unwrap_or_default();
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
             Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityHistoryResult { entity_name, facts })))
         }
 

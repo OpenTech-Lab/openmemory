@@ -976,10 +976,8 @@ impl McpServer {
         let now = Utc::now();
         let valid_at = args["valid_at"].as_str().map(|s| s.to_string()).unwrap_or_else(|| now.to_rfc3339());
 
-        if let Some(fdb) = &self.falkordb {
-            let mut fdb = fdb.clone();
-            fdb.add_episode(id, &name, &source, &source_description, &content, &group_id, &now.to_rfc3339(), &valid_at).await?;
-        }
+        let mut fdb = self.falkordb.as_ref().context("Graph layer not configured (FALKORDB_URL not set)")?.clone();
+        fdb.add_episode(id, &name, &source, &source_description, &content, &group_id, &now.to_rfc3339(), &valid_at).await?;
 
         Ok(json!({"content": [{"type": "text", "text": format!("Episode added: '{}' (id: {})", name, id)}]}))
     }
@@ -1042,7 +1040,7 @@ impl McpServer {
             None => return Ok(json!({"content": [{"type": "text", "text": "No results (graph layer not configured)"}]})),
         };
 
-        let facts = fdb.query_facts(&query, group_id.as_deref(), limit, valid_only).await.unwrap_or_default();
+        let facts = fdb.query_facts(&query, group_id.as_deref(), limit, valid_only).await?;
         let text = format_facts(&facts, &format!("\"{}\"", query));
         Ok(json!({"content": [{"type": "text", "text": text}]}))
     }
@@ -1058,7 +1056,7 @@ impl McpServer {
             None => return Ok(json!({"content": [{"type": "text", "text": "No results (graph layer not configured)"}]})),
         };
 
-        let facts = fdb.query_at(&timestamp, entity_name.as_deref(), group_id.as_deref(), limit).await.unwrap_or_default();
+        let facts = fdb.query_at(&timestamp, entity_name.as_deref(), group_id.as_deref(), limit).await?;
         let text = format_facts(&facts, &format!("at {}", timestamp));
         Ok(json!({"content": [{"type": "text", "text": text}]}))
     }
@@ -1073,7 +1071,7 @@ impl McpServer {
             None => return Ok(json!({"content": [{"type": "text", "text": "No history (graph layer not configured)"}]})),
         };
 
-        let facts = fdb.get_entity_history(&entity_name, group_id.as_deref(), limit).await.unwrap_or_default();
+        let facts = fdb.get_entity_history(&entity_name, group_id.as_deref(), limit).await?;
         let text = format_facts(&facts, &format!("history of '{}'", entity_name));
         Ok(json!({"content": [{"type": "text", "text": text}]}))
     }

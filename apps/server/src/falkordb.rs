@@ -951,7 +951,9 @@ fn parse_fact_rows(result: redis::Value) -> Vec<FactResult> {
         };
         if cols.len() < 10 { return None; }
         let invalid_at = extract_string(&cols[7]);
-        let is_current = invalid_at.as_deref().map(|s| s.is_empty()).unwrap_or(true);
+        let is_current = invalid_at.as_deref()
+            .map(|s| s.is_empty() || s == "null")
+            .unwrap_or(true);
         Some(FactResult {
             subject_name: extract_string(&cols[0]).unwrap_or_default(),
             subject_type: extract_string(&cols[1]).unwrap_or_default(),
