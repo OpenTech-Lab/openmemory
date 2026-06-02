@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { resolveApiToken } from '@/lib/api-token';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
-const API_TOKEN = process.env.OPENMEMORY_API_TOKEN || 'dev-token-change-me';
+const API_TOKEN = resolveApiToken();
 
 export async function POST(request: Request) {
   try {
