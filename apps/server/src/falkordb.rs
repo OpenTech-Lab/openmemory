@@ -47,14 +47,24 @@ impl FalkorDbClient {
         }
     }
 
-    /// Create index on Memory.id — idempotent, errors are silently ignored.
+    /// Create indexes for Memory, Episode, and Entity node types — idempotent, errors are silently ignored.
     pub async fn init_indexes(&mut self) -> Result<()> {
-        let _ = redis::cmd("GRAPH.QUERY")
-            .arg(GRAPH_NAME)
-            .arg("CREATE INDEX ON :Memory(id)")
-            .query_async::<redis::Value>(&mut self.conn)
-            .await;
-        info!("FalkorDB graph store ready");
+        let indexes = [
+            "CREATE INDEX ON :Memory(id)",
+            "CREATE INDEX ON :Episode(id)",
+            "CREATE INDEX ON :Episode(group_id)",
+            "CREATE INDEX ON :Entity(id)",
+            "CREATE INDEX ON :Entity(name)",
+            "CREATE INDEX ON :Entity(group_id)",
+        ];
+        for q in &indexes {
+            let _ = redis::cmd("GRAPH.QUERY")
+                .arg(GRAPH_NAME)
+                .arg(q)
+                .query_async::<redis::Value>(&mut self.conn)
+                .await;
+        }
+        info!("FalkorDB graph store ready (temporal schema)");
         Ok(())
     }
 
