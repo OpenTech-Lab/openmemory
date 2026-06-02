@@ -462,6 +462,7 @@ export function MemoryDashboard() {
                       data={allMemories}
                       searchKey="content"
                       searchPlaceholder="Filter by content..."
+                      hidePagination
                     />
                     {totalCount > PAGE_SIZE && (
                       <div className="flex items-center justify-between mt-4 pt-4 border-t">
