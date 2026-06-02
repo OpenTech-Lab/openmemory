@@ -1397,7 +1397,7 @@ impl McpServer {
                 "type": "text",
                 "text": format!(
                     "Registered project '{}'\n  path: {}\n  nodes: {}  edges: {}  hash: {}",
-                    name, path, node_count, edge_count, &hash[..8]
+                    name, path, node_count, edge_count, hash.get(..8).unwrap_or(&hash)
                 )
             }]
         }))
@@ -1476,11 +1476,19 @@ impl McpServer {
 
         // List edges
         if !resp.edges.is_empty() {
+            // Build id→label map for readable edge output
+            let id_to_label: std::collections::HashMap<String, String> = resp.nodes
+                .iter()
+                .map(|n| (n.id.clone(), n.label.clone()))
+                .collect();
+
             text.push_str(&format!("Edges ({}):\n", resp.edges.len()));
             for e in &resp.edges {
                 text.push_str(&format!(
                     "  {} --[{}]--> {}\n",
-                    e.source, e.relation, e.target
+                    id_to_label.get(&e.source).unwrap_or(&e.source),
+                    e.relation,
+                    id_to_label.get(&e.target).unwrap_or(&e.target),
                 ));
             }
         }
@@ -1668,7 +1676,7 @@ impl McpServer {
                 "Project not found. Use project_graph_list to see available projects."
             ),
             Some(row) => {
-                let deleted_name: String = row.try_get("name").unwrap_or_default();
+                let deleted_name: String = row.try_get("name").context("failed to get project name from RETURNING")?;
                 Ok(json!({
                     "content": [{
                         "type": "text",
@@ -1694,7 +1702,7 @@ impl McpServer {
             return Ok(json!({
                 "content": [{
                     "type": "text",
-                    "text": format!("Graph is unchanged (hash: {}). No rebuild needed.", &new_hash[..8])
+                    "text": format!("Graph is unchanged (hash: {}). No rebuild needed.", new_hash.get(..8).unwrap_or(&new_hash))
                 }]
             }));
         }
@@ -1724,7 +1732,7 @@ impl McpServer {
                 "type": "text",
                 "text": format!(
                     "Rebuilt project graph from {}\n  nodes: {}  edges: {}  new hash: {}",
-                    path, node_count, edge_count, &new_hash[..8]
+                    path, node_count, edge_count, new_hash.get(..8).unwrap_or(&new_hash)
                 )
             }]
         }))
