@@ -148,7 +148,18 @@ export default function ProjectGraphsPage() {
   };
 
   const columns: ColumnDef<ProjectGraph>[] = [
-    { accessorKey: 'name', header: 'Name' },
+    {
+      accessorKey: 'name',
+      header: 'Name',
+      cell: ({ row }) => (
+        <Link
+          href={`/graph/projects/${row.original.id}`}
+          className="text-primary hover:underline font-medium"
+        >
+          {row.original.name}
+        </Link>
+      ),
+    },
     {
       accessorKey: 'path',
       header: 'Path',
@@ -184,12 +195,9 @@ export default function ProjectGraphsPage() {
     },
     {
       id: 'actions',
-      header: 'Actions',
+      header: () => <div className="text-right">Actions</div>,
       cell: ({ row }) => (
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" asChild>
-            <Link href={`/graph/projects/${row.original.id}`}>View</Link>
-          </Button>
+        <div className="flex items-center justify-end gap-2">
           <Button
             variant="ghost"
             size="sm"
