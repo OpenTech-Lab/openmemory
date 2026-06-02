@@ -263,56 +263,6 @@ impl FalkorDbClient {
     ) -> Result<(String, u32)> {
         let mut invalidated: u32 = 0;
 
-        if invalidate_previous {
-            let inv_q = format!(
-                "MATCH (a:Entity {{name: {sname}, entity_type: {stype}, group_id: {gid}}})\
-                 -[f:FACT]->\
-                 (b:Entity {{name: {oname}, entity_type: {otype}, group_id: {gid2}}}) \
-                 WHERE f.name = {fname} AND f.invalid_at IS NULL \
-                 SET f.invalid_at = {now} \
-                 RETURN count(f) AS n",
-                sname = escape_option_str(Some(subject_name)),
-                stype = escape_option_str(Some(subject_type)),
-                oname = escape_option_str(Some(object_name)),
-                otype = escape_option_str(Some(object_type)),
-                gid = escape_option_str(Some(group_id)),
-                gid2 = escape_option_str(Some(group_id)),
-                fname = escape_option_str(Some(fact_name)),
-                now = escape_option_str(Some(created_at)),
-            );
-            let inv_result: redis::Value = redis::cmd("GRAPH.QUERY")
-                .arg(GRAPH_NAME)
-                .arg(&inv_q)
-                .query_async(&mut self.conn)
-                .await
-                .context("FalkorDB invalidate previous facts failed")?;
-            invalidated = parse_count(inv_result);
-        }
-
-        let episode_lit = escape_option_str(episode_id);
-        let q = format!(
-            "MATCH (a:Entity {{name: {sname}, entity_type: {stype}, group_id: {gid}}}), \
-                   (b:Entity {{name: {oname}, entity_type: {otype}, group_id: {gid2}}}) \
-             CREATE (a)-[:FACT {{ \
-                 id: \"{id}\", \
-                 name: {fname}, \
-                 fact: {fact_val}, \
-                 valid_at: {valid_at}, \
-                 created_at: {created_at_val}, \
-                 episode_id: {episode_id} \
-             }}]->(b)",
-            sname = escape_option_str(Some(subject_name)),
-            stype = escape_option_str(Some(subject_type)),
-            oname = escape_option_str(Some(object_name)),
-            otype = escape_option_str(Some(object_type)),
-            gid = escape_option_str(Some(group_id)),
-            gid2 = escape_option_str(Some(group_id)),
-            fname = escape_option_str(Some(fact_name)),
-            fact_val = escape_option_str(Some(fact)),
-            valid_at = escape_option_str(Some(valid_at)),
-            created_at_val = escape_option_str(Some(created_at)),
-            episode_id = episode_lit,
-        );
         // Verify both entities exist in the same group before creating the fact
         let check_q = format!(
             "MATCH (a:Entity {{name: {sname}, entity_type: {stype}, group_id: {gid}}}), \
@@ -340,12 +290,67 @@ impl FalkorDbClient {
             );
         }
 
+        // CREATE new fact first — if this fails, old facts are left intact (no silent data loss)
+        let episode_lit = escape_option_str(episode_id);
+        let q = format!(
+            "MATCH (a:Entity {{name: {sname}, entity_type: {stype}, group_id: {gid}}}) \
+             WITH a LIMIT 1 \
+             MATCH (b:Entity {{name: {oname}, entity_type: {otype}, group_id: {gid2}}}) \
+             WITH a, b LIMIT 1 \
+             CREATE (a)-[:FACT {{ \
+                 id: \"{id}\", \
+                 name: {fname}, \
+                 fact: {fact_val}, \
+                 valid_at: {valid_at}, \
+                 created_at: {created_at_val}, \
+                 episode_id: {episode_id} \
+             }}]->(b)",
+            sname = escape_option_str(Some(subject_name)),
+            stype = escape_option_str(Some(subject_type)),
+            oname = escape_option_str(Some(object_name)),
+            otype = escape_option_str(Some(object_type)),
+            gid = escape_option_str(Some(group_id)),
+            gid2 = escape_option_str(Some(group_id)),
+            fname = escape_option_str(Some(fact_name)),
+            fact_val = escape_option_str(Some(fact)),
+            valid_at = escape_option_str(Some(valid_at)),
+            created_at_val = escape_option_str(Some(created_at)),
+            episode_id = episode_lit,
+        );
         redis::cmd("GRAPH.QUERY")
             .arg(GRAPH_NAME)
             .arg(&q)
             .query_async::<redis::Value>(&mut self.conn)
             .await
             .context("FalkorDB add_fact CREATE failed")?;
+
+        // Invalidate old facts AFTER the new one is safely created.
+        // Use valid_at (not created_at) so there is no gap or overlap in temporal validity.
+        if invalidate_previous {
+            let inv_q = format!(
+                "MATCH (a:Entity {{name: {sname}, entity_type: {stype}, group_id: {gid}}})\
+                 -[f:FACT]->\
+                 (b:Entity {{name: {oname}, entity_type: {otype}, group_id: {gid2}}}) \
+                 WHERE f.name = {fname} AND f.invalid_at IS NULL AND f.id <> \"{id}\" \
+                 SET f.invalid_at = {now} \
+                 RETURN count(f) AS n",
+                sname = escape_option_str(Some(subject_name)),
+                stype = escape_option_str(Some(subject_type)),
+                oname = escape_option_str(Some(object_name)),
+                otype = escape_option_str(Some(object_type)),
+                gid = escape_option_str(Some(group_id)),
+                gid2 = escape_option_str(Some(group_id)),
+                fname = escape_option_str(Some(fact_name)),
+                now = escape_option_str(Some(valid_at)),
+            );
+            let inv_result: redis::Value = redis::cmd("GRAPH.QUERY")
+                .arg(GRAPH_NAME)
+                .arg(&inv_q)
+                .query_async(&mut self.conn)
+                .await
+                .context("FalkorDB invalidate previous facts failed")?;
+            invalidated = parse_count(inv_result);
+        }
 
         Ok((id.to_string(), invalidated))
     }
