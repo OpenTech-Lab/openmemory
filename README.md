@@ -1,16 +1,78 @@
 # 🧠 OpenMemory
 
-**A lightweight, local-first shared memory system for AI agents.**
+**A complete local memory infrastructure for AI agents.**
 
-Give your AI tools persistent memory without the complexity and cost of traditional RAG systems. OpenMemory uses fast BM25 search (< 10ms) instead of expensive embeddings, keeping everything local and private.
+OpenMemory provides **persistent memory**, **environment configuration**, **knowledge graphs**, and **automatic conversation recording** - all local, all fast, all private.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## 🚀 Quick Start (3 commands)
+
+```bash
+# 1. Start infrastructure
+docker compose up -d
+
+# 2. Build MCP server
+cargo build --release --bin openmemory-mcp
+
+# 3. Add to ~/.claude/settings.json
+{
+  "mcpServers": {
+    "openmemory": {
+      "command": "/absolute/path/to/openmemory/target/release/openmemory-mcp",
+      "env": {
+        "DATABASE_URL": "postgres://openmemory:openmemory@localhost:5432/openmemory",
+        "OPENSEARCH_URL": "http://localhost:9201",
+        "REDIS_URL": "redis://localhost:6399"
+      }
+    }
+  }
+}
+```
+
+See [detailed setup instructions](#-quick-start) below for all integration modes.
+
+---
+
+## ✨ Core Features
+
+### 1. 💾 Persistent Memory
+Save and search important information across sessions. No embeddings, no API costs - just fast BM25 search (<10ms).
+
+```bash
+mem save "User prefers TypeScript" --importance 0.8 --tags preference
+mem search "typescript" --limit 5
+```
+
+### 2. 🔐 Environment Parameters
+Secure key-value store for configuration and secrets with agent access control. Store API keys, endpoints, and preferences that AI agents can reference safely.
+
+```bash
+mem env-set OPENAI_API_KEY "sk-..." --secret
+mem env-set DEFAULT_MODEL "gpt-4o" --description "Preferred LLM model"
+```
+
+### 3. 🕸️ Knowledge Graph
+Temporal knowledge graph (powered by FalkorDB) automatically builds entity relationships and tracks how facts evolve over time. Uses Graphiti-inspired Episode/Entity/Fact model.
+
+```bash
+# Entities and relationships are extracted automatically from saved memories
+# Query via web UI or direct Cypher queries
+```
+
+### 4. 📝 Automatic Session Recording
+Passive session watcher tails conversation logs from Claude Code, Gemini CLI, and Codex CLI - no agent involvement needed. All conversations are automatically stored and searchable.
+
+```bash
+mem sessions --limit 10              # List recent sessions
+mem sessions messages <uuid>         # View conversation history
+```
 
 ---
 
 ## 🎯 Why OpenMemory?
 
-Most AI tools either **forget everything** between sessions or require **expensive RAG pipelines** with embedding APIs. OpenMemory provides a better middle ground:
+Most AI tools either **forget everything** between sessions or require **expensive RAG pipelines** with embedding APIs. OpenMemory provides a better, integrated solution:
 
 | Feature | Traditional RAG | OpenMemory |
 |---------|----------------|------------|
@@ -19,14 +81,20 @@ Most AI tools either **forget everything** between sessions or require **expensi
 | **Privacy** | Cloud dependencies | 100% local storage |
 | **Setup** | Complex pipelines | `docker compose up` |
 | **Integration** | Custom per tool | Standard MCP protocol |
+| **Configuration** | Manual env vars | Secure parameter store |
+| **Knowledge** | Flat documents | Temporal graph |
+| **Sessions** | Manual logging | Automatic recording |
 
 ### Real-World Benefits
 
 - **Persistent Context**: AI remembers your preferences, project decisions, and past conversations
+- **Secure Configuration**: Store API keys and secrets that agents can reference but not leak
+- **Knowledge Evolution**: Track how facts and relationships change over time
+- **Automatic History**: All conversations recorded passively - no manual saving needed
 - **Cross-Tool Memory**: Share context between Claude Code, Cursor, and other MCP-compatible tools
-- **Smart Retrieval**: Importance scoring + recency weighting surfaces the most relevant memories
+- **Smart Retrieval**: Importance scoring + recency weighting + graph relationships surface the most relevant information
 - **Privacy First**: All data stays on your machine - no external API calls
-- **Developer Friendly**: Simple `memory_save` / `memory_search` API
+- **Developer Friendly**: Simple `memory_save` / `memory_search` / `env_set` / `sessions` APIs
 
 ---
 
@@ -37,6 +105,31 @@ Most AI tools either **forget everything** between sessions or require **expensi
 
 ### Memory Search Interface
 ![Memory Interface](docs/images/memory.png)
+
+---
+
+## 🎁 What You Get
+
+OpenMemory is a **complete memory infrastructure** in one package:
+
+| Component | What It Does | Why It Matters |
+|-----------|--------------|----------------|
+| **Memory Store** | Save and search facts, preferences, and decisions | AI remembers context across sessions |
+| **Environment Params** | Secure key-value store for config and secrets | No more hardcoded API keys or env files |
+| **Knowledge Graph** | Temporal entity/fact relationships with FalkorDB | Track how knowledge evolves over time |
+| **Session Recorder** | Automatic conversation logging from AI tools | Complete audit trail, searchable history |
+| **Web Dashboard** | Visual interface for all features | Manage and explore your data easily |
+| **CLI Tools** | Command-line access to all operations | Script and automate memory operations |
+| **MCP Integration** | Standard protocol support | Works with Claude Code, Cursor, any MCP tool |
+| **Fast Search** | BM25 full-text via OpenSearch (<10ms) | No embedding costs, instant results |
+| **Privacy First** | 100% local, no external calls | Your data never leaves your machine |
+
+### Storage Layer
+
+- **PostgreSQL**: Metadata, indexes, env params, session tables
+- **OpenSearch**: Full-text BM25 search on memory content
+- **Redis**: 5-minute search result cache
+- **FalkorDB**: Temporal knowledge graph with Cypher queries
 
 ---
 
@@ -92,7 +185,9 @@ For **Cursor** or other tools, consult their MCP configuration documentation.
 
 #### Step 4: Use It
 
-Your AI now has two new tools:
+Your AI now has comprehensive memory capabilities:
+
+**💾 Memory Operations**
 
 **`memory_save`** - Save important information
 ```json
@@ -111,7 +206,68 @@ Your AI now has two new tools:
 }
 ```
 
-> 💡 **Pro Tip:** Before ending a conversation, ask: *"Please save anything important from our discussion"* to ensure key information is remembered.
+**🔐 Environment Parameters**
+
+**`env_set`** - Store configuration and secrets
+```json
+{
+  "key": "OPENAI_API_KEY",
+  "value": "sk-...",
+  "is_secret": true,
+  "description": "OpenAI API key for GPT-4"
+}
+```
+
+**`env_list`** - List available parameters (agents can call this to discover config)
+```json
+{}
+```
+
+**`env_get`** - Get normal parameter values (secrets blocked for agents)
+```json
+{
+  "key": "DEFAULT_MODEL"
+}
+```
+
+**🕸️ Knowledge Graph**
+
+Graph operations happen automatically as you save memories. Query via web UI or direct Cypher:
+
+**`graph.add_entity`** - Create/update entities
+```json
+{
+  "name": "TypeScript",
+  "entity_type": "Technology",
+  "group_id": "default",
+  "summary": "Typed superset of JavaScript"
+}
+```
+
+**`graph.add_fact`** - Create relationships between entities
+```json
+{
+  "source_entity_id": "uuid-1",
+  "target_entity_id": "uuid-2",
+  "name": "replaces",
+  "fact": "TypeScript replaces JavaScript in modern projects",
+  "valid_at": "2025-01-01T00:00:00Z"
+}
+```
+
+**📝 Session Recording**
+
+Sessions are recorded automatically. Query via CLI:
+
+```bash
+# List recent sessions
+mem sessions --limit 10
+
+# View session messages
+mem sessions messages <session-uuid>
+```
+
+> 💡 **Pro Tip:** Before ending a conversation, ask: *"Please save anything important from our discussion"* to ensure key information is explicitly remembered with proper importance scoring.
 
 ---
 
@@ -235,6 +391,71 @@ docker compose --profile dashboard up -d
 
 ---
 
+## ✅ Setup Verification
+
+After setup, verify everything is working:
+
+### 1. Check Infrastructure Health
+
+```bash
+# All containers should be running
+docker compose ps
+
+# Check health status
+curl http://localhost:8080/health        # Should return {"status":"ok"}
+curl http://localhost:9201               # OpenSearch info
+redis-cli -p 6399 PING                   # Should return "PONG"
+```
+
+### 2. Test Memory Operations
+
+```bash
+# Save a test memory
+mem save "Test memory from setup" --importance 0.5 --tags test
+
+# Search for it
+mem search "test setup"
+
+# List recent memories (should include your test)
+mem list --limit 5
+```
+
+### 3. Test Environment Parameters
+
+```bash
+# Set a test parameter
+mem env-set TEST_KEY "test_value" --description "Test parameter"
+
+# List parameters
+mem env-list
+
+# Get the value back
+mem env-get TEST_KEY
+
+# Clean up
+mem env-delete TEST_KEY
+```
+
+### 4. Check Session Recording (if using watcher profile)
+
+```bash
+# Generate some conversation in Claude Code, then check:
+mem sessions --limit 5
+
+# If no sessions appear:
+# - Check watcher logs: docker compose logs openmemory-watcher
+# - Verify conversation logs exist: ls ~/.claude/projects/
+```
+
+### 5. Test MCP Integration (if using Mode 1)
+
+In Claude Code or your MCP-compatible tool, try:
+- Ask the AI to search memory: "Search memory for 'test'"
+- Ask it to save something: "Save this to memory: I prefer concise responses"
+- Ask it to list env params: "What environment parameters are available?"
+
+---
+
 ## 🏗️ Architecture
 
 ```
@@ -242,26 +463,114 @@ docker compose --profile dashboard up -d
 │                      AI Tool (MCP)                      │
 │              (Claude Code, Cursor, etc.)                │
 └──────────────────┬──────────────────────────────────────┘
-                   │ stdio (MCP protocol)
+                   │ stdio (MCP protocol) or HTTP
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│                  OpenMemory MCP Server                  │
-│           (Rust binary: openmemory-mcp)                 │
+│              OpenMemory MCP/HTTP Server                 │
+│         (Rust binaries: openmemory-mcp/server)          │
 └──────────────────┬──────────────────────────────────────┘
                    │
-       ┌───────────┼───────────┐
-       ▼           ▼           ▼
-   PostgreSQL  OpenSearch   Redis
-   (Storage)   (Search)   (Cache)
+       ┌───────────┼────────────┬──────────────┐
+       ▼           ▼            ▼              ▼
+   PostgreSQL  OpenSearch    Redis        FalkorDB
+   (Storage)   (BM25 Search) (Cache)  (Knowledge Graph)
+       ▲
+       │ inotify/poll
+┌──────┴────────────────────────────────────────────────┐
+│               Session Watcher                         │
+│  Monitors: ~/.claude/**, ~/.gemini/**, ~/.codex/**    │
+└───────────────────────────────────────────────────────┘
 ```
 
 ### How It Works
 
-1. **Save**: AI calls `memory_save` → MCP server → PostgreSQL + OpenSearch index
-2. **Search**: AI calls `memory_search` → MCP server → OpenSearch BM25 query → Redis cache → ranked results
+#### Memory Storage & Search
+1. **Save**: AI calls `memory_save` → MCP/HTTP server → PostgreSQL (metadata) + OpenSearch (full-text index) + FalkorDB (graph node)
+2. **Search**: AI calls `memory_search` → Check Redis cache → OpenSearch BM25 query → Merge with PostgreSQL importance scores → Return ranked results
 3. **Score**: Results ranked by: `importance * 0.6 + recency * 0.4`
 
-See [docs/MVP.md](docs/MVP.md) for detailed architecture and design decisions.
+#### Environment Parameters
+1. **Set**: `env_set` → AES-GCM encrypt value → Store in PostgreSQL `env_params` table
+2. **Get**: `env_get` → Decrypt if normal param → Return value (secrets require API token)
+3. **List**: `env_list` → Return all keys + types (no values for secrets)
+
+#### Knowledge Graph
+1. **Entities**: Extracted from saved memories → Deduplicated by (name, type, group_id) → Stored as FalkorDB nodes
+2. **Facts**: Entity relationships with temporal validity → `FACT` edges with `valid_at` / `invalid_at` timestamps
+3. **Episodes**: Conversation chunks that mention entities → Provenance tracking via `MENTIONS` edges
+4. **Query**: Cypher queries at specific time points → Returns facts valid at that moment
+
+#### Session Recording
+1. **Watch**: Watcher monitors `~/.claude/projects/**/*.jsonl` and similar paths (inotify + fallback polling)
+2. **Parse**: Extracts user/assistant messages from JSONL events
+3. **Store**: Saves to `sessions` and `session_messages` tables in PostgreSQL
+4. **Query**: Via `mem sessions` CLI or web UI
+
+See [docs/design/architecture.md](docs/design/architecture.md) and [docs/design/graph-schema.md](docs/design/graph-schema.md) for detailed architecture.
+
+---
+
+## 📋 CLI Reference
+
+The `mem` CLI provides access to all OpenMemory features:
+
+### Memory Operations
+
+```bash
+# Save a memory
+mem save "User prefers dark mode" --importance 0.8 --tags preference,ui
+
+# Search memories
+mem search "dark mode" --limit 5
+
+# List recent memories
+mem list --limit 20
+
+# Get specific memory details
+mem get <memory-uuid>
+
+# Delete a memory
+mem delete <memory-uuid>
+```
+
+### Environment Parameters
+
+```bash
+# List all parameters (shows keys + types, no secret values)
+mem env-list
+
+# Set normal parameter (agent can read)
+mem env-set DEFAULT_MODEL "gpt-4o" --description "Preferred LLM model"
+
+# Set secret parameter (agent cannot read)
+mem env-set OPENAI_API_KEY "sk-..." --secret
+
+# Get parameter value (only works for normal params)
+mem env-get DEFAULT_MODEL
+
+# Delete parameter
+mem env-delete OLD_KEY
+```
+
+### Session History
+
+```bash
+# List recent sessions
+mem sessions --limit 50
+
+# Show session details
+mem sessions <session-uuid>
+
+# View messages in a session
+mem sessions messages <session-uuid> --limit 200
+
+# View messages after a specific message number
+mem sessions messages <session-uuid> --after 10
+```
+
+### Graph Operations
+
+Graph queries are currently available via web UI or direct Cypher queries to FalkorDB. CLI support coming soon.
 
 ---
 
@@ -330,21 +639,69 @@ pnpm test
 
 ### For Developers
 
-- **Project Context**: Save architectural decisions, coding preferences, and project conventions
-- **Bug Tracking**: Remember past bugs, their solutions, and related code patterns
-- **Refactoring History**: Track what was changed, why, and lessons learned
+**Memory:**
+- Save architectural decisions, coding preferences, and project conventions
+- Remember past bugs, their solutions, and related code patterns
+- Track refactoring history - what was changed, why, and lessons learned
+
+**Configuration:**
+- Store API keys, database URLs, and service endpoints securely
+- Share configuration across projects without hardcoding
+- Different secrets for dev/staging/prod environments
+
+**Knowledge Graph:**
+- Track which libraries depend on which frameworks
+- Map code ownership and component relationships
+- Understand how system architecture evolved over time
+
+**Session History:**
+- Review past debugging sessions and solutions
+- Search previous conversations for similar problems
+- Track project timeline and decision history
 
 ### For Researchers
 
-- **Literature Notes**: Store key findings from papers and articles
-- **Experiment Results**: Log outcomes, hypotheses, and insights
-- **Research Questions**: Maintain evolving questions and answers
+**Memory:**
+- Store key findings from papers and articles
+- Log experiment results and hypotheses
+- Maintain evolving research questions and answers
+
+**Configuration:**
+- Manage API keys for different research services
+- Store model parameters and hyperparameters
+- Track compute cluster endpoints and credentials
+
+**Knowledge Graph:**
+- Map paper citations and author relationships
+- Track concept evolution across papers
+- Connect experiments to theoretical foundations
+
+**Session History:**
+- Review data analysis conversations
+- Track experimental methodology discussions
+- Document hypothesis evolution
 
 ### For Writers
 
-- **Character Details**: Remember character traits, backstories, and relationships
-- **Plot Points**: Track story arcs, themes, and narrative decisions
-- **Style Preferences**: Store voice, tone, and formatting guidelines
+**Memory:**
+- Remember character details, traits, backstories, and relationships
+- Track plot points, story arcs, themes, and narrative decisions
+- Store voice, tone, and formatting guidelines
+
+**Configuration:**
+- Store API keys for research services and tools
+- Manage publication submission credentials
+- Track submission guidelines for different venues
+
+**Knowledge Graph:**
+- Map character relationships and interactions
+- Track plot thread dependencies
+- Connect themes across chapters/stories
+
+**Session History:**
+- Review past writing sessions and decisions
+- Search for previous character development discussions
+- Track story evolution and alternative paths considered
 
 ---
 
@@ -386,10 +743,127 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 Built with:
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) - Standard AI tool integration
-- [OpenSearch](https://opensearch.org/) - Fast BM25 search
-- [PostgreSQL](https://www.postgresql.org/) - Reliable storage
-- [Axum](https://github.com/tokio-rs/axum) - Rust web framework
+- [OpenSearch](https://opensearch.org/) - Fast BM25 full-text search
+- [PostgreSQL](https://www.postgresql.org/) - Reliable relational storage
+- [FalkorDB](https://www.falkordb.com/) - High-performance graph database for knowledge graphs
+- [Redis](https://redis.io/) - In-memory caching
+- [Axum](https://github.com/tokio-rs/axum) - Rust async web framework
 - [React](https://react.dev/) - UI framework
+- [Graphiti](https://github.com/getzep/graphiti) - Temporal knowledge graph inspiration
+
+---
+
+## ❓ FAQ
+
+### How is this different from RAG?
+
+Traditional RAG embeds documents and uses vector search. OpenMemory uses BM25 keyword search (no embeddings needed) + importance scoring + temporal knowledge graphs. It's faster, cheaper, and captures structured relationships.
+
+### Can I use this with tools other than Claude Code?
+
+Yes! Any tool that supports MCP (Model Context Protocol) can use the MCP server. For non-MCP tools, use the HTTP API via the CLI or direct HTTP calls.
+
+### Is my data encrypted?
+
+Environment parameters marked as `secret` are encrypted at rest using AES-GCM. Regular memories and session data are stored in plaintext in PostgreSQL (since they're on your local machine). All services bind to localhost only.
+
+### What happens if I lose my data?
+
+All data is stored in Docker volumes. Back them up regularly:
+```bash
+docker volume ls  # List volumes
+docker run --rm -v openmemory_postgres_data:/data -v $(pwd):/backup alpine tar czf /backup/postgres-backup.tar.gz /data
+```
+
+### Can I run this in production?
+
+OpenMemory is designed for local development. For production, you'd need to:
+- Add authentication (currently localhost-only)
+- Configure TLS for external access
+- Set up proper backups
+- Review security model for your use case
+
+### How much disk space does it use?
+
+Depends on usage. Typical storage:
+- Memory: ~1KB per memory
+- Sessions: ~500 bytes per message
+- Graph: ~2KB per entity, ~1KB per fact
+- OpenSearch: ~3x memory content size (indexed)
+
+### What's the performance like?
+
+- Memory search: <10ms (BM25 + cache)
+- Memory save: ~50ms (Postgres + OpenSearch + graph)
+- Env param operations: <5ms
+- Session recording: No impact (async background watcher)
+
+---
+
+## 🔧 Troubleshooting
+
+### Docker containers won't start
+
+```bash
+# Check Docker is running
+docker ps
+
+# Check logs
+docker compose logs postgres
+docker compose logs opensearch
+
+# Restart all services
+docker compose down && docker compose up -d
+```
+
+### MCP server not recognized in Claude Code
+
+1. Verify the binary exists: `ls -la target/release/openmemory-mcp`
+2. Check the path in `~/.claude/settings.json` is absolute
+3. Restart Claude Code after config changes
+4. Check MCP server logs (Claude Code shows these in the UI)
+
+### API health check fails
+
+```bash
+# Check if API server is running
+curl http://localhost:8080/health
+
+# If it fails, check if containers are up
+docker compose --profile api ps
+
+# Restart API server
+docker compose --profile api restart openmemory-server
+
+# Check logs
+docker compose logs openmemory-server
+```
+
+### Session watcher not recording conversations
+
+1. Verify watcher is running: `docker compose ps | grep watcher`
+2. Check paths are correct: Sessions only record from `~/.claude/projects/`, `~/.gemini/`, `~/.codex/`
+3. Check logs: `docker compose logs openmemory-watcher`
+4. For Docker Desktop/macOS/WSL, set `WATCHER_POLL_INTERVAL_SEC=60` in docker-compose.yml (inotify may not work across bind mounts)
+
+### OpenSearch out of memory
+
+Edit docker-compose.yml and increase heap size:
+```yaml
+environment:
+  OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"  # Increase from 512m
+```
+
+### Permission errors in watcher
+
+Add user mapping to docker-compose.yml:
+```yaml
+services:
+  openmemory-watcher:
+    user: "${UID}:${GID}"
+```
+
+Then restart: `docker compose --profile watcher restart openmemory-watcher`
 
 ---
 
