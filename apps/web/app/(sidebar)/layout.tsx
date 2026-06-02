@@ -3,11 +3,13 @@ import { AppSidebar } from '@/components/app-sidebar';
 
 export default function SidebarLayout({ children }: { children: React.ReactNode }) {
   return (
-    <SidebarProvider>
-      <AppSidebar />
-      <SidebarInset>
-        {children}
-      </SidebarInset>
-    </SidebarProvider>
+    <div className="h-svh overflow-hidden">
+      <SidebarProvider>
+        <AppSidebar />
+        <SidebarInset>
+          {children}
+        </SidebarInset>
+      </SidebarProvider>
+    </div>
   );
 }

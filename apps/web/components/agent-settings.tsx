@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -174,31 +173,29 @@ export function AgentSettings() {
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Bot className="h-5 w-5" />
-                Watcher Agents
-              </CardTitle>
-              <CardDescription className="mt-1">
-                Choose which AI tools to record. The watcher reloads agent config every 60 seconds.
-              </CardDescription>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={loadAgents} disabled={isLoading}>
-                <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? 'animate-spin' : ''}`} />
-                Refresh
-              </Button>
-              <Button size="sm" onClick={() => setIsAddOpen(true)}>
-                <Plus className="h-4 w-4 mr-1" />
-                Add Agent
-              </Button>
-            </div>
+      <div>
+        <div className="flex items-center justify-between pb-4">
+          <div>
+            <h2 className="font-semibold flex items-center gap-2">
+              <Bot className="h-5 w-5" />
+              Watcher Agents
+            </h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Choose which AI tools to record. The watcher reloads agent config every 60 seconds.
+            </p>
           </div>
-        </CardHeader>
-        <CardContent>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={loadAgents} disabled={isLoading}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Button size="sm" onClick={() => setIsAddOpen(true)}>
+              <Plus className="h-4 w-4 mr-1" />
+              Add Agent
+            </Button>
+          </div>
+        </div>
+        <div>
           {agents.length === 0 && !isLoading ? (
             <p className="text-sm text-muted-foreground text-center py-8">No agents configured.</p>
           ) : (
@@ -268,8 +265,8 @@ export function AgentSettings() {
               </TableBody>
             </Table>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Add Agent Dialog */}
       <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>

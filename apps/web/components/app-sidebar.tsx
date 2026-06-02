@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Database, FolderOpen, Search, Share2, Bot, History, SlidersHorizontal, Settings2, ChevronRight } from 'lucide-react';
+import { useTheme } from 'next-themes';
+import { Database, FolderOpen, Search, Share2, Bot, History, SlidersHorizontal, Settings2, ChevronRight, MoreHorizontal, Sun, Moon } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -16,7 +17,12 @@ import {
   SidebarMenuItem,
   SidebarTrigger,
 } from '@/components/ui/sidebar';
-import { ThemeToggle } from '@/components/theme-toggle';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 const NAV_GROUPS = [
   {
@@ -45,6 +51,7 @@ const NAV_GROUPS = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { theme, setTheme } = useTheme();
 
   return (
     <Sidebar collapsible="icon">
@@ -92,9 +99,26 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
-        <div className="flex items-center justify-center py-2">
-          <ThemeToggle />
-        </div>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton tooltip="Menu" className="h-auto py-2 gap-3 px-3 text-sm font-medium">
+                  <MoreHorizontal className="shrink-0" />
+                  <span>Menu</span>
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="start" className="w-48">
+                <DropdownMenuItem onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+                  {theme === 'dark'
+                    ? <Sun className="h-4 w-4" />
+                    : <Moon className="h-4 w-4" />}
+                  {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
   );

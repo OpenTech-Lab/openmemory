@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -197,7 +196,7 @@ export default function MemoryBrowsePage() {
   return (
     <div className="flex-1 overflow-auto p-4">
       {/* Page header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Browse</h1>
           <Badge variant="secondary" className="text-xs">
@@ -215,6 +214,7 @@ export default function MemoryBrowsePage() {
           </Button>
         </div>
       </div>
+      <div className="h-px bg-gradient-to-r from-border via-border/40 to-transparent mb-4" />
 
       {error && (
         <div className="mb-4">
@@ -226,32 +226,30 @@ export default function MemoryBrowsePage() {
         </div>
       )}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">All Memories</CardTitle>
-              <CardDescription>Browse and manage all stored memories</CardDescription>
-            </div>
-            <Select value={dataSource} onValueChange={(v) => setDataSource(v as 'all' | 'postgres' | 'opensearch')}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Select source" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">
-                  <div className="flex items-center gap-2"><Database className="h-4 w-4" /><span>All (Combined)</span></div>
-                </SelectItem>
-                <SelectItem value="postgres">
-                  <div className="flex items-center gap-2"><HardDrive className="h-4 w-4" /><span>PostgreSQL (Index)</span></div>
-                </SelectItem>
-                <SelectItem value="opensearch">
-                  <div className="flex items-center gap-2"><Cloud className="h-4 w-4" /><span>OpenSearch (Docs)</span></div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
+      <div>
+        <div className="flex items-center justify-between pb-3">
+          <div>
+            <h2 className="text-base font-semibold">All Memories</h2>
+            <p className="text-sm text-muted-foreground">Browse and manage all stored memories</p>
           </div>
-        </CardHeader>
-        <CardContent>
+          <Select value={dataSource} onValueChange={(v) => setDataSource(v as 'all' | 'postgres' | 'opensearch')}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Select source" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">
+                <div className="flex items-center gap-2"><Database className="h-4 w-4" /><span>All (Combined)</span></div>
+              </SelectItem>
+              <SelectItem value="postgres">
+                <div className="flex items-center gap-2"><HardDrive className="h-4 w-4" /><span>PostgreSQL (Index)</span></div>
+              </SelectItem>
+              <SelectItem value="opensearch">
+                <div className="flex items-center gap-2"><Cloud className="h-4 w-4" /><span>OpenSearch (Docs)</span></div>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
           {isLoading ? (
             <div className="flex items-center justify-center h-[400px]">
               <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -304,8 +302,8 @@ export default function MemoryBrowsePage() {
               )}
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* View Dialog */}
       <Dialog open={!!viewMemory} onOpenChange={() => setViewMemory(null)}>

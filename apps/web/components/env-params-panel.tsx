@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -204,28 +203,26 @@ export function EnvParamsPanel() {
     new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
-    <Card className="h-full">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="text-base">Environment Parameters</CardTitle>
-            <CardDescription>
-              Store config values and secrets. AI agents can write any param but cannot read secret values.
-            </CardDescription>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={fetchParams} disabled={isLoading}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-            <Button size="sm" onClick={() => setIsAddOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Parameter
-            </Button>
-          </div>
+    <div>
+      <div className="flex items-center justify-between pb-3">
+        <div>
+          <h2 className="text-base font-semibold">Environment Parameters</h2>
+          <p className="text-sm text-muted-foreground">
+            Store config values and secrets. AI agents can write any param but cannot read secret values.
+          </p>
         </div>
-      </CardHeader>
-      <CardContent>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={fetchParams} disabled={isLoading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Button size="sm" onClick={() => setIsAddOpen(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Parameter
+          </Button>
+        </div>
+      </div>
+      <div>
         {isLoading && params.length === 0 ? (
           <div className="flex items-center justify-center h-[300px]">
             <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -237,14 +234,15 @@ export function EnvParamsPanel() {
             <p className="text-xs mt-1">Add API keys, tokens, or config values for AI agents to use.</p>
           </div>
         ) : (
+          <div className="rounded-md border overflow-auto max-h-[600px]">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Key</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-background">Key</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-background">Type</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-background">Description</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-background">Created</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-background text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -303,8 +301,9 @@ export function EnvParamsPanel() {
               ))}
             </TableBody>
           </Table>
+          </div>
         )}
-      </CardContent>
+      </div>
 
       {/* Add Dialog */}
       <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
@@ -527,6 +526,6 @@ export function EnvParamsPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+    </div>
   );
 }

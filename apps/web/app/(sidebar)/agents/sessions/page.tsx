@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, FolderOpen, GitBranch, MessageSquare } from 'lucide-react';
 
@@ -39,24 +38,20 @@ export default function SessionsPage() {
 
   return (
     <div className="flex-1 overflow-auto p-4">
-      <h1 className="text-lg font-semibold mb-4">Sessions</h1>
+      <h1 className="text-lg font-semibold mb-2">Sessions</h1>
+      <div className="h-px bg-gradient-to-r from-border via-border/40 to-transparent mb-4" />
 
-      <Card className="h-full">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">Recorded Sessions</CardTitle>
-              <CardDescription>
-                {sessions.length} session{sessions.length !== 1 ? 's' : ''} captured by the watcher
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm" onClick={fetchSessions} disabled={isLoading}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
+      <div>
+        <div className="flex items-center justify-between pb-3">
+          <p className="text-sm text-muted-foreground">
+            {sessions.length} session{sessions.length !== 1 ? 's' : ''} captured by the watcher
+          </p>
+          <Button variant="outline" size="sm" onClick={fetchSessions} disabled={isLoading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        </div>
+        <div>
           {isLoading ? (
             <div className="flex items-center justify-center h-[400px]">
               <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -115,8 +110,8 @@ export default function SessionsPage() {
               </table>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }
