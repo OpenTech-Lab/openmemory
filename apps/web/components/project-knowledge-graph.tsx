@@ -334,18 +334,36 @@ export function ProjectKnowledgeGraph({ graphData, queryResult }: Props) {
   }, [buildGraph, labelColor]);
 
   const totalNodeCount = graphData.nodes?.length ?? 0;
+  const isTooBig = shouldShowCommunityView(graphData, queryResult);
+
+  // When the full graph is too large and no query is active, skip the sigma
+  // canvas entirely — community super-nodes with "inter-community" edges are
+  // confusing rather than useful. The search panel below handles exploration.
+  if (isTooBig) {
+    return (
+      <div className="relative w-full h-full flex flex-col items-center justify-center gap-3 text-center px-8">
+        <p className="text-4xl font-bold text-muted-foreground/30">{totalNodeCount.toLocaleString()}</p>
+        <p className="text-sm font-medium">nodes in this graph</p>
+        <p className="text-xs text-muted-foreground max-w-xs">
+          Too large to visualize all at once. Use the search below to explore a subgraph — type a function name, module, or concept.
+        </p>
+        {/* File type legend still useful as reference */}
+        <div className="absolute top-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs space-y-1">
+          {Object.entries(FILE_TYPE_PALETTE).map(([type, color]) => (
+            <div key={type} className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: color }} />
+              <span className="text-muted-foreground capitalize">{type}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative w-full h-full">
       {/* Sigma container — full size */}
       <div ref={containerRef} className="w-full h-full" />
-
-      {/* Community view notice */}
-      {isCommunityView && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-yellow-500/10 border border-yellow-500/30 rounded px-3 py-1.5 text-xs text-yellow-600 dark:text-yellow-400 text-center max-w-sm">
-          Showing community view — graph has {totalNodeCount.toLocaleString()} nodes (limit {MAX_NODES_FULL.toLocaleString()}). Select a query to explore a subgraph.
-        </div>
-      )}
 
       {/* Stats overlay (bottom-left) */}
       <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs text-muted-foreground">
