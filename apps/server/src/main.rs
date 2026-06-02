@@ -411,6 +411,88 @@ enum McpRequest {
         relationship: String,
     },
 
+    #[serde(rename = "graph.add_episode")]
+    GraphAddEpisode {
+        name: String,
+        source: String,
+        source_description: String,
+        content: String,
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        valid_at: Option<String>,
+    },
+
+    #[serde(rename = "graph.add_entity")]
+    GraphAddEntity {
+        name: String,
+        entity_type: String,
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        episode_id: Option<String>,
+    },
+
+    #[serde(rename = "graph.add_fact")]
+    GraphAddFact {
+        subject: String,
+        subject_type: String,
+        object: String,
+        object_type: String,
+        name: String,
+        fact: String,
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        episode_id: Option<String>,
+        #[serde(default)]
+        valid_at: Option<String>,
+        #[serde(default)]
+        invalidate_previous: Option<bool>,
+    },
+
+    #[serde(rename = "graph.query_facts")]
+    GraphQueryFacts {
+        query: String,
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        valid_only: Option<bool>,
+    },
+
+    #[serde(rename = "graph.query_at")]
+    GraphQueryAt {
+        timestamp: String,
+        #[serde(default)]
+        entity_name: Option<String>,
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    #[serde(rename = "graph.get_entity_history")]
+    GraphGetEntityHistory {
+        entity_name: String,
+        #[serde(default)]
+        group_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    #[serde(rename = "graph.get_entity")]
+    GraphGetEntity {
+        entity_name: String,
+        #[serde(default)]
+        entity_type: Option<String>,
+        #[serde(default)]
+        group_id: Option<String>,
+    },
+
     #[serde(rename = "env.set")]
     EnvSet {
         key: String,
@@ -487,6 +569,49 @@ enum McpResponse {
         from_id: Uuid,
         to_id: Uuid,
         relationship: String,
+    },
+
+    #[serde(rename = "graph.add_episode.result")]
+    GraphAddEpisodeResult {
+        id: Uuid,
+        created_at: DateTime<Utc>,
+    },
+
+    #[serde(rename = "graph.add_entity.result")]
+    GraphAddEntityResult {
+        id: String,
+        entity_name: String,
+        entity_type: String,
+        created: bool,
+    },
+
+    #[serde(rename = "graph.add_fact.result")]
+    GraphAddFactResult {
+        id: String,
+        invalidated_count: u32,
+    },
+
+    #[serde(rename = "graph.query_facts.result")]
+    GraphQueryFactsResult {
+        query: String,
+        facts: Vec<falkordb::FactResult>,
+    },
+
+    #[serde(rename = "graph.query_at.result")]
+    GraphQueryAtResult {
+        timestamp: String,
+        facts: Vec<falkordb::FactResult>,
+    },
+
+    #[serde(rename = "graph.get_entity_history.result")]
+    GraphGetEntityHistoryResult {
+        entity_name: String,
+        facts: Vec<falkordb::FactResult>,
+    },
+
+    #[serde(rename = "graph.get_entity.result")]
+    GraphGetEntityResult {
+        entity: Option<falkordb::EntityInfo>,
     },
 
     #[serde(rename = "env.set.result")]
@@ -1612,6 +1737,141 @@ async fn mcp(
                     ))
                 }
             }
+        }
+
+        McpRequest::GraphAddEpisode { name, source, source_description, content, group_id, valid_at } => {
+            let id = Uuid::new_v4();
+            let now = Utc::now();
+            let ts = valid_at.unwrap_or_else(|| now.to_rfc3339());
+            let gid = group_id.as_deref().unwrap_or("default");
+
+            match &state.falkordb {
+                None => Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({"error": "Graph layer not configured (FALKORDB_URL not set)"})),
+                )),
+                Some(fdb) => {
+                    let mut fdb = fdb.clone();
+                    fdb.add_episode(id, &name, &source, &source_description, &content, gid, &now.to_rfc3339(), &ts)
+                        .await
+                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+                    Ok((StatusCode::OK, Json(McpResponse::GraphAddEpisodeResult { id, created_at: now })))
+                }
+            }
+        }
+
+        McpRequest::GraphAddEntity { name, entity_type, group_id, summary, episode_id } => {
+            let new_id = Uuid::new_v4();
+            let now = Utc::now();
+            let gid = group_id.as_deref().unwrap_or("default");
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({"error": "Graph layer not configured (FALKORDB_URL not set)"})),
+                )),
+            };
+
+            let (entity_id, created) = fdb
+                .add_entity(new_id, &name, &entity_type, gid, summary.as_deref(), &now.to_rfc3339())
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+
+            if let Some(ref ep_id) = episode_id {
+                if let Ok(ep_uuid) = Uuid::parse_str(ep_id) {
+                    let _ = fdb.link_episode_to_entity(ep_uuid, &name, &entity_type, gid).await;
+                }
+            }
+
+            Ok((StatusCode::OK, Json(McpResponse::GraphAddEntityResult {
+                id: entity_id,
+                entity_name: name,
+                entity_type,
+                created,
+            })))
+        }
+
+        McpRequest::GraphAddFact { subject, subject_type, object, object_type, name, fact,
+                                    group_id, episode_id, valid_at, invalidate_previous } => {
+            let id = Uuid::new_v4();
+            let now = Utc::now();
+            let gid = group_id.as_deref().unwrap_or("default");
+            let now_str = now.to_rfc3339();
+            let ts = valid_at.as_deref().unwrap_or(&now_str);
+            let invalidate = invalidate_previous.unwrap_or(false);
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({"error": "Graph layer not configured (FALKORDB_URL not set)"})),
+                )),
+            };
+
+            let (fact_id, invalidated) = fdb
+                .add_fact(id, &subject, &subject_type, &object, &object_type,
+                          gid, &name, &fact, episode_id.as_deref(), ts, &now_str, invalidate)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+
+            Ok((StatusCode::OK, Json(McpResponse::GraphAddFactResult { id: fact_id, invalidated_count: invalidated })))
+        }
+
+        McpRequest::GraphQueryFacts { query, group_id, limit, valid_only } => {
+            let limit = limit.unwrap_or(10).clamp(1, 50);
+            let valid_only = valid_only.unwrap_or(false);
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Ok((StatusCode::OK, Json(McpResponse::GraphQueryFactsResult { query, facts: vec![] }))),
+            };
+
+            let facts = fdb.query_facts(&query, group_id.as_deref(), limit, valid_only)
+                .await
+                .unwrap_or_default();
+            Ok((StatusCode::OK, Json(McpResponse::GraphQueryFactsResult { query, facts })))
+        }
+
+        McpRequest::GraphQueryAt { timestamp, entity_name, group_id, limit } => {
+            let limit = limit.unwrap_or(20).clamp(1, 100);
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Ok((StatusCode::OK, Json(McpResponse::GraphQueryAtResult { timestamp, facts: vec![] }))),
+            };
+
+            let facts = fdb.query_at(&timestamp, entity_name.as_deref(), group_id.as_deref(), limit)
+                .await
+                .unwrap_or_default();
+            Ok((StatusCode::OK, Json(McpResponse::GraphQueryAtResult { timestamp, facts })))
+        }
+
+        McpRequest::GraphGetEntityHistory { entity_name, group_id, limit } => {
+            let limit = limit.unwrap_or(20).clamp(1, 100);
+
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityHistoryResult {
+                    entity_name, facts: vec![] }))),
+            };
+
+            let facts = fdb.get_entity_history(&entity_name, group_id.as_deref(), limit)
+                .await
+                .unwrap_or_default();
+            Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityHistoryResult { entity_name, facts })))
+        }
+
+        McpRequest::GraphGetEntity { entity_name, entity_type, group_id } => {
+            let mut fdb = match &state.falkordb {
+                Some(fdb) => fdb.clone(),
+                None => return Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityResult { entity: None }))),
+            };
+
+            let entity = fdb.get_entity(&entity_name, entity_type.as_deref(), group_id.as_deref())
+                .await
+                .unwrap_or(None);
+            Ok((StatusCode::OK, Json(McpResponse::GraphGetEntityResult { entity })))
         }
 
         McpRequest::EnvSet { key, value, is_secret, description } => {
