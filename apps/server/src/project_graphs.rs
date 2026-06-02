@@ -67,8 +67,19 @@ pub struct GraphQueryResponse {
 /// Returns `(json_data, sha256_hex_hash, file_size_bytes)`.
 pub async fn load_graph_json(path: &str) -> Result<(serde_json::Value, String, u64)> {
     // 1. Canonicalize project directory
-    let canonical = std::fs::canonicalize(path)
+    let canonical = tokio::fs::canonicalize(path).await
         .with_context(|| format!("Path does not exist or is not accessible: {path}"))?;
+
+    let allowed_root = std::env::var("OPENMEMORY_PROJECTS_ROOT")
+        .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
+    let allowed_path = std::path::Path::new(&allowed_root);
+    if !canonical.starts_with(allowed_path) {
+        anyhow::bail!(
+            "Path '{}' is outside the allowed projects root '{}'. Set OPENMEMORY_PROJECTS_ROOT to change this.",
+            canonical.display(),
+            allowed_root
+        );
+    }
 
     if !canonical.is_dir() {
         anyhow::bail!("Path is not a directory: {}", canonical.display());
@@ -500,5 +511,149 @@ pub fn node_from_json(id: &str, node_val: &serde_json::Value) -> GraphNode {
         community: node_val["community"].as_i64(),
         source_file: node_val["source_file"].as_str().map(sanitize_string),
         source_location: node_val["source_location"].as_str().map(sanitize_string),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── sanitize_string ───────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_strips_ansi_codes() {
+        let input = "\x1b[31mRed text\x1b[0m";
+        let result = sanitize_string(input);
+        assert_eq!(result, "Red text");
+    }
+
+    #[test]
+    fn sanitize_replaces_newlines() {
+        let input = "line one\nline two\r\nline three";
+        let result = sanitize_string(input);
+        assert_eq!(result, "line one line two  line three");
+    }
+
+    #[test]
+    fn sanitize_truncates_long_strings() {
+        let long_input: String = "a".repeat(600);
+        let result = sanitize_string(&long_input);
+        assert_eq!(result.chars().count(), 512);
+    }
+
+    #[test]
+    fn sanitize_short_string_unchanged() {
+        let input = "hello world";
+        let result = sanitize_string(input);
+        assert_eq!(result, "hello world");
+    }
+
+    // ── count_nodes_edges ─────────────────────────────────────────────────
+
+    #[test]
+    fn count_nodes_edges_basic() {
+        let data = json!({
+            "nodes": [{"id": "a"}, {"id": "b"}],
+            "links": [{"source": "a", "target": "b"}]
+        });
+        let (nodes, edges) = count_nodes_edges(&data);
+        assert_eq!(nodes, 2);
+        assert_eq!(edges, 1);
+    }
+
+    #[test]
+    fn count_nodes_edges_uses_edges_fallback() {
+        let data = json!({
+            "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+            "edges": [
+                {"source": "a", "target": "b"},
+                {"source": "b", "target": "c"}
+            ]
+        });
+        let (nodes, edges) = count_nodes_edges(&data);
+        assert_eq!(nodes, 3);
+        assert_eq!(edges, 2);
+    }
+
+    #[test]
+    fn count_nodes_edges_empty() {
+        let data = json!({});
+        let (nodes, edges) = count_nodes_edges(&data);
+        assert_eq!(nodes, 0);
+        assert_eq!(edges, 0);
+    }
+
+    // ── bfs_query ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn bfs_query_finds_seed_and_neighbors() {
+        // Graph: alpha -- beta -- gamma -- delta
+        let data = json!({
+            "nodes": [
+                {"id": "alpha", "label": "alpha module"},
+                {"id": "beta",  "label": "beta module"},
+                {"id": "gamma", "label": "gamma module"},
+                {"id": "delta", "label": "delta module"}
+            ],
+            "links": [
+                {"source": "alpha", "target": "beta",  "relation": "imports"},
+                {"source": "beta",  "target": "gamma", "relation": "imports"},
+                {"source": "gamma", "target": "delta", "relation": "imports"}
+            ]
+        });
+
+        // Search for "alpha" with 1 hop — should return alpha + beta
+        let resp = bfs_query(&data, "alpha", 1, 50);
+        assert!(resp.seed_nodes.contains(&"alpha".to_string()),
+            "seed_nodes should contain alpha, got {:?}", resp.seed_nodes);
+        let node_ids: Vec<&str> = resp.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(node_ids.contains(&"alpha"), "nodes should include alpha");
+        assert!(node_ids.contains(&"beta"),  "nodes should include beta (1 hop away)");
+    }
+
+    #[test]
+    fn bfs_query_no_match_returns_empty() {
+        let data = json!({
+            "nodes": [
+                {"id": "foo", "label": "foo"},
+                {"id": "bar", "label": "bar"}
+            ],
+            "links": [{"source": "foo", "target": "bar", "relation": "ref"}]
+        });
+
+        let resp = bfs_query(&data, "zzznomatch", 2, 50);
+        assert!(resp.seed_nodes.is_empty(), "no seed nodes expected for unmatched keyword");
+        assert!(resp.nodes.is_empty(), "no nodes expected for unmatched keyword");
+    }
+
+    #[test]
+    fn bfs_query_multi_hop() {
+        // Linear chain: a - b - c - d
+        let data = json!({
+            "nodes": [
+                {"id": "a", "label": "alpha"},
+                {"id": "b", "label": "bravo"},
+                {"id": "c", "label": "charlie"},
+                {"id": "d", "label": "delta"}
+            ],
+            "links": [
+                {"source": "a", "target": "b", "relation": "r"},
+                {"source": "b", "target": "c", "relation": "r"},
+                {"source": "c", "target": "d", "relation": "r"}
+            ]
+        });
+
+        // 2 hops from "alpha" should reach a, b, c but not d
+        let resp = bfs_query(&data, "alpha", 2, 50);
+        let node_ids: Vec<&str> = resp.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(node_ids.contains(&"a"), "should contain a");
+        assert!(node_ids.contains(&"b"), "should contain b");
+        assert!(node_ids.contains(&"c"), "should contain c");
+        assert!(!node_ids.contains(&"d"), "should NOT contain d at 2 hops");
     }
 }
