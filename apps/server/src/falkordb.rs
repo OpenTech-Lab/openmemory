@@ -104,6 +104,45 @@ impl FalkorDbClient {
         Ok(())
     }
 
+    /// Upsert an Episode node (immutable source record).
+    /// Episodes are never updated — MERGE on id ensures idempotency.
+    pub async fn add_episode(
+        &mut self,
+        id: Uuid,
+        name: &str,
+        source: &str,
+        source_description: &str,
+        content: &str,
+        group_id: &str,
+        created_at: &str,
+        valid_at: &str,
+    ) -> Result<()> {
+        let q = format!(
+            "MERGE (e:Episode {{id: \"{id}\"}}) \
+             SET e.name = {name}, \
+                 e.source = {source}, \
+                 e.source_description = {source_desc}, \
+                 e.content = {content}, \
+                 e.group_id = {group_id}, \
+                 e.created_at = {created_at}, \
+                 e.valid_at = {valid_at}",
+            name = escape_option_str(Some(name)),
+            source = escape_option_str(Some(source)),
+            source_desc = escape_option_str(Some(source_description)),
+            content = escape_option_str(Some(content)),
+            group_id = escape_option_str(Some(group_id)),
+            created_at = escape_option_str(Some(created_at)),
+            valid_at = escape_option_str(Some(valid_at)),
+        );
+        redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async::<redis::Value>(&mut self.conn)
+            .await
+            .context("FalkorDB add_episode failed")?;
+        Ok(())
+    }
+
     /// Upsert a memory node and auto-create RELATED_TO edges to nodes sharing ≥1 tag.
     pub async fn save_node(
         &mut self,
