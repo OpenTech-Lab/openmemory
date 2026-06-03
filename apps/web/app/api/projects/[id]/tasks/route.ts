@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { resolveApiToken } from '@/lib/api-token';
 
 const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
@@ -6,7 +6,6 @@ const API_TOKEN = resolveApiToken();
 
 type Params = { params: Promise<{ id: string }> };
 
-// auth headers (always required for project-graphs)
 function authHeaders(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
@@ -27,14 +26,19 @@ async function proxy(url: string, method: string, body?: unknown) {
       : { error: `Upstream error (${response.status}): ${(await response.text()).slice(0, 200)}` };
     return NextResponse.json(data, { status: response.status });
   } catch (error) {
-    console.error('project-graphs/[id]/query proxy error:', error);
+    console.error('projects/[id]/tasks proxy error:', error);
     return NextResponse.json({ error: 'Failed to fetch from server' }, { status: 500 });
   }
 }
 
-export async function GET(request: Request, { params }: Params) {
+export async function GET(req: NextRequest, { params }: Params) {
   const { id } = await params;
-  const { searchParams } = new URL(request.url);
-  const backendUrl = `${API_URL}/graph/projects/${id}/query?${searchParams.toString()}`;
-  return proxy(backendUrl, 'GET');
+  const search = req.nextUrl.search;
+  return proxy(`${API_URL}/projects/${id}/tasks${search}`, 'GET');
+}
+
+export async function POST(req: Request, { params }: Params) {
+  const { id } = await params;
+  const body = await req.json();
+  return proxy(`${API_URL}/projects/${id}/tasks`, 'POST', body);
 }

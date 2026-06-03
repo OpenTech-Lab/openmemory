@@ -111,9 +111,51 @@ fn default_messages_limit() -> i64 { 200 }
 #[derive(Debug, Deserialize)]
 struct CreateProjectGraphPayload {
     name: String,
-    path: String,
+    path: Option<String>,
     description: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct ProjectTask {
+    id: Uuid,
+    project_id: Uuid,
+    title: String,
+    description: Option<String>,
+    status: String,
+    priority: String,
+    assigned_to: Option<String>,
+    created_by: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskPayload {
+    title: String,
+    description: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    assigned_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTaskPayload {
+    title: Option<String>,
+    description: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    assigned_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListTasksParams {
+    status: Option<String>,
+    #[serde(default = "default_task_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+fn default_task_limit() -> i64 { 50 }
 
 #[derive(Debug, Deserialize)]
 struct QueryProjectGraphParams {
@@ -864,10 +906,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/:id/messages", get(get_session_messages))
         .route("/agents", get(list_agents).post(create_agent))
         .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
-        .route("/graph/projects", get(list_project_graphs).post(create_project_graph))
-        .route("/graph/projects/:id", get(get_project_graph).delete(delete_project_graph))
-        .route("/graph/projects/:id/rebuild", post(rebuild_project_graph))
-        .route("/graph/projects/:id/query", get(query_project_graph))
+        .route("/projects", get(list_project_graphs).post(create_project_graph))
+        .route("/projects/:id", get(get_project_graph).delete(delete_project_graph))
+        .route("/projects/:id/rebuild", post(rebuild_project_graph))
+        .route("/projects/:id/query", get(query_project_graph))
+        .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
+        .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
@@ -1002,6 +1046,36 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .execute(db)
         .await
         .ok();
+
+    // Make path optional (idempotent on fresh DBs; fixes NOT NULL on existing DBs)
+    sqlx::query("ALTER TABLE project_graphs ALTER COLUMN path DROP NOT NULL")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_graphs ALTER COLUMN canonical_path DROP NOT NULL")
+        .execute(db).await.ok();
+
+    // Project tasks table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_tasks (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id   UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            title        TEXT        NOT NULL,
+            description  TEXT,
+            status       TEXT        NOT NULL DEFAULT 'todo',
+            priority     TEXT        NOT NULL DEFAULT 'medium',
+            assigned_to  TEXT,
+            created_by   TEXT        NOT NULL DEFAULT 'human',
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_tasks table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id)")
+        .execute(db).await.ok();
 
     info!("PostgreSQL migrations complete");
     run_session_migrations(db).await?;
@@ -2681,42 +2755,65 @@ async fn create_project_graph(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    if payload.name.trim().is_empty() || payload.path.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name and path must be non-empty"}))).into_response();
+    if payload.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name must be non-empty"}))).into_response();
     }
 
-    let (graph_data, graph_hash, file_size, canonical) = match project_graphs::load_graph_json(&payload.path).await {
-        Ok(result) => result,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
-        }
+    let (graph_data, graph_hash, file_size, path_stored, canonical_stored, node_count, edge_count) =
+        if let Some(ref p) = payload.path {
+            if p.trim().is_empty() {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "path must be non-empty when provided"}))).into_response();
+            }
+            match project_graphs::load_graph_json(p).await {
+                Ok((data, hash, size, canonical)) => {
+                    let (nc, ec) = project_graphs::count_nodes_edges(&data);
+                    (data, Some(hash), size as i64, Some(p.clone()), Some(canonical), nc, ec)
+                }
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+            }
+        } else {
+            (serde_json::json!({}), None, 0i64, None, None, 0i32, 0i32)
+        };
+
+    let row = if canonical_stored.is_some() {
+        sqlx::query(
+            "INSERT INTO project_graphs \
+             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
+             ON CONFLICT (canonical_path) DO UPDATE SET \
+               name = $1, description = $4, graph_data = $5, graph_hash = $6, \
+               graph_file_size = $7, node_count = $8, edge_count = $9, \
+               imported_at = NOW(), updated_at = NOW() \
+             RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
+                       graph_hash, graph_file_size, imported_at, created_at, updated_at, \
+                       (xmax = 0) AS was_inserted"
+        )
+        .bind(&payload.name)
+        .bind(&path_stored)
+        .bind(&canonical_stored)
+        .bind(&payload.description)
+        .bind(&graph_data)
+        .bind(&graph_hash)
+        .bind(file_size)
+        .bind(node_count)
+        .bind(edge_count)
+        .fetch_one(&state.db)
+        .await
+    } else {
+        sqlx::query(
+            "INSERT INTO project_graphs \
+             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count) \
+             VALUES ($1, NULL, NULL, $2, $3, NULL, 0, 0, 0) \
+             RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
+                       graph_hash, graph_file_size, imported_at, created_at, updated_at, \
+                       TRUE AS was_inserted"
+        )
+        .bind(&payload.name)
+        .bind(&payload.description)
+        .bind(serde_json::json!({}))
+        .fetch_one(&state.db)
+        .await
     };
-
-    let (node_count, edge_count) = project_graphs::count_nodes_edges(&graph_data);
-
-    let row = sqlx::query(
-        "INSERT INTO project_graphs \
-         (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
-         ON CONFLICT (canonical_path) DO UPDATE SET \
-           name = $1, description = $4, graph_data = $5, graph_hash = $6, \
-           graph_file_size = $7, node_count = $8, edge_count = $9, \
-           imported_at = NOW(), updated_at = NOW() \
-         RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                   graph_hash, graph_file_size, imported_at, created_at, updated_at, \
-                   (xmax = 0) AS was_inserted"
-    )
-    .bind(&payload.name)
-    .bind(&payload.path)
-    .bind(&canonical)
-    .bind(&payload.description)
-    .bind(&graph_data)
-    .bind(&graph_hash)
-    .bind(file_size as i64)
-    .bind(node_count)
-    .bind(edge_count)
-    .fetch_one(&state.db)
-    .await;
 
     match row {
         Ok(r) => {
@@ -2725,8 +2822,8 @@ async fn create_project_graph(
             let project = serde_json::json!({
                 "id": r.try_get::<uuid::Uuid, _>("id").ok(),
                 "name": r.try_get::<String, _>("name").ok(),
-                "path": r.try_get::<String, _>("path").ok(),
-                "canonical_path": r.try_get::<String, _>("canonical_path").ok(),
+                "path": r.try_get::<Option<String>, _>("path").ok().flatten(),
+                "canonical_path": r.try_get::<Option<String>, _>("canonical_path").ok().flatten(),
                 "description": r.try_get::<Option<String>, _>("description").ok().flatten(),
                 "node_count": r.try_get::<i32, _>("node_count").ok(),
                 "edge_count": r.try_get::<i32, _>("edge_count").ok(),
@@ -2849,8 +2946,13 @@ async fn rebuild_project_graph(
         }
     };
 
-    let path: String = row.try_get("path").unwrap_or_default();
+    let path: Option<String> = row.try_get("path").unwrap_or(None);
     let old_hash: Option<String> = row.try_get("graph_hash").unwrap_or(None);
+
+    let path = match path {
+        Some(p) if !p.is_empty() => p,
+        _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "this project has no folder path — add a path before rebuilding"}))).into_response(),
+    };
 
     let (graph_data, graph_hash, file_size, _canonical) = match project_graphs::load_graph_json(&path).await {
         Ok(result) => result,
@@ -2992,6 +3094,156 @@ async fn query_project_graph(
     let limit = params.limit.min(200);
     let result = project_graphs::bfs_query(&graph_data, &params.q, hops, limit);
     Json(serde_json::json!(result)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Project Task handlers
+// ---------------------------------------------------------------------------
+
+async fn list_project_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(params): Query<ListTasksParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.max(0);
+
+    let rows = if let Some(ref status) = params.status {
+        sqlx::query_as::<_, ProjectTask>(
+            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at \
+             FROM project_tasks WHERE project_id = $1 AND status = $2 \
+             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+        )
+        .bind(project_id).bind(status).bind(limit).bind(offset)
+        .fetch_all(&state.db).await
+    } else {
+        sqlx::query_as::<_, ProjectTask>(
+            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at \
+             FROM project_tasks WHERE project_id = $1 \
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        )
+        .bind(project_id).bind(limit).bind(offset)
+        .fetch_all(&state.db).await
+    };
+
+    match rows {
+        Ok(tasks) => Json(serde_json::json!({"tasks": tasks, "total": tasks.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_tasks error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateTaskPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if payload.title.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "title must be non-empty"}))).into_response();
+    }
+
+    let status = payload.status.as_deref().unwrap_or("todo");
+    let priority = payload.priority.as_deref().unwrap_or("medium");
+
+    let row = sqlx::query_as::<_, ProjectTask>(
+        "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'human') \
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at"
+    )
+    .bind(project_id)
+    .bind(&payload.title)
+    .bind(&payload.description)
+    .bind(status)
+    .bind(priority)
+    .bind(&payload.assigned_to)
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(task) => (StatusCode::CREATED, Json(serde_json::json!(task))).into_response(),
+        Err(e) => {
+            error!("create_project_task error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, task_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateTaskPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let row = sqlx::query_as::<_, ProjectTask>(
+        "UPDATE project_tasks SET \
+         title = COALESCE($1, title), \
+         description = CASE WHEN $2::text IS NOT NULL THEN $2 ELSE description END, \
+         status = COALESCE($3, status), \
+         priority = COALESCE($4, priority), \
+         assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
+         updated_at = NOW() \
+         WHERE id = $6 AND project_id = $7 \
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at"
+    )
+    .bind(&payload.title)
+    .bind(&payload.description)
+    .bind(&payload.status)
+    .bind(&payload.priority)
+    .bind(&payload.assigned_to)
+    .bind(task_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(task)) => Json(serde_json::json!(task)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "task not found"}))).into_response(),
+        Err(e) => {
+            error!("update_project_task error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_project_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, task_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let result = sqlx::query("DELETE FROM project_tasks WHERE id = $1 AND project_id = $2 RETURNING id")
+        .bind(task_id)
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await;
+
+    match result {
+        Ok(Some(_)) => Json(serde_json::json!({"deleted": task_id})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "task not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_task error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
 }
 
 #[allow(dead_code)]

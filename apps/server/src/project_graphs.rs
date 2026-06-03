@@ -15,8 +15,8 @@ use uuid::Uuid;
 pub struct ProjectGraphRow {
     pub id: Uuid,
     pub name: String,
-    pub path: String,
-    pub canonical_path: String,
+    pub path: Option<String>,
+    pub canonical_path: Option<String>,
     pub description: Option<String>,
     pub node_count: i32,
     pub edge_count: i32,

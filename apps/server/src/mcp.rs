@@ -267,6 +267,36 @@ impl McpServer {
         .await
         .context("failed to create idx_project_graphs_created_at")?;
 
+        // Make path optional
+        sqlx::query("ALTER TABLE project_graphs ALTER COLUMN path DROP NOT NULL")
+            .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_graphs ALTER COLUMN canonical_path DROP NOT NULL")
+            .execute(&db).await.ok();
+
+        // Project tasks table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS project_tasks (
+                id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                project_id   UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+                title        TEXT        NOT NULL,
+                description  TEXT,
+                status       TEXT        NOT NULL DEFAULT 'todo',
+                priority     TEXT        NOT NULL DEFAULT 'medium',
+                assigned_to  TEXT,
+                created_by   TEXT        NOT NULL DEFAULT 'human',
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .context("failed to create project_tasks table")?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id)")
+            .execute(&db).await.ok();
+
         // OpenSearch connection
         let opensearch_url = std::env::var("OPENSEARCH_URL")
             .unwrap_or_else(|_| "http://localhost:9201".to_string());
@@ -711,6 +741,83 @@ impl McpServer {
                             "path": {"type": "string"}
                         }
                     }
+                },
+                {
+                    "name": "project_list",
+                    "description": "List all projects with their task counts. Use this to find project_id for task operations.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "project_create",
+                    "description": "Create a new project. Folder path is optional — omit it for a pure task-management project with no knowledge graph.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Display name for the project"},
+                            "path": {"type": "string", "description": "Optional: absolute path to a folder with graphify-out/graph.json"},
+                            "description": {"type": "string", "description": "Optional description"}
+                        },
+                        "required": ["name"]
+                    }
+                },
+                {
+                    "name": "project_task_list",
+                    "description": "List tasks for a project. Optionally filter by status (todo, in_progress, done).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "status": {"type": "string", "description": "Filter by status: todo | in_progress | done"},
+                            "limit": {"type": "integer", "description": "Max results (default 50)"},
+                            "offset": {"type": "integer", "description": "Pagination offset (default 0)"}
+                        },
+                        "required": ["project_id"]
+                    }
+                },
+                {
+                    "name": "project_task_create",
+                    "description": "Create a task in a project. Can be used by AI agents to add work items.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "title": {"type": "string", "description": "Task title"},
+                            "description": {"type": "string", "description": "Optional detailed description"},
+                            "status": {"type": "string", "description": "todo | in_progress | done (default: todo)"},
+                            "priority": {"type": "string", "description": "low | medium | high (default: medium)"},
+                            "assigned_to": {"type": "string", "description": "human | agent | null"}
+                        },
+                        "required": ["project_id", "title"]
+                    }
+                },
+                {
+                    "name": "project_task_update",
+                    "description": "Update a task's title, description, status, priority, or assigned_to. Only provided fields are changed.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string"},
+                            "task_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "status": {"type": "string", "description": "todo | in_progress | done"},
+                            "priority": {"type": "string", "description": "low | medium | high"},
+                            "assigned_to": {"type": "string", "description": "human | agent | null"}
+                        },
+                        "required": ["project_id", "task_id"]
+                    }
+                },
+                {
+                    "name": "project_task_delete",
+                    "description": "Delete a task permanently.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string"},
+                            "task_id": {"type": "string"}
+                        },
+                        "required": ["project_id", "task_id"]
+                    }
                 }
             ]
         }))
@@ -746,6 +853,12 @@ impl McpServer {
             "project_graph_god_nodes" => self.project_graph_god_nodes(arguments).await,
             "project_graph_delete" => self.project_graph_delete(arguments).await,
             "project_graph_rebuild" => self.project_graph_rebuild(arguments).await,
+            "project_list" => self.project_list(arguments).await,
+            "project_create" => self.project_create(arguments).await,
+            "project_task_list" => self.project_task_list(arguments).await,
+            "project_task_create" => self.project_task_create(arguments).await,
+            "project_task_update" => self.project_task_update(arguments).await,
+            "project_task_delete" => self.project_task_delete(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
         }
     }
@@ -1333,7 +1446,7 @@ impl McpServer {
                 "• {} [id: {}]\n  path: {}\n  nodes: {}  edges: {}  size: {}  imported: {}{}\n\n",
                 r.name,
                 r.id,
-                r.path,
+                r.path.as_deref().unwrap_or("-"),
                 r.node_count,
                 r.edge_count,
                 size_str,
@@ -1736,6 +1849,197 @@ impl McpServer {
                 )
             }]
         }))
+    }
+
+    async fn project_list(&mut self, _args: &serde_json::Value) -> Result<serde_json::Value> {
+        let rows = sqlx::query(
+            r#"SELECT p.id, p.name, p.path, p.description, p.node_count, p.edge_count,
+                      COUNT(t.id) AS task_count
+               FROM project_graphs p
+               LEFT JOIN project_tasks t ON t.project_id = p.id
+               GROUP BY p.id ORDER BY p.created_at DESC"#,
+        )
+        .fetch_all(&self.db)
+        .await
+        .context("failed to list projects")?;
+
+        if rows.is_empty() {
+            return Ok(json!({"content": [{"type": "text", "text": "No projects yet. Use project_create to add one."}]}));
+        }
+
+        let mut text = format!("Projects ({}):\n\n", rows.len());
+        for r in &rows {
+            let id: Uuid = r.try_get("id").unwrap_or(Uuid::nil());
+            let name: String = r.try_get("name").unwrap_or_default();
+            let path: Option<String> = r.try_get("path").unwrap_or(None);
+            let task_count: i64 = r.try_get("task_count").unwrap_or(0);
+            let node_count: i32 = r.try_get("node_count").unwrap_or(0);
+            text.push_str(&format!(
+                "• {} [id: {}]  tasks: {}  nodes: {}{}\n",
+                name, id, task_count, node_count,
+                path.as_deref().map(|p| format!("\n  path: {}", p)).unwrap_or_default(),
+            ));
+        }
+
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn project_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let name = args["name"].as_str().context("missing name")?.to_string();
+        let path_opt = args["path"].as_str().map(|s| s.to_string());
+        let description = args["description"].as_str().map(|s| s.to_string());
+
+        if let Some(ref path) = path_opt {
+            let (data, hash, size, canonical) = project_graphs::load_graph_json(path).await?;
+            let (node_count, edge_count) = project_graphs::count_nodes_edges(&data);
+            sqlx::query(
+                r#"INSERT INTO project_graphs (name, path, canonical_path, description, node_count, edge_count,
+                   graph_data, graph_hash, graph_file_size, imported_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                   ON CONFLICT (canonical_path) DO UPDATE SET
+                     name = EXCLUDED.name, description = COALESCE(EXCLUDED.description, project_graphs.description),
+                     node_count = EXCLUDED.node_count, edge_count = EXCLUDED.edge_count,
+                     graph_data = EXCLUDED.graph_data, graph_hash = EXCLUDED.graph_hash,
+                     graph_file_size = EXCLUDED.graph_file_size, imported_at = EXCLUDED.imported_at,
+                     updated_at = NOW()"#,
+            )
+            .bind(&name).bind(path).bind(&canonical).bind(&description)
+            .bind(node_count).bind(edge_count).bind(&data)
+            .bind(&hash).bind(size as i64)
+            .execute(&self.db).await.context("failed to create project")?;
+            Ok(json!({"content": [{"type": "text", "text": format!("Created project '{}' with graph ({} nodes, {} edges).", name, node_count, edge_count)}]}))
+        } else {
+            sqlx::query(
+                "INSERT INTO project_graphs (name, path, canonical_path, description, graph_data) \
+                 VALUES ($1, NULL, NULL, $2, '{}'::jsonb)"
+            )
+            .bind(&name).bind(&description)
+            .execute(&self.db).await.context("failed to create project")?;
+            Ok(json!({"content": [{"type": "text", "text": format!("Created project '{}' (no graph path — task management only).", name)}]}))
+        }
+    }
+
+    async fn project_task_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let status_filter = args["status"].as_str();
+        let limit: i64 = args["limit"].as_i64().unwrap_or(50).min(200);
+        let offset: i64 = args["offset"].as_i64().unwrap_or(0).max(0);
+
+        let tasks = if let Some(status) = status_filter {
+            sqlx::query(
+                "SELECT id, title, status, priority, assigned_to, created_by, created_at \
+                 FROM project_tasks WHERE project_id = $1 AND status = $2 \
+                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+            )
+            .bind(project_id).bind(status).bind(limit).bind(offset)
+            .fetch_all(&self.db).await
+        } else {
+            sqlx::query(
+                "SELECT id, title, status, priority, assigned_to, created_by, created_at \
+                 FROM project_tasks WHERE project_id = $1 \
+                 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            )
+            .bind(project_id).bind(limit).bind(offset)
+            .fetch_all(&self.db).await
+        }.context("failed to list tasks")?;
+
+        if tasks.is_empty() {
+            return Ok(json!({"content": [{"type": "text", "text": "No tasks found."}]}));
+        }
+
+        let mut text = format!("Tasks ({}):\n\n", tasks.len());
+        for t in &tasks {
+            let id: Uuid = t.try_get("id").unwrap_or(Uuid::nil());
+            let title: String = t.try_get("title").unwrap_or_default();
+            let status: String = t.try_get("status").unwrap_or_default();
+            let priority: String = t.try_get("priority").unwrap_or_default();
+            let assigned: Option<String> = t.try_get("assigned_to").unwrap_or(None);
+            text.push_str(&format!(
+                "• [{}] {} ({}){}\n  id: {}\n",
+                status, title, priority,
+                assigned.as_deref().map(|a| format!(" → {}", a)).unwrap_or_default(),
+                id
+            ));
+        }
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn project_task_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let title = args["title"].as_str().context("missing title")?.to_string();
+        let description = args["description"].as_str().map(|s| s.to_string());
+        let status = args["status"].as_str().unwrap_or("todo");
+        let priority = args["priority"].as_str().unwrap_or("medium");
+        let assigned_to = args["assigned_to"].as_str().map(|s| s.to_string());
+
+        let row = sqlx::query(
+            "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'agent') RETURNING id"
+        )
+        .bind(project_id).bind(&title).bind(&description)
+        .bind(status).bind(priority).bind(&assigned_to)
+        .fetch_one(&self.db).await.context("failed to create task")?;
+
+        let id: Uuid = row.try_get("id").unwrap_or(Uuid::nil());
+        Ok(json!({"content": [{"type": "text", "text": format!("Created task '{}' [{}] id: {}", title, status, id)}]}))
+    }
+
+    async fn project_task_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let task_id: Uuid = args["task_id"].as_str()
+            .context("missing task_id")?
+            .parse().context("invalid task_id UUID")?;
+
+        let title = args["title"].as_str().map(|s| s.to_string());
+        let description = args["description"].as_str().map(|s| s.to_string());
+        let status = args["status"].as_str().map(|s| s.to_string());
+        let priority = args["priority"].as_str().map(|s| s.to_string());
+        let assigned_to = args["assigned_to"].as_str().map(|s| s.to_string());
+
+        let result = sqlx::query(
+            "UPDATE project_tasks SET \
+             title = COALESCE($1, title), \
+             description = CASE WHEN $2::text IS NOT NULL THEN $2 ELSE description END, \
+             status = COALESCE($3, status), \
+             priority = COALESCE($4, priority), \
+             assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
+             updated_at = NOW() \
+             WHERE id = $6 AND project_id = $7 RETURNING id"
+        )
+        .bind(&title).bind(&description).bind(&status).bind(&priority).bind(&assigned_to)
+        .bind(task_id).bind(project_id)
+        .fetch_optional(&self.db).await.context("failed to update task")?;
+
+        if result.is_none() {
+            return Ok(json!({"content": [{"type": "text", "text": "Task not found."}]}));
+        }
+        Ok(json!({"content": [{"type": "text", "text": format!("Updated task {}.", task_id)}]}))
+    }
+
+    async fn project_task_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let task_id: Uuid = args["task_id"].as_str()
+            .context("missing task_id")?
+            .parse().context("invalid task_id UUID")?;
+
+        let result = sqlx::query(
+            "DELETE FROM project_tasks WHERE id = $1 AND project_id = $2 RETURNING id"
+        )
+        .bind(task_id).bind(project_id)
+        .fetch_optional(&self.db).await.context("failed to delete task")?;
+
+        if result.is_none() {
+            return Ok(json!({"content": [{"type": "text", "text": "Task not found."}]}));
+        }
+        Ok(json!({"content": [{"type": "text", "text": format!("Deleted task {}.", task_id)}]}))
     }
 }
 
