@@ -62,6 +62,16 @@ pub struct GraphQueryResponse {
 // Public functions
 // ---------------------------------------------------------------------------
 
+/// Validate that `path` exists and is a directory, then return its canonical form.
+pub async fn canonicalize_project_path(path: &str) -> Result<String> {
+    let canonical = tokio::fs::canonicalize(path).await
+        .with_context(|| format!("Path does not exist or is not accessible: {path}"))?;
+    if !canonical.is_dir() {
+        anyhow::bail!("Path is not a directory: {}", canonical.display());
+    }
+    Ok(canonical.to_string_lossy().to_string())
+}
+
 /// Read and validate a graphify `graph.json` from a project path.
 ///
 /// Returns `(json_data, sha256_hex_hash, file_size_bytes, canonical_path_string)`.

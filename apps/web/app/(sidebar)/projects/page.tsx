@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2 } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2 } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -73,6 +73,21 @@ interface Task {
   project_name?: string;
 }
 
+interface Routine {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  frequency: string;
+  priority: string;
+  assigned_to: string | null;
+  enabled: boolean;
+  last_task_date: string | null;
+  created_at: string;
+  updated_at: string;
+  project_name?: string;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   scheduled: 'Scheduled',
   todo: 'Todo',
@@ -104,6 +119,7 @@ export default function ProjectsPageWrapper() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [routines, setRoutines] = useState<Routine[]>([]);
   const [taskCounts, setTaskCounts] = useState<Record<string, number>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
@@ -113,6 +129,12 @@ export default function ProjectsPageWrapper() {
   const [confirmDeleteTaskId, setConfirmDeleteTaskId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ title: '', description: '', status: '', priority: '', assigned_to: '' });
   const [isSavingTask, setIsSavingTask] = useState(false);
+
+  // Routine edit sheet
+  const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
+  const [routineEditForm, setRoutineEditForm] = useState({ title: '', description: '', frequency: '', priority: '', assigned_to: '', enabled: true });
+  const [isSavingRoutine, setIsSavingRoutine] = useState(false);
+  const [confirmDeleteRoutine, setConfirmDeleteRoutine] = useState(false);
 
   // Create project dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -155,17 +177,25 @@ export default function ProjectsPageWrapper() {
     setIsLoadingTasks(true);
     try {
       const allTasks: Task[] = [];
+      const allRoutines: Routine[] = [];
       const counts: Record<string, number> = {};
       await Promise.all(
         projectList.map(async (p) => {
-          const res = await fetch(`/api/projects/${p.id}/tasks?limit=200`);
-          const data = await res.json();
-          const pts: Task[] = (data.tasks ?? []).map((t: Task) => ({ ...t, project_name: p.name }));
+          const [taskRes, routineRes] = await Promise.all([
+            fetch(`/api/projects/${p.id}/tasks?limit=200`),
+            fetch(`/api/projects/${p.id}/routines`),
+          ]);
+          const taskData = await taskRes.json();
+          const routineData = await routineRes.json();
+          const pts: Task[] = (taskData.tasks ?? []).map((t: Task) => ({ ...t, project_name: p.name }));
+          const prs: Routine[] = (routineData.routines ?? []).map((r: Routine) => ({ ...r, project_name: p.name }));
           allTasks.push(...pts);
+          allRoutines.push(...prs);
           counts[p.id] = pts.length;
         })
       );
       setTasks(allTasks);
+      setRoutines(allRoutines);
       setTaskCounts(counts);
     } catch {
       toast.error('Failed to load tasks');
@@ -362,6 +392,46 @@ export default function ProjectsPageWrapper() {
     }
   };
 
+  const openRoutineSheet = (routine: Routine) => {
+    setSelectedRoutine(routine);
+    setRoutineEditForm({
+      title: routine.title,
+      description: routine.description ?? '',
+      frequency: routine.frequency,
+      priority: routine.priority,
+      assigned_to: routine.assigned_to ?? '',
+      enabled: routine.enabled,
+    });
+  };
+
+  const handleSaveRoutine = async () => {
+    if (!selectedRoutine) return;
+    setIsSavingRoutine(true);
+    try {
+      const res = await fetch(`/api/projects/${selectedRoutine.project_id}/routines/${selectedRoutine.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: routineEditForm.title,
+          description: routineEditForm.description || null,
+          frequency: routineEditForm.frequency,
+          priority: routineEditForm.priority,
+          assigned_to: routineEditForm.assigned_to || null,
+          enabled: routineEditForm.enabled,
+        }),
+      });
+      if (!res.ok) { toast.error('Failed to save routine'); return; }
+      const updated = await res.json();
+      setRoutines(prev => prev.map(r => r.id === selectedRoutine.id ? { ...r, ...updated, project_name: r.project_name } : r));
+      setSelectedRoutine(prev => prev ? { ...prev, ...updated } : null);
+      toast.success('Routine saved');
+    } catch {
+      toast.error('Failed to save routine');
+    } finally {
+      setIsSavingRoutine(false);
+    }
+  };
+
   const handleDeleteTask = async (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
@@ -383,15 +453,32 @@ export default function ProjectsPageWrapper() {
     }
   };
 
+  const handleDeleteRoutine = async () => {
+    if (!selectedRoutine) return;
+    const routine = selectedRoutine;
+    setSelectedRoutine(null);
+    setRoutines(prev => prev.filter(r => r.id !== routine.id));
+    try {
+      const res = await fetch(`/api/projects/${routine.project_id}/routines/${routine.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        setRoutines(prev => [...prev, routine]);
+        toast.error('Failed to delete routine');
+      } else {
+        toast.success('Routine deleted');
+      }
+    } catch {
+      setRoutines(prev => [...prev, routine]);
+      toast.error('Failed to delete routine');
+    }
+  };
+
   const columns: ColumnDef<Project>[] = [
     {
       accessorKey: 'name',
       header: 'Name',
       cell: ({ row }) => (
         <div className="flex items-center gap-2">
-          <Link href={`/projects/${row.original.id}`} className="text-primary hover:underline font-medium">
-            {row.original.name}
-          </Link>
+          <span className="font-medium">{row.original.name}</span>
           {(taskCounts[row.original.id] ?? 0) > 0 && (
             <Badge variant="secondary" className="text-xs">
               {taskCounts[row.original.id]} task{taskCounts[row.original.id] !== 1 ? 's' : ''}
@@ -423,6 +510,18 @@ export default function ProjectsPageWrapper() {
       cell: ({ row }) => <Badge variant="outline">{row.original.edge_count.toLocaleString()}</Badge>,
     },
     {
+      id: 'graph',
+      header: 'Graph',
+      cell: ({ row }) =>
+        row.original.node_count > 0 ? (
+          <Link href={`/projects/${row.original.id}`}>
+            <Button variant="outline" size="sm" className="h-7 text-xs">
+              View
+            </Button>
+          </Link>
+        ) : null,
+    },
+    {
       id: 'actions',
       header: () => <div className="text-right">Actions</div>,
       cell: ({ row }) => (
@@ -441,6 +540,7 @@ export default function ProjectsPageWrapper() {
   ];
 
   const filteredTasks = boardFilter === 'all' ? tasks : tasks.filter(t => t.project_id === boardFilter);
+  const filteredRoutines = boardFilter === 'all' ? routines : routines.filter(r => r.project_id === boardFilter);
   const boardColumns = [
     { key: 'scheduled', label: 'Scheduled' },
     { key: 'todo', label: 'Todo' },
@@ -507,7 +607,7 @@ export default function ProjectsPageWrapper() {
               </div>
             ) : (
               <div className="flex flex-col gap-3">
-                <div className="flex justify-end">
+                <div className="flex justify-start">
                   <Button size="sm" onClick={() => setShowCreateDialog(true)}>
                     <Plus className="h-4 w-4 mr-1" /> Project
                   </Button>
@@ -520,7 +620,7 @@ export default function ProjectsPageWrapper() {
           /* Board view: filter row pinned, kanban scrolls x independently */
           <div className="flex flex-col h-full overflow-hidden">
             {/* Filter row — full width, never scrolls */}
-            <div className="shrink-0 flex flex-wrap items-center gap-2 w-full min-w-0 px-6 py-3 border-b">
+            <div className="shrink-0 flex flex-wrap items-center gap-2 w-full min-w-0 px-6 py-3">
               <span className="text-sm text-muted-foreground">Project:</span>
               <Select value={boardFilter} onValueChange={setBoardFilter}>
                 <SelectTrigger className="w-48 max-w-full min-w-0 h-8 text-sm">
@@ -547,6 +647,8 @@ export default function ProjectsPageWrapper() {
               <div className="flex gap-3 min-w-max h-full">
               {boardColumns.map(col => {
                 const colTasks = filteredTasks.filter(t => t.status === col.key);
+                const colRoutines = col.key === 'scheduled' ? filteredRoutines : [];
+                const totalCount = colTasks.length + colRoutines.length;
                 const isOver = dragOverColumn === col.key;
                 return (
                   <div
@@ -564,9 +666,17 @@ export default function ProjectsPageWrapper() {
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium">{col.label}</span>
-                      <Badge variant="secondary" className="text-xs">{colTasks.length}</Badge>
+                      <Badge variant="secondary" className="text-xs">{totalCount}</Badge>
                     </div>
                     <div className="flex flex-col gap-2 overflow-y-auto">
+                      {colRoutines.map(routine => (
+                        <RoutineCard
+                          key={routine.id}
+                          routine={routine}
+                          showProject={boardFilter === 'all'}
+                          onOpen={openRoutineSheet}
+                        />
+                      ))}
                       {colTasks.map(task => (
                         <TaskCard
                           key={task.id}
@@ -577,7 +687,7 @@ export default function ProjectsPageWrapper() {
                           onDelete={id => setConfirmDeleteTaskId(id)}
                         />
                       ))}
-                      {colTasks.length === 0 && (
+                      {totalCount === 0 && (
                         <p className={`text-xs text-center py-4 ${isOver ? 'text-primary/60' : 'text-muted-foreground'}`}>
                           {isOver ? 'Drop here' : 'No tasks'}
                         </p>
@@ -767,7 +877,16 @@ export default function ProjectsPageWrapper() {
       <Sheet open={!!selectedTask} onOpenChange={open => !open && setSelectedTask(null)}>
         <SheetContent side="right" className="w-full sm:max-w-md flex flex-col gap-0 p-0">
           <SheetHeader className="px-6 py-4 border-b">
-            <SheetTitle className="text-base">Task Detail</SheetTitle>
+            <div className="flex items-center gap-2">
+              <SheetTitle className="text-base">Task Detail</SheetTitle>
+              <button
+                onClick={() => selectedTask && setConfirmDeleteTaskId(selectedTask.id)}
+                className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                title="Delete task"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
             {selectedTask?.project_name && (
               <p className="text-xs text-muted-foreground">{selectedTask.project_name}</p>
             )}
@@ -844,6 +963,113 @@ export default function ProjectsPageWrapper() {
         </SheetContent>
       </Sheet>
 
+      {/* Routine Edit Sheet */}
+      <Sheet open={!!selectedRoutine} onOpenChange={open => !open && setSelectedRoutine(null)}>
+        <SheetContent side="right" className="w-full sm:max-w-md flex flex-col gap-0 p-0">
+          <SheetHeader className="px-6 py-4 border-b">
+            <div className="flex items-center gap-2">
+              <SheetTitle className="text-base">Edit Routine</SheetTitle>
+              <button
+                onClick={() => setConfirmDeleteRoutine(true)}
+                className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                title="Delete routine"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+            {selectedRoutine?.project_name && (
+              <p className="text-xs text-muted-foreground">{selectedRoutine.project_name}</p>
+            )}
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <div>
+              <Label>Title</Label>
+              <Input
+                value={routineEditForm.title}
+                onChange={e => setRoutineEditForm(f => ({ ...f, title: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={routineEditForm.description}
+                onChange={e => setRoutineEditForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Instructions for the agent..."
+                rows={4}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Repeat</Label>
+                <Select value={routineEditForm.frequency} onValueChange={v => setRoutineEditForm(f => ({ ...f, frequency: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="daily">Daily</SelectItem>
+                    <SelectItem value="weekly">Weekly</SelectItem>
+                    <SelectItem value="monthly">Monthly</SelectItem>
+                    <SelectItem value="yearly">Yearly</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Priority</Label>
+                <Select value={routineEditForm.priority} onValueChange={v => setRoutineEditForm(f => ({ ...f, priority: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Assigned to</Label>
+              <Select value={routineEditForm.assigned_to || 'unassigned'} onValueChange={v => setRoutineEditForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  <SelectItem value="human">Human</SelectItem>
+                  <SelectItem value="agent">Agent</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedRoutine && (
+              <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                <p>Created: <span className="font-medium">{new Date(selectedRoutine.created_at).toLocaleString()}</span></p>
+                <p>Updated: <span className="font-medium">{new Date(selectedRoutine.updated_at).toLocaleString()}</span></p>
+              </div>
+            )}
+          </div>
+          <SheetFooter className="px-6 py-4 border-t flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setSelectedRoutine(null)}>Close</Button>
+            <Button className="flex-1" onClick={handleSaveRoutine} disabled={isSavingRoutine}>
+              {isSavingRoutine && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+              Save
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      {/* Delete Routine Confirm */}
+      <AlertDialog open={confirmDeleteRoutine} onOpenChange={setConfirmDeleteRoutine}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete routine?</AlertDialogTitle>
+            <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { setConfirmDeleteRoutine(false); handleDeleteRoutine(); }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Delete Task Confirm */}
       <AlertDialog open={!!confirmDeleteTaskId} onOpenChange={open => !open && setConfirmDeleteTaskId(null)}>
         <AlertDialogContent>
@@ -892,6 +1118,59 @@ export default function ProjectsPageWrapper() {
 
 // function ProjectsPage() {
 // }
+
+function RoutineCard({ routine, showProject, onOpen }: {
+  routine: Routine;
+  showProject: boolean;
+  onOpen: (routine: Routine) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const FREQ_LABELS: Record<string, string> = {
+    daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly',
+  };
+  const freqLabel = FREQ_LABELS[routine.frequency] ?? routine.frequency;
+  return (
+    <div
+      className="flex items-start gap-1.5 bg-background border border-purple-200/60 dark:border-purple-800/40 rounded-md shadow-sm transition-colors"
+      style={{ borderColor: hovered ? 'rgb(192 132 252 / 0.6)' : undefined }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className="w-5 shrink-0" />
+      <div
+        className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer"
+        onClick={() => onOpen(routine)}
+      >
+        <p className="text-sm font-medium leading-snug mb-1.5">{routine.title}</p>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs px-1.5 py-0.5 rounded border border-purple-400 text-purple-600 dark:text-purple-400 flex items-center gap-1">
+            <Repeat2 className="h-2.5 w-2.5" />{freqLabel}
+          </span>
+          <span className={`text-xs ${PRIORITY_COLORS[routine.priority] ?? 'text-muted-foreground'}`}>
+            {routine.priority}
+          </span>
+          {routine.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
+          {routine.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
+          {showProject && routine.project_name && (
+            <span className="text-xs text-muted-foreground truncate max-w-[80px]">{routine.project_name}</span>
+          )}
+        </div>
+      </div>
+      <div
+        className="shrink-0 mt-1.5 mr-1 transition-opacity"
+        style={{ opacity: hovered ? 1 : 0 }}
+      >
+        <button
+          onClick={e => { e.stopPropagation(); onOpen(routine); }}
+          className="p-1.5 rounded hover:bg-muted text-muted-foreground"
+          title="Edit routine"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function TaskCard({ task, showProject, onStatusCycle, onOpen, onDelete }: {
   task: Task;
@@ -946,20 +1225,13 @@ function TaskCard({ task, showProject, onStatusCycle, onOpen, onDelete }: {
       </div>
 
       {/* Action buttons — shown on hover */}
-      <div className="shrink-0 flex flex-col gap-0.5 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="shrink-0 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={e => { e.stopPropagation(); onOpen(task); }}
           className="p-1.5 rounded hover:bg-muted text-muted-foreground"
           title="Edit task"
         >
           <Pencil className="h-3 w-3" />
-        </button>
-        <button
-          onClick={e => { e.stopPropagation(); onDelete(task.id); }}
-          className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-          title="Delete task"
-        >
-          <Trash2 className="h-3 w-3" />
         </button>
       </div>
     </div>

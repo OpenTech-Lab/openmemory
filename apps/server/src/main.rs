@@ -2837,12 +2837,20 @@ async fn create_project_graph(
             if p.trim().is_empty() {
                 return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "path must be non-empty when provided"}))).into_response();
             }
+            // Canonicalize the path first — this is always required when a path is given.
+            let canonical = match project_graphs::canonicalize_project_path(p).await {
+                Ok(c) => c,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+            };
+            // Graph is optional: if graph.json doesn't exist yet, store the path without graph data.
             match project_graphs::load_graph_json(p).await {
-                Ok((data, hash, size, canonical)) => {
+                Ok((data, hash, size, _canonical)) => {
                     let (nc, ec) = project_graphs::count_nodes_edges(&data);
                     (data, Some(hash), size as i64, Some(p.clone()), Some(canonical), nc, ec)
                 }
-                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+                Err(_) => {
+                    (serde_json::json!({}), None, 0i64, Some(p.clone()), Some(canonical), 0i32, 0i32)
+                }
             }
         } else {
             (serde_json::json!({}), None, 0i64, None, None, 0i32, 0i32)
