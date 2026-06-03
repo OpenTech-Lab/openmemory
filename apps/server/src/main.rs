@@ -125,6 +125,7 @@ struct ProjectTask {
     priority: String,
     assigned_to: Option<String>,
     created_by: String,
+    routine_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -156,6 +157,46 @@ struct ListTasksParams {
     offset: i64,
 }
 fn default_task_limit() -> i64 { 50 }
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct ProjectRoutine {
+    id: Uuid,
+    project_id: Uuid,
+    title: String,
+    description: Option<String>,
+    frequency: String,   // 'daily' | 'weekly' | 'monthly'
+    priority: String,
+    assigned_to: Option<String>,
+    last_task_date: Option<chrono::NaiveDate>,
+    enabled: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRoutinePayload {
+    title: String,
+    description: Option<String>,
+    frequency: Option<String>,
+    priority: Option<String>,
+    assigned_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRoutinePayload {
+    title: Option<String>,
+    description: Option<String>,
+    frequency: Option<String>,
+    priority: Option<String>,
+    assigned_to: Option<String>,
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckRoutinesParams {
+    #[serde(default)]
+    dry_run: bool,
+}
 
 #[derive(Debug, Deserialize)]
 struct QueryProjectGraphParams {
@@ -912,6 +953,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/query", get(query_project_graph))
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
         .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
+        .route("/projects/:id/routines", get(list_project_routines).post(create_project_routine))
+        .route("/projects/:id/routines/check", post(check_project_routines))
+        .route("/projects/:id/routines/:routine_id", axum::routing::put(update_project_routine).delete(delete_project_routine))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
@@ -1075,6 +1119,35 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .context("failed to create project_tasks table")?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id)")
+        .execute(db).await.ok();
+
+    // Routine templates (repeating task definitions)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_routines (
+            id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id      UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            title           TEXT        NOT NULL,
+            description     TEXT,
+            frequency       TEXT        NOT NULL DEFAULT 'daily',
+            priority        TEXT        NOT NULL DEFAULT 'medium',
+            assigned_to     TEXT,
+            last_task_date  DATE,
+            enabled         BOOLEAN     NOT NULL DEFAULT TRUE,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_routines table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_routines_project_id ON project_routines(project_id)")
+        .execute(db).await.ok();
+
+    // Add routine_id FK to tasks (nullable — only set on routine-generated tasks)
+    sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS routine_id UUID REFERENCES project_routines(id) ON DELETE SET NULL")
         .execute(db).await.ok();
 
     info!("PostgreSQL migrations complete");
@@ -3115,7 +3188,7 @@ async fn list_project_tasks(
 
     let rows = if let Some(ref status) = params.status {
         sqlx::query_as::<_, ProjectTask>(
-            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at \
+            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
              FROM project_tasks WHERE project_id = $1 AND status = $2 \
              ORDER BY created_at DESC LIMIT $3 OFFSET $4"
         )
@@ -3123,7 +3196,7 @@ async fn list_project_tasks(
         .fetch_all(&state.db).await
     } else {
         sqlx::query_as::<_, ProjectTask>(
-            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at \
+            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
              FROM project_tasks WHERE project_id = $1 \
              ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
@@ -3160,7 +3233,7 @@ async fn create_project_task(
     let row = sqlx::query_as::<_, ProjectTask>(
         "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, created_by) \
          VALUES ($1, $2, $3, $4, $5, $6, 'human') \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at"
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at"
     )
     .bind(project_id)
     .bind(&payload.title)
@@ -3199,7 +3272,7 @@ async fn update_project_task(
          assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
          updated_at = NOW() \
          WHERE id = $6 AND project_id = $7 \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, created_at, updated_at"
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at"
     )
     .bind(&payload.title)
     .bind(&payload.description)
@@ -3244,6 +3317,234 @@ async fn delete_project_task(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Routine due-check logic (supports daily/weekly/monthly/yearly/custom cron)
+// ---------------------------------------------------------------------------
+
+/// Returns true if the routine should fire given its last_task_date.
+/// Custom frequencies are treated as 5-field cron expressions (min hour day month weekday).
+fn is_routine_due(frequency: &str, last_task_date: Option<chrono::NaiveDate>) -> bool {
+    use chrono::{Datelike, Utc};
+    let today = Utc::now().date_naive();
+
+    let Some(last) = last_task_date else { return true }; // never run
+
+    match frequency {
+        "daily"   => last < today,
+        "weekly"  => (today - last).num_days() >= 7,
+        "monthly" => {
+            let first_of_month = chrono::NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
+            last < first_of_month
+        }
+        "yearly" => {
+            let first_of_year = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+            last < first_of_year
+        }
+        cron_expr => {
+            // Standard 5-field cron (min hour day month weekday) → 7-field (prepend sec, append year)
+            use std::str::FromStr;
+            let full = format!("0 {} *", cron_expr);
+            match cron::Schedule::from_str(&full) {
+                Ok(schedule) => {
+                    let last_dt = last.and_time(chrono::NaiveTime::MIN).and_utc();
+                    schedule.after(&last_dt).next()
+                        .map(|next| next <= Utc::now())
+                        .unwrap_or(false)
+                }
+                Err(_) => false,
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Project Routine handlers
+// ---------------------------------------------------------------------------
+
+async fn list_project_routines(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let rows = sqlx::query_as::<_, ProjectRoutine>(
+        "SELECT id, project_id, title, description, frequency, priority, assigned_to, \
+         last_task_date, enabled, created_at, updated_at \
+         FROM project_routines WHERE project_id = $1 ORDER BY created_at ASC"
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(routines) => Json(serde_json::json!({"routines": routines})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn create_project_routine(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateRoutinePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    if payload.title.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "title required"}))).into_response();
+    }
+    let frequency = payload.frequency.as_deref().unwrap_or("daily");
+    let priority = payload.priority.as_deref().unwrap_or("medium");
+
+    let row = sqlx::query_as::<_, ProjectRoutine>(
+        "INSERT INTO project_routines (project_id, title, description, frequency, priority, assigned_to) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, project_id, title, description, frequency, priority, assigned_to, \
+                   last_task_date, enabled, created_at, updated_at"
+    )
+    .bind(project_id).bind(&payload.title).bind(&payload.description)
+    .bind(frequency).bind(priority).bind(&payload.assigned_to)
+    .fetch_one(&state.db).await;
+
+    match row {
+        Ok(r) => (StatusCode::CREATED, Json(serde_json::json!(r))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_project_routine(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, routine_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateRoutinePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let row = sqlx::query_as::<_, ProjectRoutine>(
+        "UPDATE project_routines SET \
+         title       = COALESCE($1, title), \
+         description = CASE WHEN $2::text IS NOT NULL THEN $2 ELSE description END, \
+         frequency   = COALESCE($3, frequency), \
+         priority    = COALESCE($4, priority), \
+         assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
+         enabled     = COALESCE($6, enabled), \
+         updated_at  = NOW() \
+         WHERE id = $7 AND project_id = $8 \
+         RETURNING id, project_id, title, description, frequency, priority, assigned_to, \
+                   last_task_date, enabled, created_at, updated_at"
+    )
+    .bind(&payload.title).bind(&payload.description)
+    .bind(&payload.frequency).bind(&payload.priority).bind(&payload.assigned_to)
+    .bind(payload.enabled)
+    .bind(routine_id).bind(project_id)
+    .fetch_optional(&state.db).await;
+
+    match row {
+        Ok(Some(r)) => Json(serde_json::json!(r)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "routine not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_project_routine(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, routine_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let result = sqlx::query("DELETE FROM project_routines WHERE id = $1 AND project_id = $2 RETURNING id")
+        .bind(routine_id).bind(project_id)
+        .fetch_optional(&state.db).await;
+
+    match result {
+        Ok(Some(_)) => Json(serde_json::json!({"deleted": routine_id})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "routine not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn check_project_routines(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(params): Query<CheckRoutinesParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    // Fetch all enabled routines — due-check happens in Rust (supports custom cron)
+    let due = sqlx::query_as::<_, ProjectRoutine>(
+        r#"SELECT id, project_id, title, description, frequency, priority, assigned_to,
+                  last_task_date, enabled, created_at, updated_at
+           FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await;
+
+    let all_routines = match due {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let routines: Vec<&ProjectRoutine> = all_routines.iter().filter(|r| is_routine_due(&r.frequency, r.last_task_date)).collect();
+
+    if params.dry_run {
+        return Json(serde_json::json!({"due": routines, "created": []})).into_response();
+    }
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let mut created_tasks: Vec<serde_json::Value> = Vec::new();
+
+    for r in routines {
+        let task_title = format!("{} — {}", r.title, today);
+        let task = sqlx::query(
+            "INSERT INTO project_tasks \
+             (project_id, routine_id, title, description, status, priority, assigned_to, created_by) \
+             VALUES ($1, $2, $3, $4, 'todo', $5, $6, 'agent') \
+             RETURNING id, title, status"
+        )
+        .bind(r.project_id)
+        .bind(r.id)
+        .bind(&task_title)
+        .bind(&r.description)
+        .bind(&r.priority)
+        .bind(&r.assigned_to)
+        .fetch_one(&state.db)
+        .await;
+
+        if let Ok(row) = task {
+            created_tasks.push(serde_json::json!({
+                "id": row.try_get::<Uuid, _>("id").ok(),
+                "title": row.try_get::<String, _>("title").ok(),
+                "status": row.try_get::<String, _>("status").ok(),
+                "routine_id": r.id,
+                "routine_title": r.title,
+            }));
+
+            // Mark routine as run today
+            let _ = sqlx::query(
+                "UPDATE project_routines SET last_task_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1"
+            )
+            .bind(r.id)
+            .execute(&state.db)
+            .await;
+        }
+    }
+
+    Json(serde_json::json!({
+        "checked": created_tasks.len(),
+        "created": created_tasks,
+    })).into_response()
 }
 
 #[allow(dead_code)]

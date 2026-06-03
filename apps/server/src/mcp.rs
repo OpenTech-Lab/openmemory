@@ -181,6 +181,35 @@ struct McpServer {
     encryption_key: [u8; 32],
 }
 
+fn is_routine_due_mcp(frequency: &str, last_task_date: Option<chrono::NaiveDate>) -> bool {
+    use chrono::{Datelike, Utc};
+    let today = Utc::now().date_naive();
+    let Some(last) = last_task_date else { return true };
+    match frequency {
+        "daily"   => last < today,
+        "weekly"  => (today - last).num_days() >= 7,
+        "monthly" => {
+            let first = chrono::NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
+            last < first
+        }
+        "yearly" => {
+            let first = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+            last < first
+        }
+        cron_expr => {
+            use std::str::FromStr;
+            let full = format!("0 {} *", cron_expr);
+            match cron::Schedule::from_str(&full) {
+                Ok(schedule) => {
+                    let last_dt = last.and_time(chrono::NaiveTime::MIN).and_utc();
+                    schedule.after(&last_dt).next().map(|n| n <= Utc::now()).unwrap_or(false)
+                }
+                Err(_) => false,
+            }
+        }
+    }
+}
+
 impl McpServer {
     async fn new() -> Result<Self> {
         // PostgreSQL connection
@@ -295,6 +324,32 @@ impl McpServer {
         .context("failed to create project_tasks table")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id)")
+            .execute(&db).await.ok();
+
+        // Routine templates
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS project_routines (
+                id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                project_id      UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+                title           TEXT        NOT NULL,
+                description     TEXT,
+                frequency       TEXT        NOT NULL DEFAULT 'daily',
+                priority        TEXT        NOT NULL DEFAULT 'medium',
+                assigned_to     TEXT,
+                last_task_date  DATE,
+                enabled         BOOLEAN     NOT NULL DEFAULT TRUE,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&db).await.ok();
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_routines_project_id ON project_routines(project_id)")
+            .execute(&db).await.ok();
+
+        sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS routine_id UUID REFERENCES project_routines(id) ON DELETE SET NULL")
             .execute(&db).await.ok();
 
         // OpenSearch connection
@@ -818,6 +873,44 @@ impl McpServer {
                         },
                         "required": ["project_id", "task_id"]
                     }
+                },
+                {
+                    "name": "routine_check",
+                    "description": "Check for due routine tasks and create them as new todo items. Call this at the start of a work session to materialise any daily/weekly/monthly tasks that haven't been created yet today. Returns the list of tasks just created. Use dry_run=true to preview without creating.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Check routines for this project only. Omit to check all projects."},
+                            "dry_run": {"type": "boolean", "description": "If true, return due routines without creating tasks (default false)"}
+                        }
+                    }
+                },
+                {
+                    "name": "routine_list",
+                    "description": "List all routines for a project, including their frequency and last-run date.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"}
+                        },
+                        "required": ["project_id"]
+                    }
+                },
+                {
+                    "name": "routine_create",
+                    "description": "Create a new routine task template. The routine will generate a dated task each time routine_check is called and the routine is due.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string"},
+                            "title": {"type": "string", "description": "Base title — today's date is appended when the task is created"},
+                            "description": {"type": "string", "description": "Optional task description or instructions for the agent"},
+                            "frequency": {"type": "string", "description": "daily | weekly | monthly (default: daily)"},
+                            "priority": {"type": "string", "description": "low | medium | high (default: medium)"},
+                            "assigned_to": {"type": "string", "description": "human | agent | null"}
+                        },
+                        "required": ["project_id", "title"]
+                    }
                 }
             ]
         }))
@@ -859,6 +952,9 @@ impl McpServer {
             "project_task_create" => self.project_task_create(arguments).await,
             "project_task_update" => self.project_task_update(arguments).await,
             "project_task_delete" => self.project_task_delete(arguments).await,
+            "routine_check" => self.routine_check(arguments).await,
+            "routine_list" => self.routine_list(arguments).await,
+            "routine_create" => self.routine_create(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
         }
     }
@@ -2040,6 +2136,143 @@ impl McpServer {
             return Ok(json!({"content": [{"type": "text", "text": "Task not found."}]}));
         }
         Ok(json!({"content": [{"type": "text", "text": format!("Deleted task {}.", task_id)}]}))
+    }
+
+    async fn routine_check(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id_opt = args["project_id"].as_str()
+            .map(|s| s.parse::<Uuid>())
+            .transpose().context("invalid project_id UUID")?;
+        let dry_run = args["dry_run"].as_bool().unwrap_or(false);
+
+        let all = if let Some(pid) = project_id_opt {
+            sqlx::query(
+                r#"SELECT id, project_id, title, description, frequency, priority, assigned_to, last_task_date
+                   FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
+            ).bind(pid).fetch_all(&self.db).await
+        } else {
+            sqlx::query(
+                r#"SELECT id, project_id, title, description, frequency, priority, assigned_to, last_task_date
+                   FROM project_routines WHERE enabled = TRUE"#
+            ).fetch_all(&self.db).await
+        }.context("failed to query routines")?;
+
+        let due: Vec<_> = all.iter().filter(|r| {
+            let freq: String = r.try_get("frequency").unwrap_or_default();
+            let last: Option<chrono::NaiveDate> = r.try_get("last_task_date").unwrap_or(None);
+            is_routine_due_mcp(&freq, last)
+        }).collect();
+
+        if due.is_empty() {
+            return Ok(json!({"content": [{"type": "text", "text": "No routine tasks are due right now."}]}));
+        }
+
+        if dry_run {
+            let mut text = format!("{} routine(s) due (dry run — no tasks created):\n\n", due.len());
+            for r in &due {
+                let title: String = r.try_get("title").unwrap_or_default();
+                let freq: String = r.try_get("frequency").unwrap_or_default();
+                text.push_str(&format!("• {} ({})\n", title, freq));
+            }
+            return Ok(json!({"content": [{"type": "text", "text": text}]}));
+        }
+
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let mut created = Vec::new();
+
+        for r in &due {
+            let id: Uuid = r.try_get("id").unwrap_or(Uuid::nil());
+            let project_id: Uuid = r.try_get("project_id").unwrap_or(Uuid::nil());
+            let title: String = r.try_get("title").unwrap_or_default();
+            let description: Option<String> = r.try_get("description").unwrap_or(None);
+            let priority: String = r.try_get("priority").unwrap_or_else(|_| "medium".to_string());
+            let assigned_to: Option<String> = r.try_get("assigned_to").unwrap_or(None);
+
+            let task_title = format!("{} — {}", title, today);
+            let task = sqlx::query(
+                "INSERT INTO project_tasks \
+                 (project_id, routine_id, title, description, status, priority, assigned_to, created_by) \
+                 VALUES ($1, $2, $3, $4, 'todo', $5, $6, 'agent') RETURNING id"
+            )
+            .bind(project_id).bind(id).bind(&task_title).bind(&description)
+            .bind(&priority).bind(&assigned_to)
+            .fetch_one(&self.db).await;
+
+            if let Ok(row) = task {
+                let task_id: Uuid = row.try_get("id").unwrap_or(Uuid::nil());
+                created.push(format!("• {} [id: {}]", task_title, task_id));
+                let _ = sqlx::query(
+                    "UPDATE project_routines SET last_task_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1"
+                ).bind(id).execute(&self.db).await;
+            }
+        }
+
+        let mut text = format!("Created {} task(s) from routines:\n\n", created.len());
+        for line in &created {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push_str("\nThese tasks are in status 'todo'. Handle them, then mark as done.");
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn routine_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+
+        let rows = sqlx::query(
+            "SELECT id, title, frequency, priority, assigned_to, last_task_date, enabled \
+             FROM project_routines WHERE project_id = $1 ORDER BY created_at ASC"
+        )
+        .bind(project_id)
+        .fetch_all(&self.db).await.context("failed to list routines")?;
+
+        if rows.is_empty() {
+            return Ok(json!({"content": [{"type": "text", "text": "No routines defined. Use routine_create to add one."}]}));
+        }
+
+        let mut text = format!("Routines ({}):\n\n", rows.len());
+        for r in &rows {
+            let id: Uuid = r.try_get("id").unwrap_or(Uuid::nil());
+            let title: String = r.try_get("title").unwrap_or_default();
+            let freq: String = r.try_get("frequency").unwrap_or_default();
+            let priority: String = r.try_get("priority").unwrap_or_default();
+            let enabled: bool = r.try_get("enabled").unwrap_or(true);
+            let last: Option<chrono::NaiveDate> = r.try_get("last_task_date").unwrap_or(None);
+            text.push_str(&format!(
+                "• {} [{}] {} — last run: {}{}\n  id: {}\n",
+                title, freq, priority,
+                last.map(|d| d.to_string()).unwrap_or_else(|| "never".to_string()),
+                if !enabled { " (disabled)" } else { "" },
+                id
+            ));
+        }
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn routine_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let title = args["title"].as_str().context("missing title")?.to_string();
+        let description = args["description"].as_str().map(|s| s.to_string());
+        let frequency = args["frequency"].as_str().unwrap_or("daily");
+        let priority = args["priority"].as_str().unwrap_or("medium");
+        let assigned_to = args["assigned_to"].as_str().map(|s| s.to_string());
+
+        let row = sqlx::query(
+            "INSERT INTO project_routines (project_id, title, description, frequency, priority, assigned_to) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
+        )
+        .bind(project_id).bind(&title).bind(&description)
+        .bind(frequency).bind(priority).bind(&assigned_to)
+        .fetch_one(&self.db).await.context("failed to create routine")?;
+
+        let id: Uuid = row.try_get("id").unwrap_or(Uuid::nil());
+        Ok(json!({"content": [{"type": "text", "text": format!(
+            "Created {} routine '{}'. Run routine_check to generate today's task.\n  id: {}",
+            frequency, title, id
+        )}]}))
     }
 }
 

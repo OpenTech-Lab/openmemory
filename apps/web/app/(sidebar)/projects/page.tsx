@@ -35,7 +35,14 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2 } from 'lucide-react';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetFooter,
+} from '@/components/ui/sheet';
 import { toast } from 'sonner';
 
 interface Project {
@@ -67,9 +74,19 @@ interface Task {
 }
 
 const STATUS_LABELS: Record<string, string> = {
+  scheduled: 'Scheduled',
   todo: 'Todo',
   in_progress: 'In Progress',
   done: 'Done',
+  cancelled: 'Cancelled',
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  scheduled: 'border-purple-400 text-purple-600 dark:text-purple-400',
+  todo: 'border-border text-muted-foreground',
+  in_progress: 'border-blue-400 text-blue-600 dark:text-blue-400',
+  done: 'border-green-500 text-green-600 dark:text-green-400',
+  cancelled: 'border-muted text-muted-foreground line-through',
 };
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -79,10 +96,8 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 
 export default function ProjectsPageWrapper() {
-  return <Suspense><ProjectsPage /></Suspense>;
-}
+  
 
-function ProjectsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const view = (searchParams.get('view') as 'list' | 'board') ?? 'list';
@@ -93,6 +108,11 @@ function ProjectsPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [boardFilter, setBoardFilter] = useState<string>('all');
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [confirmDeleteTaskId, setConfirmDeleteTaskId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ title: '', description: '', status: '', priority: '', assigned_to: '' });
+  const [isSavingTask, setIsSavingTask] = useState(false);
 
   // Create project dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -111,6 +131,9 @@ function ProjectsPage() {
     status: 'todo',
     priority: 'medium',
     assigned_to: '',
+    task_type: 'regular' as 'regular' | 'scheduled',
+    frequency: 'daily',
+    cron_expr: '',
   });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
 
@@ -219,33 +242,65 @@ function ProjectsPage() {
   const handleCreateTask = async () => {
     if (!taskForm.title.trim()) { toast.error('Title is required'); return; }
     if (!taskForm.project_id) { toast.error('Select a project'); return; }
+    const isScheduled = taskForm.task_type === 'scheduled';
+    const effectiveFreq = taskForm.frequency === 'custom' ? taskForm.cron_expr.trim() : taskForm.frequency;
+    if (isScheduled && !effectiveFreq) { toast.error('Cron expression required'); return; }
     setIsCreatingTask(true);
     try {
       const body: Record<string, string> = {
         title: taskForm.title,
-        status: taskForm.status,
         priority: taskForm.priority,
       };
       if (taskForm.description.trim()) body.description = taskForm.description.trim();
       if (taskForm.assigned_to) body.assigned_to = taskForm.assigned_to;
-      const res = await fetch(`/api/projects/${taskForm.project_id}/tasks`, {
+
+      let url: string;
+      if (isScheduled) {
+        url = `/api/projects/${taskForm.project_id}/routines`;
+        body.frequency = effectiveFreq;
+      } else {
+        url = `/api/projects/${taskForm.project_id}/tasks`;
+        body.status = taskForm.status;
+      }
+
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        toast.error(b.error ?? 'Failed to create task');
+        toast.error(b.error ?? `Failed to create ${isScheduled ? 'routine' : 'task'}`);
         return;
       }
       setShowTaskDialog(false);
-      setTaskForm({ project_id: '', title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '' });
+      setTaskForm({ project_id: '', title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', task_type: 'regular', frequency: 'daily', cron_expr: '' });
       fetchTasksForBoard(projects);
-      toast.success('Task created');
+      toast.success(isScheduled ? 'Routine created' : 'Task created');
     } catch {
-      toast.error('Failed to create task');
+      toast.error('Failed to create');
     } finally {
       setIsCreatingTask(false);
+    }
+  };
+
+  const handleDropToStatus = async (taskId: string, newStatus: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task || task.status === newStatus) return;
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus } : t));
+    try {
+      const res = await fetch(`/api/projects/${task.project_id}/tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) {
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: task.status } : t));
+        toast.error('Failed to move task');
+      }
+    } catch {
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: task.status } : t));
+      toast.error('Failed to move task');
     }
   };
 
@@ -266,6 +321,65 @@ function ProjectsPage() {
     } catch {
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t));
       toast.error('Failed to update task');
+    }
+  };
+
+  const openTaskSheet = (task: Task) => {
+    setSelectedTask(task);
+    setEditForm({
+      title: task.title,
+      description: task.description ?? '',
+      status: task.status,
+      priority: task.priority,
+      assigned_to: task.assigned_to ?? '',
+    });
+  };
+
+  const handleSaveTask = async () => {
+    if (!selectedTask) return;
+    setIsSavingTask(true);
+    try {
+      const res = await fetch(`/api/projects/${selectedTask.project_id}/tasks/${selectedTask.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: editForm.title,
+          description: editForm.description || null,
+          status: editForm.status,
+          priority: editForm.priority,
+          assigned_to: editForm.assigned_to || null,
+        }),
+      });
+      if (!res.ok) { toast.error('Failed to save task'); return; }
+      const updated = await res.json();
+      setTasks(prev => prev.map(t => t.id === selectedTask.id ? { ...t, ...updated, project_name: t.project_name } : t));
+      setSelectedTask(prev => prev ? { ...prev, ...updated } : null);
+      toast.success('Task saved');
+    } catch {
+      toast.error('Failed to save task');
+    } finally {
+      setIsSavingTask(false);
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+    if (selectedTask?.id === taskId) setSelectedTask(null);
+    try {
+      const res = await fetch(`/api/projects/${task.project_id}/tasks/${taskId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        setTasks(prev => [...prev, task]);
+        toast.error('Failed to delete task');
+      } else {
+        toast.success('Task deleted');
+      }
+    } catch {
+      setTasks(prev => [...prev, task]);
+      toast.error('Failed to delete task');
+    } finally {
+      setConfirmDeleteTaskId(null);
     }
   };
 
@@ -328,22 +442,33 @@ function ProjectsPage() {
 
   const filteredTasks = boardFilter === 'all' ? tasks : tasks.filter(t => t.project_id === boardFilter);
   const boardColumns = [
+    { key: 'scheduled', label: 'Scheduled' },
     { key: 'todo', label: 'Todo' },
     { key: 'in_progress', label: 'In Progress' },
     { key: 'done', label: 'Done' },
+    { key: 'cancelled', label: 'Cancelled' },
   ];
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between p-6 border-b">
+     {/* Header */}
+      <div className="flex items-center justify-between p-4 border-b">
         <div>
           <h1 className="text-2xl font-semibold">Projects</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Manage projects, tasks, and code knowledge graphs
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="shrink-0 flex flex-wrap items-center justify-end gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => { fetchProjects(); }}
+            disabled={isLoading || isLoadingTasks}
+            title="Refresh"
+          >
+            <RefreshCw className={`h-4 w-4 ${(isLoading || isLoadingTasks) ? 'animate-spin' : ''}`} />
+          </Button>
           {/* View toggle */}
           <div className="flex items-center border rounded-md overflow-hidden">
             <Button
@@ -363,38 +488,42 @@ function ProjectsPage() {
               <Columns3 className="h-3.5 w-3.5 mr-1.5" /> Board
             </Button>
           </div>
-          <Button size="sm" variant="outline" onClick={() => setShowTaskDialog(true)}>
-            <Plus className="h-4 w-4 mr-1" /> Task
-          </Button>
-          <Button size="sm" onClick={() => setShowCreateDialog(true)}>
-            <Plus className="h-4 w-4 mr-1" /> Project
-          </Button>
+          {/* Context-sensitive action buttons appear inline in each view */}
         </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
         {view === 'list' ? (
-          isLoading ? (
-            <div className="flex items-center justify-center h-32">
-              <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-              <p>No projects yet.</p>
-              <p className="text-sm mt-1">Click &quot;+ Project&quot; to create one.</p>
-            </div>
-          ) : (
-            <DataTable columns={columns} data={projects} />
-          )
+          <div className="h-full overflow-auto p-6">
+            {isLoading ? (
+              <div className="flex items-center justify-center h-32">
+                <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+                <p>No projects yet.</p>
+                <p className="text-sm mt-1">Click &quot;+ Project&quot; to create one.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex justify-end">
+                  <Button size="sm" onClick={() => setShowCreateDialog(true)}>
+                    <Plus className="h-4 w-4 mr-1" /> Project
+                  </Button>
+                </div>
+                <DataTable columns={columns} data={projects} />
+              </div>
+            )}
+          </div>
         ) : (
-          /* Board view */
-          <div className="flex flex-col gap-4 h-full">
-            {/* Board filter */}
-            <div className="flex items-center gap-2">
+          /* Board view: filter row pinned, kanban scrolls x independently */
+          <div className="flex flex-col h-full overflow-hidden">
+            {/* Filter row — full width, never scrolls */}
+            <div className="shrink-0 flex flex-wrap items-center gap-2 w-full min-w-0 px-6 py-3 border-b">
               <span className="text-sm text-muted-foreground">Project:</span>
               <Select value={boardFilter} onValueChange={setBoardFilter}>
-                <SelectTrigger className="w-48 h-8 text-sm">
+                <SelectTrigger className="w-48 max-w-full min-w-0 h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -405,29 +534,59 @@ function ProjectsPage() {
                 </SelectContent>
               </Select>
               {isLoadingTasks && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+              <div className="ml-auto">
+                <Button size="sm" onClick={() => setShowTaskDialog(true)}>
+                  <Plus className="h-4 w-4 mr-1" /> Task
+                </Button>
+              </div>
             </div>
 
-            {/* Kanban columns */}
-            <div className="grid grid-cols-3 gap-4 flex-1 min-h-0">
+            {/* Kanban — takes remaining height, scrolls x only here */}
+            <div className="flex-1 min-h-0 min-w-0 overflow-x-auto overflow-y-auto px-6 py-4">
+              {/* min-w-max forces the row to declare its real width so overflow-x-auto fires */}
+              <div className="flex gap-3 min-w-max h-full">
               {boardColumns.map(col => {
                 const colTasks = filteredTasks.filter(t => t.status === col.key);
+                const isOver = dragOverColumn === col.key;
                 return (
-                  <div key={col.key} className="flex flex-col gap-2 bg-muted/40 rounded-lg p-3 min-h-[200px]">
+                  <div
+                    key={col.key}
+                    className={`flex flex-col gap-2 rounded-lg p-3 min-h-[200px] min-w-[300px] w-[300px] shrink-0 transition-colors ${col.key === 'scheduled' ? 'bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/30' : isOver ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-muted/40'}`}
+                    onDragOver={e => { if (col.key !== 'scheduled') { e.preventDefault(); setDragOverColumn(col.key); } }}
+                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverColumn(null); }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      setDragOverColumn(null);
+                      if (col.key === 'scheduled') return;
+                      const taskId = e.dataTransfer.getData('taskId');
+                      if (taskId) handleDropToStatus(taskId, col.key);
+                    }}
+                  >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium">{col.label}</span>
                       <Badge variant="secondary" className="text-xs">{colTasks.length}</Badge>
                     </div>
                     <div className="flex flex-col gap-2 overflow-y-auto">
                       {colTasks.map(task => (
-                        <TaskCard key={task.id} task={task} showProject={boardFilter === 'all'} onStatusCycle={handleStatusCycle} />
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          showProject={boardFilter === 'all'}
+                          onStatusCycle={handleStatusCycle}
+                          onOpen={openTaskSheet}
+                          onDelete={id => setConfirmDeleteTaskId(id)}
+                        />
                       ))}
                       {colTasks.length === 0 && (
-                        <p className="text-xs text-muted-foreground text-center py-4">No tasks</p>
+                        <p className={`text-xs text-center py-4 ${isOver ? 'text-primary/60' : 'text-muted-foreground'}`}>
+                          {isOver ? 'Drop here' : 'No tasks'}
+                        </p>
                       )}
                     </div>
                   </div>
                 );
               })}
+              </div>
             </div>
           </div>
         )}
@@ -480,13 +639,26 @@ function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Create Task Dialog */}
+      {/* Create Task / Routine Dialog */}
       <Dialog open={showTaskDialog} onOpenChange={setShowTaskDialog}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>New Task</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            {/* Type toggle */}
+            <div className="flex rounded-md border overflow-hidden">
+              {(['regular', 'scheduled'] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTaskForm(f => ({ ...f, task_type: t }))}
+                  className={`flex-1 py-2 text-sm font-medium transition-colors ${taskForm.task_type === t ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {t === 'regular' ? 'Regular Task' : 'Scheduled Routine'}
+                </button>
+              ))}
+            </div>
+
             <div>
               <Label>Project</Label>
               <Select value={taskForm.project_id} onValueChange={v => setTaskForm(f => ({ ...f, project_id: v }))}>
@@ -501,7 +673,7 @@ function ProjectsPage() {
               <Input
                 value={taskForm.title}
                 onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))}
-                placeholder="Task title"
+                placeholder={taskForm.task_type === 'scheduled' ? 'Research top news  (date appended on run)' : 'Task title'}
               />
             </div>
             <div>
@@ -509,10 +681,40 @@ function ProjectsPage() {
               <Textarea
                 value={taskForm.description}
                 onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))}
+                placeholder={taskForm.task_type === 'scheduled' ? 'Instructions for the agent...' : ''}
                 rows={2}
               />
             </div>
-            <div className="grid grid-cols-3 gap-3">
+
+            {taskForm.task_type === 'scheduled' ? (
+              <div className="space-y-3">
+                <div>
+                  <Label>Repeat</Label>
+                  <Select value={taskForm.frequency} onValueChange={v => setTaskForm(f => ({ ...f, frequency: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                      <SelectItem value="monthly">Monthly</SelectItem>
+                      <SelectItem value="yearly">Yearly</SelectItem>
+                      <SelectItem value="custom">Custom cron</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {taskForm.frequency === 'custom' && (
+                  <div>
+                    <Label>Cron expression <span className="text-muted-foreground font-normal">(5-field)</span></Label>
+                    <Input
+                      value={taskForm.cron_expr}
+                      onChange={e => setTaskForm(f => ({ ...f, cron_expr: e.target.value }))}
+                      placeholder="0 9 * * 1  — every Monday at 9am"
+                      className="font-mono text-sm"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">min hour day month weekday</p>
+                  </div>
+                )}
+              </div>
+            ) : (
               <div>
                 <Label>Status</Label>
                 <Select value={taskForm.status} onValueChange={v => setTaskForm(f => ({ ...f, status: v }))}>
@@ -524,6 +726,9 @@ function ProjectsPage() {
                   </SelectContent>
                 </Select>
               </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Priority</Label>
                 <Select value={taskForm.priority} onValueChange={v => setTaskForm(f => ({ ...f, priority: v }))}>
@@ -552,13 +757,113 @@ function ProjectsPage() {
             <Button variant="outline" onClick={() => setShowTaskDialog(false)}>Cancel</Button>
             <Button onClick={handleCreateTask} disabled={isCreatingTask}>
               {isCreatingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
-              Create Task
+              {taskForm.task_type === 'scheduled' ? 'Create Routine' : 'Create Task'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirm */}
+      {/* Task Detail Sheet */}
+      <Sheet open={!!selectedTask} onOpenChange={open => !open && setSelectedTask(null)}>
+        <SheetContent side="right" className="w-full sm:max-w-md flex flex-col gap-0 p-0">
+          <SheetHeader className="px-6 py-4 border-b">
+            <SheetTitle className="text-base">Task Detail</SheetTitle>
+            {selectedTask?.project_name && (
+              <p className="text-xs text-muted-foreground">{selectedTask.project_name}</p>
+            )}
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <div>
+              <Label>Title</Label>
+              <Input
+                value={editForm.title}
+                onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={editForm.description}
+                onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Add details..."
+                rows={4}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Status</Label>
+                <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="scheduled">Scheduled</SelectItem>
+                    <SelectItem value="todo">Todo</SelectItem>
+                    <SelectItem value="in_progress">In Progress</SelectItem>
+                    <SelectItem value="done">Done</SelectItem>
+                    <SelectItem value="cancelled">Cancelled</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Priority</Label>
+                <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Assigned to</Label>
+              <Select value={editForm.assigned_to || 'unassigned'} onValueChange={v => setEditForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  <SelectItem value="human">Human</SelectItem>
+                  <SelectItem value="agent">Agent</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedTask && (
+              <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                <p>Created by: <span className="font-medium">{selectedTask.created_by}</span></p>
+                <p>Created: <span className="font-medium">{new Date(selectedTask.created_at).toLocaleString()}</span></p>
+                <p>Updated: <span className="font-medium">{new Date(selectedTask.updated_at).toLocaleString()}</span></p>
+              </div>
+            )}
+          </div>
+          <SheetFooter className="px-6 py-4 border-t">
+            <Button variant="outline" onClick={() => setSelectedTask(null)}>Close</Button>
+            <Button onClick={handleSaveTask} disabled={isSavingTask}>
+              {isSavingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+              Save
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      {/* Delete Task Confirm */}
+      <AlertDialog open={!!confirmDeleteTaskId} onOpenChange={open => !open && setConfirmDeleteTaskId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete task?</AlertDialogTitle>
+            <AlertDialogDescription>This cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => confirmDeleteTaskId && handleDeleteTask(confirmDeleteTaskId)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Project Confirm */}
       <AlertDialog open={!!confirmDeleteId} onOpenChange={open => !open && setConfirmDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -581,32 +886,81 @@ function ProjectsPage() {
       </AlertDialog>
     </div>
   );
+
+  // return <Suspense><ProjectsPage /></Suspense>;
 }
 
-function TaskCard({ task, showProject, onStatusCycle }: {
+// function ProjectsPage() {
+// }
+
+function TaskCard({ task, showProject, onStatusCycle, onOpen, onDelete }: {
   task: Task;
   showProject: boolean;
   onStatusCycle: (task: Task) => void;
+  onOpen: (task: Task) => void;
+  onDelete: (id: string) => void;
+  onDragStart?: (id: string) => void;
 }) {
+  const isCancelled = task.status === 'cancelled';
   return (
-    <div className="bg-background border rounded-md p-2.5 shadow-sm cursor-default">
-      <p className="text-sm font-medium leading-snug mb-1.5">{task.title}</p>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <button
-          onClick={() => onStatusCycle(task)}
-          className={`text-xs px-1.5 py-0.5 rounded border transition-colors hover:bg-muted ${PRIORITY_COLORS[task.priority] ?? ''}`}
-          title="Click to advance status"
+    <div className={`group flex items-start gap-1.5 bg-background border rounded-md shadow-sm transition-colors hover:border-primary/30 ${isCancelled ? 'opacity-50' : ''}`}>
+      {/* Drag handle — hidden for scheduled tasks */}
+      {!isCancelled && task.status !== 'scheduled' ? (
+        <div
+          draggable
+          onDragStart={e => {
+            e.dataTransfer.setData('taskId', task.id);
+            e.dataTransfer.effectAllowed = 'move';
+          }}
+          className="shrink-0 flex items-center px-1 py-2.5 cursor-grab active:cursor-grabbing text-muted-foreground/30 hover:text-muted-foreground transition-colors rounded-l-md"
+          title="Drag to move"
+          onClick={e => e.stopPropagation()}
         >
-          {STATUS_LABELS[task.status] ?? task.status}
+          <GripVertical className="h-3.5 w-3.5" />
+        </div>
+      ) : (
+        <div className="w-5 shrink-0" />
+      )}
+
+      {/* Card body — click to open sheet */}
+      <div
+        className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer"
+        onClick={() => onOpen(task)}
+      >
+        <p className={`text-sm font-medium leading-snug mb-1.5 ${isCancelled ? 'line-through text-muted-foreground' : ''}`}>
+          {task.title}
+        </p>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_COLORS[task.status] ?? 'border-border text-muted-foreground'}`}>
+            {STATUS_LABELS[task.status] ?? task.status}
+          </span>
+          <span className={`text-xs ${PRIORITY_COLORS[task.priority] ?? 'text-muted-foreground'}`}>
+            {task.priority}
+          </span>
+          {task.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
+          {task.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
+          {showProject && task.project_name && (
+            <span className="text-xs text-muted-foreground truncate max-w-[80px]">{task.project_name}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Action buttons — shown on hover */}
+      <div className="shrink-0 flex flex-col gap-0.5 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={e => { e.stopPropagation(); onOpen(task); }}
+          className="p-1.5 rounded hover:bg-muted text-muted-foreground"
+          title="Edit task"
+        >
+          <Pencil className="h-3 w-3" />
         </button>
-        <span className={`text-xs ${PRIORITY_COLORS[task.priority] ?? 'text-muted-foreground'}`}>
-          {task.priority}
-        </span>
-        {task.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
-        {task.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
-        {showProject && task.project_name && (
-          <span className="text-xs text-muted-foreground truncate max-w-[80px]">{task.project_name}</span>
-        )}
+        <button
+          onClick={e => { e.stopPropagation(); onDelete(task.id); }}
+          className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+          title="Delete task"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
       </div>
     </div>
   );

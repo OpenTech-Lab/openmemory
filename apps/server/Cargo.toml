@@ -18,6 +18,7 @@ path = "src/bin/watcher.rs"
 [dependencies]
 aes-gcm = "0.10"
 anyhow = "1"
+cron = "0.12"
 axum = { version = "0.7", features = ["json"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 hkdf = "0.12"

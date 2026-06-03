@@ -6,7 +6,7 @@ export default function SidebarLayout({ children }: { children: React.ReactNode 
     <div className="h-svh overflow-hidden">
       <SidebarProvider>
         <AppSidebar />
-        <SidebarInset>
+        <SidebarInset className="min-w-0">
           {children}
         </SidebarInset>
       </SidebarProvider>

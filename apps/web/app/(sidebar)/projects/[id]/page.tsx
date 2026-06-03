@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { RefreshCw, ArrowLeft, Search, Plus, Bot, User } from 'lucide-react';
+import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const ProjectKnowledgeGraph = dynamic(
@@ -51,6 +51,19 @@ interface Project {
   graph_data?: { nodes?: unknown[] } | null;
 }
 
+interface Routine {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  frequency: string;
+  priority: string;
+  assigned_to: string | null;
+  last_task_date: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
 interface Task {
   id: string;
   project_id: string;
@@ -72,7 +85,7 @@ interface GraphQueryResult {
   truncated: boolean;
 }
 
-const STATUS_LABELS: Record<string, string> = { todo: 'Todo', in_progress: 'In Progress', done: 'Done' };
+const STATUS_LABELS: Record<string, string> = { scheduled: 'Scheduled', todo: 'Todo', in_progress: 'In Progress', done: 'Done', cancelled: 'Cancelled' };
 const PRIORITY_COLORS: Record<string, string> = {
   low: 'text-muted-foreground',
   medium: 'text-yellow-600 dark:text-yellow-400',
@@ -88,7 +101,7 @@ export default function ProjectDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
-  const [activeTab, setActiveTab] = useState<'graph' | 'tasks'>('graph');
+  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines'>('graph');
 
   // Graph query
   const [queryInput, setQueryInput] = useState('');
@@ -102,6 +115,14 @@ export default function ProjectDetailPage() {
   const [showTaskDialog, setShowTaskDialog] = useState(false);
   const [taskForm, setTaskForm] = useState({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '' });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+
+  // Routines
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [isLoadingRoutines, setIsLoadingRoutines] = useState(false);
+  const [showRoutineDialog, setShowRoutineDialog] = useState(false);
+  const [routineForm, setRoutineForm] = useState({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '' });
+  const [isCreatingRoutine, setIsCreatingRoutine] = useState(false);
+  const [isCheckingRoutines, setIsCheckingRoutines] = useState(false);
 
   const fetchProject = useCallback(async () => {
     setIsLoading(true);
@@ -134,8 +155,22 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchRoutines = useCallback(async () => {
+    setIsLoadingRoutines(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/routines`);
+      const data = await res.json();
+      setRoutines(data.routines ?? []);
+    } catch {
+      toast.error('Failed to load routines');
+    } finally {
+      setIsLoadingRoutines(false);
+    }
+  }, [id]);
+
   useEffect(() => { fetchProject(); }, [fetchProject]);
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
+  useEffect(() => { fetchRoutines(); }, [fetchRoutines]);
 
   const handleRebuild = async () => {
     setIsRebuilding(true);
@@ -194,6 +229,77 @@ export default function ProjectDetailPage() {
       toast.success('Task deleted');
     } catch {
       toast.error('Failed to delete task');
+    }
+  };
+
+  const handleCheckRoutines = async () => {
+    setIsCheckingRoutines(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/routines/check`, { method: 'POST' });
+      const data = await res.json();
+      const count = data.created?.length ?? 0;
+      if (count > 0) {
+        toast.success(`Created ${count} task${count !== 1 ? 's' : ''} from routines`);
+        fetchTasks();
+        fetchRoutines();
+      } else {
+        toast.info('No routines are due right now');
+      }
+    } catch {
+      toast.error('Failed to check routines');
+    } finally {
+      setIsCheckingRoutines(false);
+    }
+  };
+
+  const handleCreateRoutine = async () => {
+    if (!routineForm.title.trim()) { toast.error('Title is required'); return; }
+    setIsCreatingRoutine(true);
+    try {
+      const body: Record<string, string> = {
+        title: routineForm.title,
+        frequency: routineForm.frequency,
+        priority: routineForm.priority,
+      };
+      if (routineForm.description.trim()) body.description = routineForm.description.trim();
+      if (routineForm.assigned_to) body.assigned_to = routineForm.assigned_to;
+      const res = await fetch(`/api/projects/${id}/routines`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { toast.error('Failed to create routine'); return; }
+      setShowRoutineDialog(false);
+      setRoutineForm({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '' });
+      fetchRoutines();
+      toast.success('Routine created');
+    } catch {
+      toast.error('Failed to create routine');
+    } finally {
+      setIsCreatingRoutine(false);
+    }
+  };
+
+  const handleToggleRoutine = async (routine: Routine) => {
+    try {
+      await fetch(`/api/projects/${id}/routines/${routine.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !routine.enabled }),
+      });
+      fetchRoutines();
+    } catch {
+      toast.error('Failed to update routine');
+    }
+  };
+
+  const handleDeleteRoutine = async (routineId: string) => {
+    try {
+      await fetch(`/api/projects/${id}/routines/${routineId}`, { method: 'DELETE' });
+      setRoutines(prev => prev.filter(r => r.id !== routineId));
+      toast.success('Routine deleted');
+    } catch {
+      toast.error('Failed to delete routine');
     }
   };
 
@@ -275,23 +381,29 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
-      {/* Tabs (only shown when project has a graph) */}
-      {hasGraph && (
-        <div className="flex border-b shrink-0 px-6">
+      {/* Tabs — always visible; Graph tab only for projects with a path */}
+      <div className="flex border-b shrink-0 px-6">
+        {hasGraph && (
           <button
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'graph' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveTab('graph')}
           >
             Graph
           </button>
-          <button
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'tasks' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setActiveTab('tasks')}
-          >
-            Tasks {taskCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{taskCount}</span>}
-          </button>
-        </div>
-      )}
+        )}
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'tasks' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('tasks')}
+        >
+          Tasks {taskCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{taskCount}</span>}
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'routines' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('routines')}
+        >
+          Routines {routines.length > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{routines.length}</span>}
+        </button>
+      </div>
 
       {/* Content */}
       <div className="flex-1 relative overflow-hidden">
@@ -345,7 +457,7 @@ export default function ProjectDetailPage() {
         )}
 
         {/* Tasks tab */}
-        {(activeTab === 'tasks' || !hasGraph) && (
+        {activeTab === 'tasks' && (
           <div className="flex flex-col h-full p-6 gap-4 overflow-auto">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium text-muted-foreground">
@@ -402,7 +514,166 @@ export default function ProjectDetailPage() {
             )}
           </div>
         )}
+
+        {/* Routines tab */}
+        {activeTab === 'routines' && (
+          <div className="flex flex-col h-full p-6 gap-4 overflow-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-medium">Recurring Tasks</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Templates that generate a dated task each time they&apos;re checked
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCheckRoutines}
+                  disabled={isCheckingRoutines}
+                  title="Create tasks for any due routines"
+                >
+                  {isCheckingRoutines
+                    ? <RefreshCw className="h-4 w-4 animate-spin mr-1" />
+                    : <Repeat2 className="h-4 w-4 mr-1" />}
+                  Check due
+                </Button>
+                <Button size="sm" onClick={() => setShowRoutineDialog(true)}>
+                  <Plus className="h-4 w-4 mr-1" /> Add Routine
+                </Button>
+              </div>
+            </div>
+
+            {isLoadingRoutines ? (
+              <div className="flex items-center justify-center py-8">
+                <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : routines.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
+                <Repeat2 className="h-8 w-8 opacity-30" />
+                <p>No routines yet.</p>
+                <p className="text-xs text-center max-w-xs">
+                  Add a routine like &quot;Research top news&quot; (daily) — when an AI agent calls
+                  <code className="bg-muted px-1 rounded mx-1">routine_check</code>
+                  it creates a dated task automatically.
+                </p>
+                <Button variant="outline" size="sm" onClick={() => setShowRoutineDialog(true)}>
+                  <Plus className="h-4 w-4 mr-1" /> Add first routine
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {routines.map(routine => (
+                  <div key={routine.id} className={`flex items-start gap-3 p-3 border rounded-lg transition-colors ${routine.enabled ? 'bg-background' : 'bg-muted/30 opacity-60'}`}>
+                    <Repeat2 className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{routine.title}</p>
+                      {routine.description && (
+                        <p className="text-xs text-muted-foreground mt-0.5 truncate">{routine.description}</p>
+                      )}
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs border rounded px-1.5 py-0.5 capitalize">{routine.frequency}</span>
+                        <span className={`text-xs ${PRIORITY_COLORS[routine.priority] ?? ''}`}>{routine.priority}</span>
+                        {routine.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
+                        {routine.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
+                        <span className="text-xs text-muted-foreground">
+                          last: {routine.last_task_date ?? 'never'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => handleToggleRoutine(routine)}
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors border rounded px-1.5 py-0.5"
+                        title={routine.enabled ? 'Disable' : 'Enable'}
+                      >
+                        {routine.enabled ? 'on' : 'off'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteRoutine(routine.id)}
+                        className="text-xs text-muted-foreground hover:text-destructive transition-colors ml-1"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Add Routine Dialog */}
+      <Dialog open={showRoutineDialog} onOpenChange={setShowRoutineDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New Routine</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Title</Label>
+              <Input
+                value={routineForm.title}
+                onChange={e => setRoutineForm(f => ({ ...f, title: e.target.value }))}
+                placeholder="Research top news"
+              />
+              <p className="text-xs text-muted-foreground mt-1">Today&apos;s date is appended when a task is created, e.g. &quot;Research top news — 2026-06-03&quot;</p>
+            </div>
+            <div>
+              <Label>Instructions <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Textarea
+                value={routineForm.description}
+                onChange={e => setRoutineForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Steps or context for the AI agent handling this task"
+                rows={2}
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label>Frequency</Label>
+                <Select value={routineForm.frequency} onValueChange={v => setRoutineForm(f => ({ ...f, frequency: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="daily">Daily</SelectItem>
+                    <SelectItem value="weekly">Weekly</SelectItem>
+                    <SelectItem value="monthly">Monthly</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Priority</Label>
+                <Select value={routineForm.priority} onValueChange={v => setRoutineForm(f => ({ ...f, priority: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Assign to</Label>
+                <Select value={routineForm.assigned_to || 'unassigned'} onValueChange={v => setRoutineForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                    <SelectItem value="human">Human</SelectItem>
+                    <SelectItem value="agent">Agent</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRoutineDialog(false)}>Cancel</Button>
+            <Button onClick={handleCreateRoutine} disabled={isCreatingRoutine}>
+              {isCreatingRoutine && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Task Dialog */}
       <Dialog open={showTaskDialog} onOpenChange={setShowTaskDialog}>
@@ -428,9 +699,11 @@ export default function ProjectDetailPage() {
                 <Select value={taskForm.status} onValueChange={v => setTaskForm(f => ({ ...f, status: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="scheduled">Scheduled</SelectItem>
                     <SelectItem value="todo">Todo</SelectItem>
                     <SelectItem value="in_progress">In Progress</SelectItem>
                     <SelectItem value="done">Done</SelectItem>
+                    <SelectItem value="cancelled">Cancelled</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
