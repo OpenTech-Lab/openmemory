@@ -110,9 +110,7 @@ const PRIORITY_COLORS: Record<string, string> = {
   high: 'text-destructive',
 };
 
-export default function ProjectsPageWrapper() {
-  
-
+function ProjectsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const view = (searchParams.get('view') as 'list' | 'board') ?? 'list';
@@ -1113,11 +1111,15 @@ export default function ProjectsPageWrapper() {
     </div>
   );
 
-  // return <Suspense><ProjectsPage /></Suspense>;
 }
 
-// function ProjectsPage() {
-// }
+export default function ProjectsPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-full"><RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" /></div>}>
+      <ProjectsPageContent />
+    </Suspense>
+  );
+}
 
 function RoutineCard({ routine, showProject, onOpen }: {
   routine: Routine;
