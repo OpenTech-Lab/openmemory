@@ -651,7 +651,7 @@ function ProjectsPageContent() {
                 return (
                   <div
                     key={col.key}
-                    className={`flex flex-col gap-2 rounded-lg p-3 min-h-[200px] min-w-[300px] w-[300px] shrink-0 transition-colors ${col.key === 'scheduled' ? 'bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/30' : isOver ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-muted/40'}`}
+                    className={`flex flex-col gap-2 rounded-lg p-3 h-full min-w-[300px] w-[300px] shrink-0 transition-colors ${col.key === 'scheduled' ? 'bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/30' : isOver ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-muted/40'}`}
                     onDragOver={e => { if (col.key !== 'scheduled') { e.preventDefault(); setDragOverColumn(col.key); } }}
                     onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverColumn(null); }}
                     onDrop={e => {
@@ -666,7 +666,7 @@ function ProjectsPageContent() {
                       <span className="text-sm font-medium">{col.label}</span>
                       <Badge variant="secondary" className="text-xs">{totalCount}</Badge>
                     </div>
-                    <div className="flex flex-col gap-2 overflow-y-auto">
+                    <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-y-auto">
                       {colRoutines.map(routine => (
                         <RoutineCard
                           key={routine.id}
