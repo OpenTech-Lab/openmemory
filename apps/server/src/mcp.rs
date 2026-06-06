@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod crypto;
 mod falkordb;
 mod project_graphs;
@@ -696,6 +698,45 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "env_http_request",
+                    "description": "Make an HTTP request with a stored secret injected as the auth header. The secret value is never exposed to the agent — the server resolves it internally and forwards the request. Use this to call external APIs (Cloudflare, GitHub, etc.) whose credentials are stored as secret env params.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method: GET, POST, PUT, PATCH, DELETE",
+                                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Full URL to request"
+                            },
+                            "auth_key": {
+                                "type": "string",
+                                "description": "Name of the secret env param whose value will be used as the auth credential (e.g. CLAUDEFLARE_API_TOKEN_ACCESS)"
+                            },
+                            "auth_header": {
+                                "type": "string",
+                                "description": "Header name for the credential. Defaults to 'Authorization'."
+                            },
+                            "auth_prefix": {
+                                "type": "string",
+                                "description": "Prefix for the header value. Defaults to 'Bearer '. Set to '' for bare token headers like X-Auth-Key."
+                            },
+                            "body": {
+                                "type": "object",
+                                "description": "Optional JSON request body (for POST/PUT/PATCH)"
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": "Optional additional headers as key-value pairs"
+                            }
+                        },
+                        "required": ["method", "url", "auth_key"]
+                    }
+                },
+                {
                     "name": "project_graph_list",
                     "description": "List all registered project knowledge graphs. Start here to find project_id, name, path, and node/edge counts. Use name or path to find the right project.",
                     "inputSchema": {
@@ -938,6 +979,7 @@ impl McpServer {
             "env_get" => self.env_get(arguments).await,
             "env_list" => self.env_list(arguments).await,
             "env_delete" => self.env_delete(arguments).await,
+            "env_http_request" => self.env_http_request(arguments).await,
             "project_graph_list" => self.project_graph_list(arguments).await,
             "project_graph_create" => self.project_graph_create(arguments).await,
             "project_graph_query" => self.project_graph_query(arguments).await,
@@ -1320,6 +1362,76 @@ impl McpServer {
                 "type": "text",
                 "text": format!("Deleted parameter '{}'", key)
             }]
+        }))
+    }
+
+    async fn env_http_request(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let method = args["method"].as_str().context("missing method")?.to_uppercase();
+        let url = args["url"].as_str().context("missing url")?.to_string();
+        let auth_key = args["auth_key"].as_str().context("missing auth_key")?.to_string();
+        let auth_header = args["auth_header"].as_str().unwrap_or("Authorization").to_string();
+        let auth_prefix = args["auth_prefix"].as_str().unwrap_or("Bearer ").to_string();
+
+        // Resolve the secret from the DB — never returned to the agent
+        let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT value_encrypted, is_secret FROM env_params WHERE key = $1",
+        )
+        .bind(&auth_key)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to query auth secret")?;
+
+        let secret_value = match row {
+            None => anyhow::bail!("Secret '{}' not found in env params", auth_key),
+            Some((encrypted, _)) => decrypt_value(&self.encryption_key, &encrypted)
+                .context("failed to decrypt secret")?,
+        };
+
+        let auth_value = format!("{}{}", auth_prefix, secret_value);
+        let client = HttpClient::new();
+
+        let mut req = match method.as_str() {
+            "GET"    => client.get(&url),
+            "POST"   => client.post(&url),
+            "PUT"    => client.put(&url),
+            "PATCH"  => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            other    => anyhow::bail!("Unsupported HTTP method: {}", other),
+        }
+        .header(&auth_header, &auth_value)
+        .header("Content-Type", "application/json");
+
+        // Inject any extra headers
+        if let Some(headers) = args["headers"].as_object() {
+            for (k, v) in headers {
+                if let Some(v_str) = v.as_str() {
+                    req = req.header(k.as_str(), v_str);
+                }
+            }
+        }
+
+        // Attach body for mutating methods
+        if let Some(body) = args.get("body") {
+            if !body.is_null() {
+                req = req.body(body.to_string());
+            }
+        }
+
+        let response = req.send().await.context("HTTP request failed")?;
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_default();
+
+        // Try to pretty-print JSON responses, fall back to raw text
+        let display = serde_json::from_str::<serde_json::Value>(&body_text)
+            .map(|v| serde_json::to_string_pretty(&v).unwrap_or(body_text.clone()))
+            .unwrap_or(body_text);
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("HTTP {} — status {}\n\n{}", method, status, display)
+            }],
+            "isError": status >= 400
         }))
     }
 
