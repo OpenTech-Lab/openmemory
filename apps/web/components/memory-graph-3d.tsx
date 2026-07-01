@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import ForceGraph3D, { ForceGraph3DInstance } from '3d-force-graph';
+import { Vector2 } from 'three';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { useTheme } from 'next-themes';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { MemoryNode, MemoryEdge } from './memory-graph-types';
@@ -72,10 +74,25 @@ export function MemoryGraph3D({ memories, edges }: Props) {
 
     graphRef.current = graph;
 
+    // Bloom only makes sense against the dark background — the light theme's
+    // near-white background already sits above any sane luminance threshold,
+    // so adding the pass there blooms the whole frame to solid white.
+    let bloomPass: UnrealBloomPass | null = null;
+    if (isDark) {
+      bloomPass = new UnrealBloomPass(
+        new Vector2(containerRef.current.clientWidth, containerRef.current.clientHeight),
+        1.1,
+        0.5,
+        0.15
+      );
+      graph.postProcessingComposer().addPass(bloomPass);
+    }
+
     const resize = () => {
       if (!containerRef.current) return;
       graph.width(containerRef.current.clientWidth);
       graph.height(containerRef.current.clientHeight);
+      bloomPass?.resolution.set(containerRef.current.clientWidth, containerRef.current.clientHeight);
     };
     resize();
     const ro = new ResizeObserver(resize);
