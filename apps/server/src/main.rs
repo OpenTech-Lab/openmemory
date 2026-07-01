@@ -372,6 +372,36 @@ impl OpenSearchClient {
         Ok(docs)
     }
 
+    async fn get_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<MemoryDocument>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let url = format!("{}/{}/_search", self.base_url, self.index);
+        let search_body = serde_json::json!({
+            "size": ids.len(),
+            "query": { "ids": { "values": ids } },
+            "_source": true
+        });
+
+        let resp = self.client.post(&url).json(&search_body).send().await?;
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("get_by_ids failed: {}", body);
+        }
+
+        let result: serde_json::Value = resp.json().await?;
+        let hits = result["hits"]["hits"].as_array();
+        let docs: Vec<MemoryDocument> = hits
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|hit| serde_json::from_value(hit["_source"].clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(docs)
+    }
+
     /// Returns (docs, total_hits) where total_hits is the full index count from OpenSearch.
     async fn list_all(&self, limit: usize, from: usize) -> anyhow::Result<(Vec<MemoryDocument>, usize)> {
         let url = format!("{}/{}/_search", self.base_url, self.index);
@@ -461,6 +491,8 @@ enum McpRequest {
         limit: Option<usize>,
         #[serde(default)]
         user_id: Option<String>,
+        #[serde(default)]
+        include_graph_view: bool,
     },
 
     #[serde(rename = "memory.list")]
@@ -664,6 +696,10 @@ enum McpResponse {
     MemorySearchResult {
         query: String,
         results: Vec<SearchResult>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        related_facts: Vec<falkordb::FactResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        graph_view: Option<String>,
     },
 
     #[serde(rename = "memory.list.result")]
@@ -814,6 +850,8 @@ struct SearchResult {
     importance_score: f32,
     created_at: DateTime<Utc>,
     score: f32,
+    #[serde(default)]
+    via_graph: bool,
 }
 
 // Full memory - includes content from OpenSearch
@@ -1612,6 +1650,7 @@ async fn mcp(
             query,
             limit,
             user_id,
+            include_graph_view,
         } => {
             let limit = limit.unwrap_or(5).clamp(1, 50);
 
@@ -1623,15 +1662,32 @@ async fn mcp(
                 limit
             );
 
+            // Related facts are temporally sensitive, so always fetch fresh — even on a
+            // cached `results` hit — rather than caching them alongside results.
+            let related_facts = match &state.falkordb {
+                Some(fdb) => {
+                    let mut fdb = fdb.clone();
+                    fdb.query_facts(&query, None, 5, true).await.unwrap_or_default()
+                }
+                None => vec![],
+            };
+
             if let Some(mut redis_conn) = state.redis.clone() {
                 if let Ok(cached) = redis_conn.get::<_, String>(&cache_key).await {
                     if let Ok(cached_results) = serde_json::from_str::<Vec<SearchResult>>(&cached) {
                         info!("cache hit for query: {}", query);
+                        let graph_view = if include_graph_view {
+                            compute_graph_view(&state.falkordb, &cached_results, &related_facts, user_id.as_deref()).await
+                        } else {
+                            None
+                        };
                         return Ok((
                             StatusCode::OK,
                             Json(McpResponse::MemorySearchResult {
                                 query,
                                 results: cached_results,
+                                related_facts,
+                                graph_view,
                             }),
                         ));
                     }
@@ -1661,7 +1717,7 @@ async fn mcp(
                 vec![]
             };
 
-            // Combine and score
+            // Combine and score (base signal: BM25 candidacy + importance/recency)
             let mut results: Vec<SearchResult> = docs.iter()
                 .filter_map(|doc| {
                     let id = Uuid::parse_str(&doc.id).ok()?;
@@ -1679,23 +1735,99 @@ async fn mcp(
                         importance_score: importance,
                         created_at,
                         score,
+                        via_graph: false,
                     })
                 })
                 .collect();
 
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+            if let Some(fdb) = &state.falkordb {
+                let mut fdb = fdb.clone();
+
+                // 1. Proximity boost: reward BM25 hits that are graph-connected to each other.
+                match fdb.connection_counts(&ids, user_id.as_deref()).await {
+                    Ok(counts) => {
+                        for r in results.iter_mut() {
+                            if let Some(&n) = counts.get(&r.id) {
+                                r.score += (0.05 * n as f32).min(0.15);
+                            }
+                        }
+                        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+                    }
+                    Err(e) => warn!("memory_search: connection_counts failed: {e}"),
+                }
+
+                // 2. Graph-recall: expand from the top hit to surface memories BM25's text
+                // match missed entirely, discounted since they aren't a direct text match.
+                if let Some(top) = results.first().map(|r| r.id) {
+                    match fdb.get_neighbors(top, user_id.as_deref(), 1, 5).await {
+                        Ok(neighbors) => {
+                            let existing: std::collections::HashSet<Uuid> =
+                                results.iter().map(|r| r.id).collect();
+                            let new_neighbors: Vec<&falkordb::NeighborInfo> = neighbors
+                                .iter()
+                                .filter(|n| !existing.contains(&n.id))
+                                .collect();
+
+                            if !new_neighbors.is_empty() {
+                                let new_ids: Vec<String> =
+                                    new_neighbors.iter().map(|n| n.id.to_string()).collect();
+                                let neighbor_docs = state.opensearch.get_by_ids(&new_ids).await.unwrap_or_default();
+                                let neighbor_uuids: Vec<Uuid> =
+                                    new_neighbors.iter().map(|n| n.id).collect();
+                                let neighbor_index: Vec<MemoryIndex> = sqlx::query_as(
+                                    "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE id = ANY($1)"
+                                )
+                                .bind(&neighbor_uuids)
+                                .fetch_all(&state.db)
+                                .await
+                                .unwrap_or_default();
+
+                                for n in new_neighbors {
+                                    let Some(doc) = neighbor_docs.iter().find(|d| d.id == n.id.to_string()) else {
+                                        continue;
+                                    };
+                                    let index = neighbor_index.iter().find(|i| i.id == n.id);
+                                    let created_at = index.map(|i| i.created_at).unwrap_or_else(Utc::now);
+                                    let score = compute_combined_score(n.importance, created_at) * 0.9;
+                                    results.push(SearchResult {
+                                        id: n.id,
+                                        content: doc.content.clone(),
+                                        summary: doc.summary.clone(),
+                                        tags: n.tags.clone(),
+                                        importance_score: n.importance,
+                                        created_at,
+                                        score,
+                                        via_graph: true,
+                                    });
+                                }
+                                results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+                            }
+                        }
+                        Err(e) => warn!("memory_search: get_neighbors failed: {e}"),
+                    }
+                }
+            }
+
             results.truncate(limit);
 
-            // Cache results
+            // Cache results (facts and graph_view are always fetched fresh, so they're excluded from the cache entry)
             if let Some(mut redis_conn) = state.redis.clone() {
                 if let Ok(json) = serde_json::to_string(&results) {
                     let _: Result<(), _> = redis_conn.set_ex(&cache_key, json, 300).await;
                 }
             }
 
+            let graph_view = if include_graph_view {
+                compute_graph_view(&state.falkordb, &results, &related_facts, user_id.as_deref()).await
+            } else {
+                None
+            };
+
             Ok((
                 StatusCode::OK,
-                Json(McpResponse::MemorySearchResult { query, results }),
+                Json(McpResponse::MemorySearchResult { query, results, related_facts, graph_view }),
             ))
         }
 
@@ -2780,6 +2912,78 @@ fn compute_combined_score(importance: f32, created_at: DateTime<Utc>) -> f32 {
     (importance * 0.6) + (recency * 0.4)
 }
 
+/// Best-effort mermaid graph_view for a memory_search result set. Returns None if the
+/// graph layer is unavailable or the edge lookup fails — the caller degrades gracefully.
+async fn compute_graph_view(
+    falkordb: &Option<FalkorDbClient>,
+    results: &[SearchResult],
+    related_facts: &[falkordb::FactResult],
+    user_id: Option<&str>,
+) -> Option<String> {
+    let mut fdb = falkordb.as_ref()?.clone();
+    let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+    match fdb.edges_within(&ids, user_id).await {
+        Ok(edges) => Some(build_mermaid(results, &edges, related_facts)),
+        Err(e) => {
+            warn!("memory_search: edges_within failed: {e}");
+            None
+        }
+    }
+}
+
+/// Render a memory_search result set as a mermaid `graph TD` block: result memories
+/// as nodes, RELATED_TO/LINKED_TO edges between them, plus any related entities/facts.
+fn build_mermaid(
+    results: &[SearchResult],
+    edges: &[(Uuid, Uuid, String)],
+    facts: &[falkordb::FactResult],
+) -> String {
+    let mut out = String::from("graph TD\n");
+    for r in results {
+        let node_id = format!("M_{}", &r.id.simple().to_string()[..8]);
+        let label = r.summary.clone().unwrap_or_else(|| r.content.clone());
+        out.push_str(&format!("  {node_id}[\"{}\"]\n", mermaid_escape(&label)));
+    }
+    for (a, b, rel) in edges {
+        let a_id = format!("M_{}", &a.simple().to_string()[..8]);
+        let b_id = format!("M_{}", &b.simple().to_string()[..8]);
+        out.push_str(&format!("  {a_id} ---|{}| {b_id}\n", mermaid_escape(rel)));
+    }
+    let mut seen_entities = std::collections::HashSet::new();
+    for f in facts {
+        let a_id = format!("E_{}", mermaid_id(&f.subject_name));
+        let b_id = format!("E_{}", mermaid_id(&f.object_name));
+        if seen_entities.insert(f.subject_name.clone()) {
+            out.push_str(&format!("  {a_id}[\"{}\"]\n", mermaid_escape(&f.subject_name)));
+        }
+        if seen_entities.insert(f.object_name.clone()) {
+            out.push_str(&format!("  {b_id}[\"{}\"]\n", mermaid_escape(&f.object_name)));
+        }
+        out.push_str(&format!("  {a_id} -->|{}| {b_id}\n", mermaid_escape(&f.relationship)));
+    }
+    out
+}
+
+fn mermaid_escape(s: &str) -> String {
+    s.chars()
+        .take(60)
+        .collect::<String>()
+        .replace('"', "'")
+        .replace(['[', ']', '{', '}', '|', '\n'], " ")
+}
+
+fn mermaid_id(name: &str) -> String {
+    let id: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    if id.is_empty() {
+        "unknown".to_string()
+    } else {
+        id
+    }
+}
+
 fn recency_score(created_at: DateTime<Utc>) -> f32 {
     let age = Utc::now().signed_duration_since(created_at);
     let age_days = age.num_seconds().max(0) as f32 / (60.0 * 60.0 * 24.0);
@@ -3643,4 +3847,96 @@ async fn check_project_routines(
 #[allow(dead_code)]
 async fn _sleep_for_readability() {
     tokio::time::sleep(Duration::from_millis(10)).await;
+}
+
+#[cfg(test)]
+mod mermaid_tests {
+    use super::*;
+
+    fn result(id: Uuid, content: &str, summary: Option<&str>) -> SearchResult {
+        SearchResult {
+            id,
+            content: content.to_string(),
+            summary: summary.map(|s| s.to_string()),
+            tags: vec![],
+            importance_score: 0.5,
+            created_at: Utc::now(),
+            score: 0.5,
+            via_graph: false,
+        }
+    }
+
+    #[test]
+    fn mermaid_escape_truncates_and_strips_special_chars() {
+        let input = "a\"b[c]{d}|e\nf".to_string() + &"x".repeat(100);
+        let escaped = mermaid_escape(&input);
+        assert!(escaped.len() <= 60);
+        assert!(!escaped.contains(['"', '[', ']', '{', '}', '|', '\n']));
+    }
+
+    #[test]
+    fn mermaid_id_replaces_non_alphanumeric() {
+        assert_eq!(mermaid_id("Alice O'Brien"), "Alice_O_Brien");
+        assert_eq!(mermaid_id(""), "unknown");
+    }
+
+    #[test]
+    fn build_mermaid_renders_nodes_and_edges() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let results = vec![
+            result(a, "content A", Some("summary A")),
+            result(b, "content B", None),
+        ];
+        let edges = vec![(a, b, "RELATED_TO".to_string())];
+        let facts = vec![];
+
+        let mermaid = build_mermaid(&results, &edges, &facts);
+
+        assert!(mermaid.starts_with("graph TD\n"));
+        assert!(mermaid.contains("summary A"));
+        assert!(mermaid.contains("content B")); // falls back to content when summary is None
+        assert!(mermaid.contains("---|RELATED_TO|"));
+    }
+
+    #[test]
+    fn build_mermaid_includes_fact_edges_and_dedupes_entities() {
+        let results = vec![];
+        let edges = vec![];
+        let facts = vec![
+            falkordb::FactResult {
+                fact_id: "f1".to_string(),
+                subject_name: "Alice".to_string(),
+                subject_type: "Person".to_string(),
+                relationship: "member_of".to_string(),
+                fact: "Alice is a member of Team".to_string(),
+                object_name: "Team".to_string(),
+                object_type: "Team".to_string(),
+                valid_at: "2026-01-01T00:00:00Z".to_string(),
+                invalid_at: None,
+                episode_id: None,
+                is_current: true,
+            },
+            falkordb::FactResult {
+                fact_id: "f2".to_string(),
+                subject_name: "Alice".to_string(),
+                subject_type: "Person".to_string(),
+                relationship: "leads".to_string(),
+                fact: "Alice leads Team".to_string(),
+                object_name: "Team".to_string(),
+                object_type: "Team".to_string(),
+                valid_at: "2026-01-01T00:00:00Z".to_string(),
+                invalid_at: None,
+                episode_id: None,
+                is_current: true,
+            },
+        ];
+
+        let mermaid = build_mermaid(&results, &edges, &facts);
+
+        assert_eq!(mermaid.matches("E_Alice[\"Alice\"]").count(), 1);
+        assert_eq!(mermaid.matches("E_Team[\"Team\"]").count(), 1);
+        assert!(mermaid.contains("-->|member_of|"));
+        assert!(mermaid.contains("-->|leads|"));
+    }
 }

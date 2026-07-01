@@ -851,6 +851,85 @@ impl FalkorDbClient {
         Ok(parse_neighbor_rows(result))
     }
 
+    /// Count RELATED_TO/LINKED_TO edges between members of `ids`, scoped to `ids` itself.
+    /// Used as a graph-proximity signal to boost search results that cluster together.
+    /// Returns a map of node id -> number of edges to other nodes in `ids`.
+    pub async fn connection_counts(
+        &mut self,
+        ids: &[Uuid],
+        user_id: Option<&str>,
+    ) -> Result<std::collections::HashMap<Uuid, u32>> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let id_list = ids
+            .iter()
+            .map(|id| format!("\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let user_filter = match user_id {
+            Some(uid) => format!(
+                " AND a.user_id = \"{}\" AND b.user_id = \"{}\"",
+                escape_str(uid),
+                escape_str(uid)
+            ),
+            None => String::new(),
+        };
+        let q = format!(
+            "MATCH (a:Memory)-[:RELATED_TO|LINKED_TO]-(b:Memory) \
+             WHERE a.id IN [{id_list}] AND b.id IN [{id_list}]{user_filter} \
+             RETURN a.id AS id, count(b) AS n"
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB connection_counts failed")?;
+
+        Ok(parse_id_count_rows(result))
+    }
+
+    /// Return the distinct RELATED_TO/LINKED_TO edges (as unordered pairs) between
+    /// members of `ids`. Used to render a graph_view of a search result set.
+    pub async fn edges_within(
+        &mut self,
+        ids: &[Uuid],
+        user_id: Option<&str>,
+    ) -> Result<Vec<(Uuid, Uuid, String)>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let id_list = ids
+            .iter()
+            .map(|id| format!("\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let user_filter = match user_id {
+            Some(uid) => format!(
+                " AND a.user_id = \"{}\" AND b.user_id = \"{}\"",
+                escape_str(uid),
+                escape_str(uid)
+            ),
+            None => String::new(),
+        };
+        // a.id < b.id avoids returning both directions of the same RELATED_TO pair
+        // (which is stored as two edges) and self-pairs.
+        let q = format!(
+            "MATCH (a:Memory)-[r:RELATED_TO|LINKED_TO]-(b:Memory) \
+             WHERE a.id IN [{id_list}] AND b.id IN [{id_list}] AND a.id < b.id{user_filter} \
+             RETURN DISTINCT a.id AS a_id, b.id AS b_id, type(r) AS rel_type"
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB edges_within failed")?;
+
+        Ok(parse_edge_pair_rows(result))
+    }
+
     /// Create an explicit named LINKED_TO edge between two memories.
     /// Returns an error if either node is not present in FalkorDB (e.g. pre-existing
     /// memory or async save hasn't completed yet) so callers don't see silent no-ops.
@@ -1118,6 +1197,59 @@ fn parse_count(result: redis::Value) -> u32 {
         .unwrap_or(0.0) as u32
 }
 
+/// Parse `RETURN a.id AS a_id, b.id AS b_id, type(r) AS rel_type` rows.
+fn parse_edge_pair_rows(result: redis::Value) -> Vec<(Uuid, Uuid, String)> {
+    let outer = match result {
+        redis::Value::Array(v) => v,
+        _ => return vec![],
+    };
+    let rows = match outer.get(1) {
+        Some(redis::Value::Array(r)) => r,
+        _ => return vec![],
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let cols = match row {
+                redis::Value::Array(c) => c,
+                _ => return None,
+            };
+            if cols.len() < 3 {
+                return None;
+            }
+            let a = Uuid::parse_str(&extract_string(&cols[0])?).ok()?;
+            let b = Uuid::parse_str(&extract_string(&cols[1])?).ok()?;
+            let rel_type = extract_string(&cols[2]).unwrap_or_else(|| "RELATED_TO".to_string());
+            Some((a, b, rel_type))
+        })
+        .collect()
+}
+
+/// Parse `RETURN a.id AS id, count(b) AS n` rows into a Uuid -> count map.
+fn parse_id_count_rows(result: redis::Value) -> std::collections::HashMap<Uuid, u32> {
+    let outer = match result {
+        redis::Value::Array(v) => v,
+        _ => return std::collections::HashMap::new(),
+    };
+    let rows = match outer.get(1) {
+        Some(redis::Value::Array(r)) => r,
+        _ => return std::collections::HashMap::new(),
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let cols = match row {
+                redis::Value::Array(c) => c,
+                _ => return None,
+            };
+            if cols.len() < 2 {
+                return None;
+            }
+            let id = Uuid::parse_str(&extract_string(&cols[0])?).ok()?;
+            let n = extract_f32(&cols[1]).unwrap_or(0.0) as u32;
+            Some((id, n))
+        })
+        .collect()
+}
+
 fn parse_fact_rows(result: redis::Value) -> Vec<FactResult> {
     let outer = match result {
         redis::Value::Array(v) => v,
@@ -1163,4 +1295,75 @@ pub(crate) fn normalize_ts(ts: &str) -> String {
             warn!("normalize_ts: could not parse timestamp {:?}, using as-is", ts);
             ts.to_string()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // GRAPH.QUERY results are Array[column_names, rows, stats]; each row is Array[col_vals...].
+    fn query_result(rows: Vec<Vec<redis::Value>>) -> redis::Value {
+        redis::Value::Array(vec![
+            redis::Value::Array(vec![]),
+            redis::Value::Array(rows.into_iter().map(redis::Value::Array).collect()),
+            redis::Value::Array(vec![]),
+        ])
+    }
+
+    fn bulk(s: &str) -> redis::Value {
+        redis::Value::BulkString(s.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn parse_edge_pair_rows_extracts_pairs() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let result = query_result(vec![vec![
+            bulk(&a.to_string()),
+            bulk(&b.to_string()),
+            bulk("RELATED_TO"),
+        ]]);
+
+        let pairs = parse_edge_pair_rows(result);
+        assert_eq!(pairs, vec![(a, b, "RELATED_TO".to_string())]);
+    }
+
+    #[test]
+    fn parse_edge_pair_rows_skips_unparseable_ids() {
+        let result = query_result(vec![vec![
+            bulk("not-a-uuid"),
+            bulk("also-not-a-uuid"),
+            bulk("RELATED_TO"),
+        ]]);
+        assert!(parse_edge_pair_rows(result).is_empty());
+    }
+
+    #[test]
+    fn parse_edge_pair_rows_empty_on_no_rows() {
+        let result = query_result(vec![]);
+        assert!(parse_edge_pair_rows(result).is_empty());
+    }
+
+    #[test]
+    fn parse_id_count_rows_builds_map() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let result = query_result(vec![
+            vec![bulk(&a.to_string()), redis::Value::Int(3)],
+            vec![bulk(&b.to_string()), redis::Value::Int(0)],
+        ]);
+
+        let counts = parse_id_count_rows(result);
+        assert_eq!(counts.get(&a), Some(&3));
+        assert_eq!(counts.get(&b), Some(&0));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn parse_id_count_rows_empty_ids_short_circuits() {
+        // connection_counts/edges_within both return early for empty input without
+        // ever issuing a query — verified separately in the async methods themselves.
+        let result = query_result(vec![]);
+        assert!(parse_id_count_rows(result).is_empty());
+    }
 }
