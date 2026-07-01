@@ -22,11 +22,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2 } from 'lucide-react';
+import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand } from 'lucide-react';
 import { toast } from 'sonner';
+import { MAX_NODES_FULL, type GraphifyData, type GraphQueryResult } from '@/components/project-graph-types';
 
-const ProjectKnowledgeGraph = dynamic(
-  () => import('@/components/project-knowledge-graph').then(m => m.ProjectKnowledgeGraph),
+const ProjectGraph2D = dynamic(
+  () => import('@/components/project-graph-2d').then(m => m.ProjectGraph2D),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full h-full flex items-center justify-center">
+        <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    ),
+  }
+);
+const ProjectGraph3D = dynamic(
+  () => import('@/components/project-graph-3d').then(m => m.ProjectGraph3D),
   {
     ssr: false,
     loading: () => (
@@ -77,14 +89,6 @@ interface Task {
   updated_at: string;
 }
 
-interface GraphQueryResult {
-  query: string;
-  seed_nodes: string[];
-  nodes: Array<{ id: string; label: string; file_type?: string; community?: number; source_file?: string }>;
-  edges: Array<{ source: string; target: string; relation: string }>;
-  truncated: boolean;
-}
-
 const STATUS_LABELS: Record<string, string> = { scheduled: 'Scheduled', todo: 'Todo', in_progress: 'In Progress', done: 'Done', cancelled: 'Cancelled' };
 const PRIORITY_COLORS: Record<string, string> = {
   low: 'text-muted-foreground',
@@ -108,6 +112,8 @@ export default function ProjectDetailPage() {
   const [queryResult, setQueryResult] = useState<GraphQueryResult | null>(null);
   const [isQuerying, setIsQuerying] = useState(false);
   const queriedQueryRef = useRef<string>('');
+  const [graphView, setGraphView] = useState<'2d' | '3d'>('2d');
+  const [forceFullDetail, setForceFullDetail] = useState(false);
 
   // Tasks
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -177,10 +183,14 @@ export default function ProjectDetailPage() {
     try {
       const res = await fetch(`/api/projects/${id}/rebuild`, { method: 'POST' });
       const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? `Rebuild failed (HTTP ${res.status})`);
+        return;
+      }
       if (data.status === 'unchanged') toast.info('Graph is up to date');
       else { toast.success('Graph rebuilt'); await fetchProject(); }
     } catch {
-      toast.error('Rebuild failed');
+      toast.error('Rebuild failed — check your connection');
     } finally {
       setIsRebuilding(false);
     }
@@ -413,7 +423,7 @@ export default function ProjectDetailPage() {
             {!project.graph_data || (project.graph_data as { nodes?: unknown }).nodes === undefined ? (
               <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
                 <p>No graph data yet.</p>
-                <p className="text-sm">Run <code className="bg-muted px-1 rounded">/graphify {project.path}</code> then click Rebuild.</p>
+                <p className="text-sm">Click Rebuild to index this project.</p>
                 <Button variant="outline" size="sm" onClick={handleRebuild} disabled={isRebuilding}>
                   {isRebuilding && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
                   Rebuild
@@ -421,10 +431,56 @@ export default function ProjectDetailPage() {
               </div>
             ) : (
               <>
-                <ProjectKnowledgeGraph
-                  graphData={project.graph_data as import('@/components/project-knowledge-graph').GraphifyData}
-                  queryResult={queryResult}
-                />
+                {/* Floating control panel — top right overlay */}
+                <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 rounded-lg border bg-background/90 backdrop-blur shadow-sm px-2 py-1.5">
+                  <Button
+                    variant={graphView === '2d' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => setGraphView('2d')}
+                  >
+                    <LayoutGrid className="h-3 w-3 mr-1" />
+                    2D
+                  </Button>
+                  <Button
+                    variant={graphView === '3d' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => setGraphView('3d')}
+                  >
+                    <Boxes className="h-3 w-3 mr-1" />
+                    3D
+                  </Button>
+                  {project.node_count > MAX_NODES_FULL && (
+                    <>
+                      <div className="w-px h-4 bg-border" />
+                      <Button
+                        variant={forceFullDetail ? 'secondary' : 'ghost'}
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setForceFullDetail(v => !v)}
+                        title={forceFullDetail ? 'Showing every node — may be slow to lay out' : 'Grouped by directory for readability'}
+                      >
+                        {forceFullDetail ? <Expand className="h-3 w-3 mr-1" /> : <Layers className="h-3 w-3 mr-1" />}
+                        {forceFullDetail ? 'Full detail' : 'Community'}
+                      </Button>
+                    </>
+                  )}
+                </div>
+
+                {graphView === '2d' ? (
+                  <ProjectGraph2D
+                    graphData={project.graph_data as GraphifyData}
+                    queryResult={queryResult}
+                    forceFullDetail={forceFullDetail}
+                  />
+                ) : (
+                  <ProjectGraph3D
+                    graphData={project.graph_data as GraphifyData}
+                    queryResult={queryResult}
+                    forceFullDetail={forceFullDetail}
+                  />
+                )}
                 <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-lg px-4">
                   <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg p-3">
                     <div className="flex gap-2">

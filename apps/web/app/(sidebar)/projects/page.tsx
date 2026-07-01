@@ -723,7 +723,7 @@ function ProjectsPageContent() {
               <Input
                 value={createForm.path}
                 onChange={e => setCreateForm(f => ({ ...f, path: e.target.value }))}
-                placeholder="/home/user/my-project  — for graph features, run /graphify first"
+                placeholder="/home/user/my-project  — indexed automatically for graph features"
                 className="font-mono text-sm"
               />
             </div>

@@ -3,6 +3,7 @@
 mod crypto;
 mod falkordb;
 mod project_graphs;
+mod indexer;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -778,7 +779,7 @@ impl McpServer {
                 },
                 {
                     "name": "project_graph_create",
-                    "description": "Register a local folder as a project and import its graphify-generated knowledge graph. The folder must already have a graphify-out/graph.json file — run `/graphify {path}` in Claude Code first if it does not.",
+                    "description": "Register a local folder as a project. The folder is indexed automatically (tree-sitter parsing of Rust/TypeScript/JavaScript/Python source, plus file nodes for other recognized file types) — no external tool needed.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -860,7 +861,7 @@ impl McpServer {
                 },
                 {
                     "name": "project_graph_rebuild",
-                    "description": "Re-import a project's graph.json from disk. Run after updating the project with /graphify. Skips if the file hash is unchanged.",
+                    "description": "Re-index a project's folder from disk (tree-sitter parsing of source files). Run after the codebase changes. Skips if the resulting graph is unchanged.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -882,7 +883,7 @@ impl McpServer {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Display name for the project"},
-                            "path": {"type": "string", "description": "Optional: absolute path to a folder with graphify-out/graph.json"},
+                            "path": {"type": "string", "description": "Optional: absolute path to a folder to index for a knowledge graph"},
                             "description": {"type": "string", "description": "Optional description"}
                         },
                         "required": ["name"]
@@ -1950,7 +1951,7 @@ impl McpServer {
         let description = args["description"].as_str().map(|s| s.to_string());
 
         let (data, hash, size, canonical) =
-            project_graphs::load_graph_json(&path).await?;
+            indexer::index_project(&path).await?;
         let (node_count, edge_count) = project_graphs::count_nodes_edges(&data);
         let now = Utc::now();
 
@@ -2288,7 +2289,7 @@ impl McpServer {
             self.resolve_project_graph_data(args).await?;
 
         let (new_data, new_hash, new_size, _canonical) =
-            project_graphs::load_graph_json(&path).await?;
+            indexer::index_project(&path).await?;
 
         // Skip if hash unchanged
         if current_hash.as_deref() == Some(&new_hash) {
@@ -2370,7 +2371,7 @@ impl McpServer {
         let description = args["description"].as_str().map(|s| s.to_string());
 
         if let Some(ref path) = path_opt {
-            let (data, hash, size, canonical) = project_graphs::load_graph_json(path).await?;
+            let (data, hash, size, canonical) = indexer::index_project(path).await?;
             let (node_count, edge_count) = project_graphs::count_nodes_edges(&data);
             sqlx::query(
                 r#"INSERT INTO project_graphs (name, path, canonical_path, description, node_count, edge_count,

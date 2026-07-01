@@ -4,6 +4,7 @@ mod llm;
 
 use openmemory_server::run_session_migrations;
 use openmemory_server::project_graphs;
+use openmemory_server::indexer;
 
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
@@ -3289,8 +3290,10 @@ async fn create_project_graph(
                 Ok(c) => c,
                 Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
             };
-            // Graph is optional: if graph.json doesn't exist yet, store the path without graph data.
-            match project_graphs::load_graph_json(p).await {
+            // Index the project directory directly — no external tool or graph.json needed.
+            // Graph is still optional: an indexing error (e.g. permissions) stores the path
+            // without graph data rather than failing project creation outright.
+            match indexer::index_project(p).await {
                 Ok((data, hash, size, _canonical)) => {
                     let (nc, ec) = project_graphs::count_nodes_edges(&data);
                     (data, Some(hash), size as i64, Some(p.clone()), Some(canonical), nc, ec)
@@ -3482,7 +3485,7 @@ async fn rebuild_project_graph(
         _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "this project has no folder path — add a path before rebuilding"}))).into_response(),
     };
 
-    let (graph_data, graph_hash, file_size, _canonical) = match project_graphs::load_graph_json(&path).await {
+    let (graph_data, graph_hash, file_size, _canonical) = match indexer::index_project(&path).await {
         Ok(result) => result,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();

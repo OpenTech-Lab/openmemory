@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
@@ -70,58 +69,6 @@ pub async fn canonicalize_project_path(path: &str) -> Result<String> {
         anyhow::bail!("Path is not a directory: {}", canonical.display());
     }
     Ok(canonical.to_string_lossy().to_string())
-}
-
-/// Read and validate a graphify `graph.json` from a project path.
-///
-/// Returns `(json_data, sha256_hex_hash, file_size_bytes, canonical_path_string)`.
-pub async fn load_graph_json(path: &str) -> Result<(serde_json::Value, String, u64, String)> {
-    // 1. Canonicalize project directory
-    let canonical = tokio::fs::canonicalize(path).await
-        .with_context(|| format!("Path does not exist or is not accessible: {path}"))?;
-
-    if !canonical.is_dir() {
-        anyhow::bail!("Path is not a directory: {}", canonical.display());
-    }
-
-    // 2. Build graph.json path
-    let graph_path = canonical.join("graphify-out").join("graph.json");
-
-    // 3. Read file bytes
-    let bytes = match tokio::fs::read(&graph_path).await {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!(
-                "No graph found at {}/graphify-out/graph.json — run `/graphify {}` first",
-                path,
-                path
-            );
-        }
-        Err(e) => {
-            return Err(e).with_context(|| {
-                format!("Failed to read graph.json at {}", graph_path.display())
-            });
-        }
-    };
-
-    // 4. Reject oversized files (>20 MB)
-    const MAX_BYTES: usize = 20 * 1024 * 1024;
-    let size = bytes.len();
-    if size > MAX_BYTES {
-        let mb = size as f64 / (1024.0 * 1024.0);
-        anyhow::bail!("graph.json is too large ({:.1}MB > 20MB)", mb);
-    }
-
-    // 5. SHA-256 hash
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hex_hash = format!("{:x}", hasher.finalize());
-
-    // 6. Parse JSON
-    let data: serde_json::Value =
-        serde_json::from_slice(&bytes).context("graph.json is not valid JSON")?;
-
-    Ok((data, hex_hash, size as u64, canonical.to_string_lossy().to_string()))
 }
 
 /// Count nodes and edges in a NetworkX node-link JSON object.
