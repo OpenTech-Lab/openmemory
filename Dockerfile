@@ -24,10 +24,10 @@ COPY --from=builder /build/target/release/openmemory-server /usr/local/bin/openm
 
 # Port and host defaults only — connection strings must be supplied at runtime
 # (see docker-compose.yml or pass -e DATABASE_URL=... etc.)
-ENV OPENMEMORY_PORT=8080
+ENV OPENMEMORY_PORT=18080
 ENV OPENMEMORY_HOST=0.0.0.0
 
-EXPOSE 8080
+EXPOSE 18080
 
 USER 10001:10001
 CMD ["openmemory-server"]

@@ -532,7 +532,7 @@ async fn main() -> anyhow::Result<()> {
     run_watcher_migrations(&db).await?;
 
     let server_url = std::env::var("OPENMEMORY_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        .unwrap_or_else(|_| "http://localhost:18080".to_string());
     let http_client = HttpClient::new();
     let pending_user_text: PendingUserText = Arc::new(Mutex::new(HashMap::new()));
 

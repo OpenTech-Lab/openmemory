@@ -939,6 +939,31 @@ async fn main() -> anyhow::Result<()> {
         pg_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
+    // Background scheduler: periodically check every project's routines for due
+    // tasks and create them automatically — no manual "Check due" click required.
+    // Runs inside this same process; if the machine was shut down for days, the
+    // immediate run below catches up overdue routines (one task each, since
+    // is_routine_due compares dates and naturally collapses multi-day gaps).
+    {
+        let scheduler_db = state.db.clone();
+        let interval_secs: u64 = std::env::var("OPENMEMORY_ROUTINE_CHECK_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+
+        tokio::spawn(async move {
+            run_routine_check_for_all_projects(&scheduler_db).await;
+
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+            ticker.tick().await; // consume the immediate first tick — we already ran above
+            loop {
+                ticker.tick().await;
+                run_routine_check_for_all_projects(&scheduler_db).await;
+            }
+        });
+        info!(interval_secs, "routine background scheduler started");
+    }
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/mcp", post(mcp))
@@ -3367,6 +3392,103 @@ fn is_routine_due(frequency: &str, last_task_date: Option<chrono::NaiveDate>) ->
     }
 }
 
+/// Core routine due-check + task creation for a single project.
+/// Shared by the HTTP handler and the background scheduler so both paths
+/// stay in sync and neither duplicates the creation logic.
+async fn run_routine_check(db: &PgPool, project_id: Uuid) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let all_routines = sqlx::query_as::<_, ProjectRoutine>(
+        r#"SELECT id, project_id, title, description, frequency, priority, assigned_to,
+                  last_task_date, enabled, created_at, updated_at
+           FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await?;
+
+    let routines: Vec<&ProjectRoutine> = all_routines.iter()
+        .filter(|r| is_routine_due(&r.frequency, r.last_task_date))
+        .collect();
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let mut created_tasks: Vec<serde_json::Value> = Vec::new();
+
+    for r in routines {
+        // Atomically claim the day for this routine: only proceed if this call is the
+        // one that flips last_task_date forward. This prevents the manual "Check due"
+        // button and the background scheduler from both creating a task for the same
+        // routine on the same day.
+        let claimed = sqlx::query(
+            "UPDATE project_routines SET last_task_date = CURRENT_DATE, updated_at = NOW() \
+             WHERE id = $1 AND (last_task_date IS NULL OR last_task_date < CURRENT_DATE) \
+             RETURNING id"
+        )
+        .bind(r.id)
+        .fetch_optional(db)
+        .await?;
+
+        if claimed.is_none() {
+            continue;
+        }
+
+        let task_title = format!("{} — {}", r.title, today);
+        let task = sqlx::query(
+            "INSERT INTO project_tasks \
+             (project_id, routine_id, title, description, status, priority, assigned_to, created_by) \
+             VALUES ($1, $2, $3, $4, 'todo', $5, $6, 'agent') \
+             RETURNING id, title, status"
+        )
+        .bind(r.project_id)
+        .bind(r.id)
+        .bind(&task_title)
+        .bind(&r.description)
+        .bind(&r.priority)
+        .bind(&r.assigned_to)
+        .fetch_one(db)
+        .await?;
+
+        created_tasks.push(serde_json::json!({
+            "id": task.try_get::<Uuid, _>("id").ok(),
+            "title": task.try_get::<String, _>("title").ok(),
+            "status": task.try_get::<String, _>("status").ok(),
+            "routine_id": r.id,
+            "routine_title": r.title,
+        }));
+    }
+
+    Ok(created_tasks)
+}
+
+/// Lists the IDs of all known projects (project_graphs table) so the
+/// background scheduler can sweep every project's routines each tick.
+async fn list_all_project_ids(db: &PgPool) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM project_graphs").fetch_all(db).await
+}
+
+/// Runs the routine due-check for every project, logging per-project outcomes.
+/// A failure on one project is logged and skipped so it never blocks the others
+/// or brings down the scheduler loop.
+async fn run_routine_check_for_all_projects(db: &PgPool) {
+    let project_ids = match list_all_project_ids(db).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!("routine scheduler: failed to list projects: {e}");
+            return;
+        }
+    };
+
+    for project_id in project_ids {
+        match run_routine_check(db, project_id).await {
+            Ok(created) if !created.is_empty() => {
+                info!(%project_id, count = created.len(), "routine scheduler: created task(s) from due routines");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(%project_id, "routine scheduler: check failed: {e}");
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Project Routine handlers
 // ---------------------------------------------------------------------------
@@ -3489,70 +3611,33 @@ async fn check_project_routines(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    // Fetch all enabled routines — due-check happens in Rust (supports custom cron)
-    let due = sqlx::query_as::<_, ProjectRoutine>(
-        r#"SELECT id, project_id, title, description, frequency, priority, assigned_to,
-                  last_task_date, enabled, created_at, updated_at
-           FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
-    )
-    .bind(project_id)
-    .fetch_all(&state.db)
-    .await;
-
-    let all_routines = match due {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
-    };
-
-    let routines: Vec<&ProjectRoutine> = all_routines.iter().filter(|r| is_routine_due(&r.frequency, r.last_task_date)).collect();
-
     if params.dry_run {
-        return Json(serde_json::json!({"due": routines, "created": []})).into_response();
-    }
-
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let mut created_tasks: Vec<serde_json::Value> = Vec::new();
-
-    for r in routines {
-        let task_title = format!("{} — {}", r.title, today);
-        let task = sqlx::query(
-            "INSERT INTO project_tasks \
-             (project_id, routine_id, title, description, status, priority, assigned_to, created_by) \
-             VALUES ($1, $2, $3, $4, 'todo', $5, $6, 'agent') \
-             RETURNING id, title, status"
+        // Report which routines are currently due without creating tasks or claiming the day.
+        let all_routines = sqlx::query_as::<_, ProjectRoutine>(
+            r#"SELECT id, project_id, title, description, frequency, priority, assigned_to,
+                      last_task_date, enabled, created_at, updated_at
+               FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
         )
-        .bind(r.project_id)
-        .bind(r.id)
-        .bind(&task_title)
-        .bind(&r.description)
-        .bind(&r.priority)
-        .bind(&r.assigned_to)
-        .fetch_one(&state.db)
+        .bind(project_id)
+        .fetch_all(&state.db)
         .await;
 
-        if let Ok(row) = task {
-            created_tasks.push(serde_json::json!({
-                "id": row.try_get::<Uuid, _>("id").ok(),
-                "title": row.try_get::<String, _>("title").ok(),
-                "status": row.try_get::<String, _>("status").ok(),
-                "routine_id": r.id,
-                "routine_title": r.title,
-            }));
-
-            // Mark routine as run today
-            let _ = sqlx::query(
-                "UPDATE project_routines SET last_task_date = CURRENT_DATE, updated_at = NOW() WHERE id = $1"
-            )
-            .bind(r.id)
-            .execute(&state.db)
-            .await;
-        }
+        return match all_routines {
+            Ok(rs) => {
+                let due: Vec<&ProjectRoutine> = rs.iter().filter(|r| is_routine_due(&r.frequency, r.last_task_date)).collect();
+                Json(serde_json::json!({"due": due, "created": []})).into_response()
+            }
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        };
     }
 
-    Json(serde_json::json!({
-        "checked": created_tasks.len(),
-        "created": created_tasks,
-    })).into_response()
+    match run_routine_check(&state.db, project_id).await {
+        Ok(created_tasks) => Json(serde_json::json!({
+            "checked": created_tasks.len(),
+            "created": created_tasks,
+        })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 #[allow(dead_code)]

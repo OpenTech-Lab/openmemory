@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${OPENMEMORY_PORT:-8080}"
+PORT="${OPENMEMORY_PORT:-18080}"
 BASE_URL="http://127.0.0.1:${PORT}"
 
 echo "== Health =="

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # mem — OpenMemory CLI
 # Requires: curl, jq
-# Config:   OPENMEMORY_URL (default: http://localhost:8080)
+# Config:   OPENMEMORY_URL (default: http://localhost:18080)
 
 set -euo pipefail
 
-BASE_URL="${OPENMEMORY_URL:-http://localhost:8080}"
+BASE_URL="${OPENMEMORY_URL:-http://localhost:18080}"
 CMD="${1:-}"
 
 _require_jq() {
@@ -86,7 +86,7 @@ Session watcher commands (Mode 3):
   sessions messages <uuid> [--limit 200] [--after N]  list messages for a session
 
 Config:
-  OPENMEMORY_URL  (default: http://localhost:8080)
+  OPENMEMORY_URL  (default: http://localhost:18080)
 EOF
     exit 1
 }

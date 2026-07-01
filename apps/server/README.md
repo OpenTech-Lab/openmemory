@@ -15,4 +15,4 @@ Minimal Rust (Axum) server that accepts MCP-style JSON requests at `POST /mcp`.
 cargo run -p openmemory-server
 ```
 
-By default it binds `127.0.0.1:8080`. Override with `OPENMEMORY_PORT`.
+By default it binds `127.0.0.1:18080`. Override with `OPENMEMORY_PORT`.

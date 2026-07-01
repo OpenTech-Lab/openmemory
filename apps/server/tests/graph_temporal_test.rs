@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 mod graph_temporal {
-    const BASE: &str = "http://localhost:8080";
+    const BASE: &str = "http://localhost:18080";
 
     async fn post(body: serde_json::Value) -> serde_json::Value {
         let client = reqwest::Client::new();
