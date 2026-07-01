@@ -1,5 +1,5 @@
 // Shared, render-agnostic types and graph-building logic for the project (NetworkX/graphify)
-// graph — consumed by both project-graph-2d.tsx (Sigma) and project-graph-3d.tsx (3d-force-graph).
+// graph — consumed by both project-graph-2d.tsx (Sigma) and project-graph-3d.tsx (react-three-fiber).
 
 export interface GraphifyNode {
   id: string;

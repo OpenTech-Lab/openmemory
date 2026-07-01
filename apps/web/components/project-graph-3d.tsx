@@ -2,11 +2,11 @@
 
 // Note: this component must be imported with next/dynamic + ssr:false
 
-import { useEffect, useRef, useState } from 'react';
-import ForceGraph3D, { ForceGraph3DInstance } from '3d-force-graph';
+import { useMemo, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ForceGraph3D, type ForceGraphNode, type ForceGraphEdge } from './force-graph-3d';
 import {
   type GraphifyData,
   type GraphifyNode,
@@ -25,85 +25,62 @@ interface Props {
 }
 
 export function ProjectGraph3D({ graphData, queryResult, forceFullDetail = false }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<ForceGraph3DInstance | null>(null);
   const [selected, setSelected] = useState<SelectedNodeDetail | null>(null);
-  const [stats, setStats] = useState({ nodes: 0, edges: 0 });
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
+  const bgColor = isDark ? '#0a0a0a' : '#ffffff';
+  const edgeColor = isDark ? '#475569' : '#cbd5e1';
 
-  useEffect(() => {
-    if (!containerRef.current) return;
+  const display = useMemo(
+    () => buildDisplayGraph(graphData, queryResult, forceFullDetail),
+    [graphData, queryResult, forceFullDetail]
+  );
 
-    const display = buildDisplayGraph(graphData, queryResult, forceFullDetail);
-    const nodeMap = display.nodeMap;
-    const edgeList = display.edges;
+  const graphNodes = useMemo<ForceGraphNode[]>(
+    () => display.nodes.map((n) => ({ id: n.id, color: n.color, size: n.size })),
+    [display]
+  );
+  const graphEdges = useMemo<ForceGraphEdge[]>(
+    () => display.edges.map((e) => ({ source: e.source, target: e.target, color: edgeColor })),
+    [display, edgeColor]
+  );
 
-    setStats({ nodes: display.nodes.length, edges: display.edges.length });
+  const handleNodeClick = (id: string) => {
+    const nodeData = display.nodeMap.get(id);
+    if (!nodeData) return;
 
-    const nodes = display.nodes.map(n => ({
-      id: n.id,
-      label: n.label,
-      val: n.size,
-      color: n.color,
-    }));
-    const links = display.edges.map(e => ({ source: e.source, target: e.target, relation: e.relation }));
-
-    const graph = new ForceGraph3D(containerRef.current)
-      .backgroundColor(isDark ? '#0a0a0a' : '#ffffff')
-      .nodeLabel('label')
-      .nodeColor('color')
-      .nodeVal('val')
-      .linkColor(() => (isDark ? '#475569' : '#cbd5e1'))
-      .linkOpacity(0.5)
-      .graphData({ nodes, links })
-      .onNodeClick((node: any) => {
-        const nodeData = nodeMap.get(node.id);
-        if (!nodeData) return;
-
-        const outgoing: SelectedNodeDetail['outgoing'] = [];
-        const incoming: SelectedNodeDetail['incoming'] = [];
-        for (const e of edgeList) {
-          if (e.source === node.id) {
-            const targetData = nodeMap.get(e.target);
-            outgoing.push({ target: e.target, targetLabel: targetData?.label ?? e.target, relation: e.relation ?? '' });
-          } else if (e.target === node.id) {
-            const sourceData = nodeMap.get(e.source);
-            incoming.push({ source: e.source, sourceLabel: sourceData?.label ?? e.source, relation: e.relation ?? '' });
-          }
-        }
-        setSelected({ node: nodeData, outgoing, incoming });
-      })
-      .onBackgroundClick(() => setSelected(null));
-
-    graphRef.current = graph;
-
-    const resize = () => {
-      if (!containerRef.current) return;
-      graph.width(containerRef.current.clientWidth);
-      graph.height(containerRef.current.clientHeight);
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(containerRef.current);
-
-    return () => {
-      ro.disconnect();
-      graph._destructor?.();
-      graphRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphData, queryResult, forceFullDetail, isDark]);
+    const outgoing: SelectedNodeDetail['outgoing'] = [];
+    const incoming: SelectedNodeDetail['incoming'] = [];
+    for (const e of display.edges) {
+      if (e.source === id) {
+        const targetData = display.nodeMap.get(e.target);
+        outgoing.push({ target: e.target, targetLabel: targetData?.label ?? e.target, relation: e.relation ?? '' });
+      } else if (e.target === id) {
+        const sourceData = display.nodeMap.get(e.source);
+        incoming.push({ source: e.source, sourceLabel: sourceData?.label ?? e.source, relation: e.relation ?? '' });
+      }
+    }
+    setSelected({ node: nodeData, outgoing, incoming });
+  };
 
   const isCommunityViewActive = shouldShowCommunityView(graphData, queryResult, forceFullDetail);
 
   return (
     <div className="relative w-full h-full">
-      <div ref={containerRef} className="w-full h-full" />
+      <div className="w-full h-full" style={{ background: bgColor }}>
+        <ForceGraph3D
+          nodes={graphNodes}
+          edges={graphEdges}
+          isDark={isDark}
+          bgColor={bgColor}
+          onNodeClick={handleNodeClick}
+          onBackgroundClick={() => setSelected(null)}
+        />
+      </div>
 
       {/* Stats overlay (bottom-left) */}
       <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs text-muted-foreground">
-        {stats.nodes.toLocaleString()} nodes · {stats.edges.toLocaleString()} edges
+        {display.nodes.length.toLocaleString()} nodes · {display.edges.length.toLocaleString()} edges
         {isCommunityViewActive && <span className="ml-2">(community view)</span>}
         {queryResult && <span className="ml-2 text-primary">— query: &quot;{queryResult.query}&quot;</span>}
         {queryResult?.truncated && <span className="ml-1 text-yellow-500">(truncated)</span>}
