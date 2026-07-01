@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Share2, Bot, History, SlidersHorizontal, Settings2, ChevronRight, MoreHorizontal, Sun, Moon, Kanban } from 'lucide-react';
+import { Database, FolderOpen, Search, Share2, Network, Bot, History, SlidersHorizontal, Settings2, ChevronRight, MoreHorizontal, Sun, Moon, Kanban } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -31,6 +31,7 @@ const NAV_GROUPS = [
       { href: '/memory', label: 'Browse', icon: FolderOpen },
       { href: '/memory/search', label: 'Search', icon: Search },
       { href: '/memory/graph', label: 'Graph', icon: Share2 },
+      { href: '/memory/graph-memories', label: 'Memory Graph', icon: Network },
     ],
   },
   {

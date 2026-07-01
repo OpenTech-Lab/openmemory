@@ -536,6 +536,22 @@ enum McpRequest {
         user_id: Option<String>,
     },
 
+    #[serde(rename = "memory.graph_data")]
+    MemoryGraphData {
+        #[serde(default)]
+        user_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    #[serde(rename = "memory.graph_rebuild")]
+    MemoryGraphRebuild {
+        #[serde(default)]
+        user_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
     #[serde(rename = "memory.graph_neighbors")]
     MemoryGraphNeighbors {
         id: Uuid,
@@ -732,6 +748,17 @@ enum McpResponse {
         edges: Vec<falkordb::EdgeInfo>,
     },
 
+    #[serde(rename = "memory.graph_data.result")]
+    MemoryGraphDataResult {
+        memories: Vec<MemoryNodeInfo>,
+        edges: Vec<falkordb::EdgeInfo>,
+    },
+
+    #[serde(rename = "memory.graph_rebuild.result")]
+    MemoryGraphRebuildResult {
+        rebuilt: usize,
+    },
+
     #[serde(rename = "memory.graph_neighbors.result")]
     MemoryGraphNeighborsResult {
         id: Uuid,
@@ -852,6 +879,16 @@ struct SearchResult {
     score: f32,
     #[serde(default)]
     via_graph: bool,
+}
+
+// Lightweight memory node for graph visualization — no content, just what's needed to render a node.
+#[derive(Debug, Serialize, FromRow)]
+struct MemoryNodeInfo {
+    id: Uuid,
+    summary: Option<String>,
+    importance_score: f32,
+    tags: Vec<String>,
+    created_at: DateTime<Utc>,
 }
 
 // Full memory - includes content from OpenSearch
@@ -1606,6 +1643,7 @@ async fn mcp(
             // 3. Save graph node + LLM entity extraction (non-blocking — failure is logged, not fatal)
             if let Some(fdb) = &state.falkordb {
                 let mut fdb = fdb.clone();
+                let db_c2 = state.db.clone();
                 let (id_c, uid_c, sum_c, tags_c, ts) = (
                     id,
                     user_id.clone(),
@@ -1614,8 +1652,9 @@ async fn mcp(
                     now.to_rfc3339(),
                 );
                 tokio::spawn(async move {
+                    let excluded = frequent_tags(&db_c2, Some(&tags_c), AUTO_LINK_TAG_MAX_FRACTION).await;
                     if let Err(e) = fdb
-                        .save_node(id_c, uid_c.as_deref(), sum_c.as_deref(), importance_score, &tags_c, &ts)
+                        .save_node(id_c, uid_c.as_deref(), sum_c.as_deref(), importance_score, &tags_c, &ts, &excluded)
                         .await
                     {
                         warn!("FalkorDB save_node failed: {e}");
@@ -2100,10 +2139,15 @@ async fn mcp(
             // 3. Sync graph node (non-blocking — keeps summary/importance/tags in sync)
             if let Some(fdb) = &state.falkordb {
                 let mut fdb = fdb.clone();
+                let db_c3 = state.db.clone();
                 let (sum_c, imp_c, tags_c) = (summary.clone(), importance, tags.clone());
                 tokio::spawn(async move {
+                    let excluded = match &tags_c {
+                        Some(t) => frequent_tags(&db_c3, Some(t), AUTO_LINK_TAG_MAX_FRACTION).await,
+                        None => vec![],
+                    };
                     if let Err(e) = fdb
-                        .update_node(id, sum_c.as_deref(), imp_c.map(clamp01), tags_c.as_deref())
+                        .update_node(id, sum_c.as_deref(), imp_c.map(clamp01), tags_c.as_deref(), &excluded)
                         .await
                     {
                         warn!("FalkorDB update_node failed: {e}");
@@ -2184,6 +2228,129 @@ async fn mcp(
                     }
                 }
             }
+        }
+
+        McpRequest::MemoryGraphData { user_id, limit } => {
+            // No limit → all memories (the web graph page requests everything by
+            // default). An explicit limit is still honored for callers that want a
+            // bounded page (e.g. a lighter-weight preview).
+            let limit = limit.map(|l| l.max(1) as i64).unwrap_or(i64::MAX);
+
+            let mut memories: Vec<MemoryNodeInfo> = match &user_id {
+                Some(uid) => sqlx::query_as(
+                    "SELECT id, summary, importance_score, tags, created_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
+                )
+                .bind(uid)
+                .bind(limit)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default(),
+                None => sqlx::query_as(
+                    "SELECT id, summary, importance_score, tags, created_at FROM memory_index ORDER BY created_at DESC LIMIT $1"
+                )
+                .bind(limit)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default(),
+            };
+
+            // Most memories are auto-captured (e.g. the session watcher) and never set a
+            // summary — fall back to a truncated content preview so graph nodes have a label.
+            let unlabeled_ids: Vec<String> = memories
+                .iter()
+                .filter(|m| m.summary.as_deref().is_none_or(str::is_empty))
+                .map(|m| m.id.to_string())
+                .collect();
+            if !unlabeled_ids.is_empty() {
+                let docs = state.opensearch.get_by_ids(&unlabeled_ids).await.unwrap_or_default();
+                for m in memories.iter_mut() {
+                    if m.summary.as_deref().is_none_or(str::is_empty) {
+                        if let Some(doc) = docs.iter().find(|d| d.id == m.id.to_string()) {
+                            m.summary = Some(content_preview(&doc.content));
+                        }
+                    }
+                }
+            }
+
+            let edges = match &state.falkordb {
+                Some(fdb) => {
+                    let mut fdb = fdb.clone();
+                    fdb.get_all_edges(user_id.as_deref()).await.unwrap_or_default()
+                }
+                None => vec![],
+            };
+
+            Ok((
+                StatusCode::OK,
+                Json(McpResponse::MemoryGraphDataResult { memories, edges }),
+            ))
+        }
+
+        McpRequest::MemoryGraphRebuild { user_id, limit } => {
+            let mut fdb = match &state.falkordb {
+                Some(f) => f.clone(),
+                None => return Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::MemoryGraphRebuildResult { rebuilt: 0 }),
+                )),
+            };
+
+            // Rebuild is a one-time maintenance backfill, not a live render — unlike
+            // memory.graph_data it should cover everything by default, not just a page.
+            // An explicit limit is still honored (e.g. to rebuild only the newest N).
+            let limit = limit.map(|l| l.max(1) as i64).unwrap_or(i64::MAX);
+
+            // upsert_node()/relink_all_tag_edges() are MERGE-based (idempotent) — safe to
+            // re-run, no "already built" tracking column needed. Backfills RELATED_TO
+            // edges for memories saved before this graph existed, or with tags edited
+            // since. Node upserts are per-row (property values differ per memory), but
+            // edge computation runs once as a single bulk query at the end — looping
+            // save_node()'s per-node edge relink here would be O(n²) round trips.
+            let rows: Vec<MemoryIndex> = match &user_id {
+                Some(uid) => sqlx::query_as(
+                    "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
+                )
+                .bind(uid)
+                .bind(limit)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default(),
+                None => sqlx::query_as(
+                    "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1"
+                )
+                .bind(limit)
+                .fetch_all(&state.db)
+                .await
+                .unwrap_or_default(),
+            };
+
+            let mut rebuilt = 0usize;
+            for row in &rows {
+                if fdb
+                    .upsert_node(
+                        row.id,
+                        row.user_id.as_deref(),
+                        row.summary.as_deref(),
+                        row.importance_score,
+                        &row.tags,
+                        &row.created_at.to_rfc3339(),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    rebuilt += 1;
+                }
+            }
+
+            let excluded = frequent_tags(&state.db, None, AUTO_LINK_TAG_MAX_FRACTION).await;
+            if let Err(e) = fdb.relink_all_tag_edges(user_id.as_deref(), &excluded).await {
+                error!("MemoryGraphRebuild relink_all_tag_edges failed: {e}");
+            }
+
+            Ok((
+                StatusCode::OK,
+                Json(McpResponse::MemoryGraphRebuildResult { rebuilt }),
+            ))
         }
 
         McpRequest::MemoryGraphNeighbors { id, hops, limit, user_id } => {
@@ -2988,6 +3155,57 @@ fn recency_score(created_at: DateTime<Utc>) -> f32 {
     let age = Utc::now().signed_duration_since(created_at);
     let age_days = age.num_seconds().max(0) as f32 / (60.0 * 60.0 * 24.0);
     (-age_days / 30.0).exp().clamp(0.0, 1.0)
+}
+
+/// Tags shared by more than this fraction of all memories are excluded from
+/// RELATED_TO auto-linking — see `frequent_tags` doc comment.
+const AUTO_LINK_TAG_MAX_FRACTION: f64 = 0.02;
+
+/// Tags present on more than `min_fraction` of all memories — excluded from the
+/// RELATED_TO auto-linking predicate since they're boilerplate/administrative
+/// (e.g. "session"/"watcher" injected on every auto-captured memory), not a
+/// meaningful relatedness signal. Without this, a handful of near-universal tags
+/// turn the whole graph into a supernode (millions of edges, unqueryable).
+/// `candidate_tags = Some(...)` scopes the check to just those tags (cheap, used
+/// on the hot memory.save/update path); `None` scans all distinct tags (used by
+/// the bulk rebuild, which needs the full picture).
+async fn frequent_tags(db: &PgPool, candidate_tags: Option<&[String]>, min_fraction: f64) -> Vec<String> {
+    let rows: Vec<(String,)> = match candidate_tags {
+        Some(tags) if !tags.is_empty() => sqlx::query_as(
+            "WITH total AS (SELECT count(*)::float8 AS n FROM memory_index), \
+             freq AS (SELECT tag, count(*) AS c FROM (SELECT unnest(tags) AS tag FROM memory_index) t \
+                      WHERE tag = ANY($1) GROUP BY tag) \
+             SELECT freq.tag FROM freq, total WHERE freq.c > total.n * $2"
+        )
+        .bind(tags)
+        .bind(min_fraction)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default(),
+        Some(_) => vec![],
+        None => sqlx::query_as(
+            "WITH total AS (SELECT count(*)::float8 AS n FROM memory_index), \
+             freq AS (SELECT tag, count(*) AS c FROM (SELECT unnest(tags) AS tag FROM memory_index) t GROUP BY tag) \
+             SELECT freq.tag FROM freq, total WHERE freq.c > total.n * $1"
+        )
+        .bind(min_fraction)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default(),
+    };
+    rows.into_iter().map(|(t,)| t).collect()
+}
+
+/// Truncated, single-line preview of memory content — used as a graph-node label
+/// fallback when no explicit summary was set (e.g. watcher-captured memories).
+fn content_preview(content: &str) -> String {
+    let flat: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let truncated: String = flat.chars().take(100).collect();
+    if flat.chars().count() > 100 {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 fn clamp01(v: f32) -> f32 {

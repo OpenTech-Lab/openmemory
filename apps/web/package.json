@@ -14,6 +14,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@sigma/node-border": "^3.0.0",
     "@tanstack/react-table": "^8.21.3",
+    "3d-force-graph": "^1.80.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

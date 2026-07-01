@@ -998,6 +998,8 @@ impl McpServer {
             "memory_save" => self.memory_save(arguments).await,
             "memory_search" => self.memory_search(arguments).await,
             "memory_graph_all" => self.memory_graph_all(arguments).await,
+            "memory_graph_data" => self.memory_graph_data(arguments).await,
+            "memory_graph_rebuild" => self.memory_graph_rebuild(arguments).await,
             "memory_graph_neighbors" => self.memory_graph_neighbors(arguments).await,
             "memory_graph_relate" => self.memory_graph_relate(arguments).await,
             "graph_add_episode" => self.graph_add_episode(arguments).await,
@@ -1089,10 +1091,12 @@ impl McpServer {
         // 3. Save graph node (non-blocking)
         if let Some(fdb) = &self.falkordb {
             let mut fdb = fdb.clone();
+            let db_c = self.db.clone();
             let (sum_c, tags_c, ts) = (summary.clone(), tags.clone(), now.to_rfc3339());
             tokio::spawn(async move {
+                let excluded = frequent_tags(&db_c, Some(&tags_c), AUTO_LINK_TAG_MAX_FRACTION).await;
                 if let Err(e) = fdb
-                    .save_node(id, None, sum_c.as_deref(), importance, &tags_c, &ts)
+                    .save_node(id, None, sum_c.as_deref(), importance, &tags_c, &ts, &excluded)
                     .await
                 {
                     warn!("FalkorDB save_node failed: {e}");
@@ -1308,6 +1312,132 @@ impl McpServer {
             }
         };
         Ok(json!({ "type": "memory.graph_all.result", "edges": edges }))
+    }
+
+    async fn memory_graph_data(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let user_id = args["user_id"].as_str().map(|s| s.to_string());
+        // No limit → all memories (the web graph page requests everything by default).
+        // An explicit limit is still honored for callers that want a bounded page.
+        let limit = args["limit"].as_u64().map(|l| l.max(1) as i64).unwrap_or(i64::MAX);
+
+        let mut memories: Vec<MemoryIndex> = match &user_id {
+            Some(uid) => sqlx::query_as(
+                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
+            )
+            .bind(uid)
+            .bind(limit)
+            .fetch_all(&self.db)
+            .await
+            .unwrap_or_default(),
+            None => sqlx::query_as(
+                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1"
+            )
+            .bind(limit)
+            .fetch_all(&self.db)
+            .await
+            .unwrap_or_default(),
+        };
+
+        // Most memories are auto-captured (e.g. the session watcher) and never set a
+        // summary — fall back to a truncated content preview so graph nodes have a label.
+        let unlabeled_ids: Vec<String> = memories
+            .iter()
+            .filter(|m| m.summary.as_deref().is_none_or(str::is_empty))
+            .map(|m| m.id.to_string())
+            .collect();
+        if !unlabeled_ids.is_empty() {
+            let docs = self.opensearch.get_by_ids(&unlabeled_ids).await.unwrap_or_default();
+            for m in memories.iter_mut() {
+                if m.summary.as_deref().is_none_or(str::is_empty) {
+                    if let Some(doc) = docs.iter().find(|d| d.id == m.id.to_string()) {
+                        m.summary = Some(content_preview(&doc.content));
+                    }
+                }
+            }
+        }
+
+        let edges = match &self.falkordb {
+            None => vec![],
+            Some(fdb) => {
+                let mut fdb = fdb.clone();
+                fdb.get_all_edges(user_id.as_deref()).await.unwrap_or_default()
+            }
+        };
+
+        let nodes: Vec<serde_json::Value> = memories
+            .iter()
+            .map(|m| json!({
+                "id": m.id,
+                "summary": m.summary,
+                "importance_score": m.importance_score,
+                "tags": m.tags,
+                "created_at": m.created_at,
+            }))
+            .collect();
+
+        Ok(json!({ "type": "memory.graph_data.result", "memories": nodes, "edges": edges }))
+    }
+
+    async fn memory_graph_rebuild(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let mut fdb = match &self.falkordb {
+            Some(f) => f.clone(),
+            None => return Ok(json!({ "type": "memory.graph_rebuild.result", "rebuilt": 0 })),
+        };
+
+        let user_id = args["user_id"].as_str().map(|s| s.to_string());
+        // Rebuild is a one-time maintenance backfill, not a live render — unlike
+        // memory_graph_data it should cover everything by default, not just a page.
+        // An explicit limit is still honored (e.g. to rebuild only the newest N).
+        let limit = args["limit"].as_u64().map(|l| l.max(1) as i64).unwrap_or(i64::MAX);
+
+        // upsert_node()/relink_all_tag_edges() are MERGE-based (idempotent) — safe to
+        // re-run, no "already built" tracking column needed. Backfills RELATED_TO
+        // edges for memories saved before this graph existed, or with tags edited
+        // since. Node upserts are per-row (property values differ per memory), but
+        // edge computation runs once as a single bulk query at the end — looping
+        // save_node()'s per-node edge relink here would be O(n²) round trips.
+        let rows: Vec<MemoryIndex> = match &user_id {
+            Some(uid) => sqlx::query_as(
+                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
+            )
+            .bind(uid)
+            .bind(limit)
+            .fetch_all(&self.db)
+            .await
+            .unwrap_or_default(),
+            None => sqlx::query_as(
+                "SELECT id, user_id, summary, importance_score, tags, created_at, updated_at FROM memory_index ORDER BY created_at DESC LIMIT $1"
+            )
+            .bind(limit)
+            .fetch_all(&self.db)
+            .await
+            .unwrap_or_default(),
+        };
+
+        let mut rebuilt = 0usize;
+        for row in &rows {
+            if fdb
+                .upsert_node(
+                    row.id,
+                    row.user_id.as_deref(),
+                    row.summary.as_deref(),
+                    row.importance_score,
+                    &row.tags,
+                    &row.created_at.to_rfc3339(),
+                )
+                .await
+                .is_ok()
+            {
+                rebuilt += 1;
+            }
+        }
+
+        let excluded = frequent_tags(&self.db, None, AUTO_LINK_TAG_MAX_FRACTION).await;
+        if let Err(e) = fdb.relink_all_tag_edges(user_id.as_deref(), &excluded).await {
+            warn!("memory_graph_rebuild: relink_all_tag_edges failed: {e}");
+        }
+
+        Ok(json!({ "type": "memory.graph_rebuild.result", "rebuilt": rebuilt }))
     }
 
     async fn memory_graph_neighbors(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
@@ -2602,6 +2732,57 @@ fn mermaid_id(name: &str) -> String {
         "unknown".to_string()
     } else {
         id
+    }
+}
+
+/// Tags shared by more than this fraction of all memories are excluded from
+/// RELATED_TO auto-linking — see `frequent_tags` doc comment.
+const AUTO_LINK_TAG_MAX_FRACTION: f64 = 0.02;
+
+/// Tags present on more than `min_fraction` of all memories — excluded from the
+/// RELATED_TO auto-linking predicate since they're boilerplate/administrative
+/// (e.g. "session"/"watcher" injected on every auto-captured memory), not a
+/// meaningful relatedness signal. Without this, a handful of near-universal tags
+/// turn the whole graph into a supernode (millions of edges, unqueryable).
+/// `candidate_tags = Some(...)` scopes the check to just those tags (cheap, used
+/// on the hot memory_save path); `None` scans all distinct tags (used by the
+/// bulk rebuild, which needs the full picture).
+async fn frequent_tags(db: &PgPool, candidate_tags: Option<&[String]>, min_fraction: f64) -> Vec<String> {
+    let rows: Vec<(String,)> = match candidate_tags {
+        Some(tags) if !tags.is_empty() => sqlx::query_as(
+            "WITH total AS (SELECT count(*)::float8 AS n FROM memory_index), \
+             freq AS (SELECT tag, count(*) AS c FROM (SELECT unnest(tags) AS tag FROM memory_index) t \
+                      WHERE tag = ANY($1) GROUP BY tag) \
+             SELECT freq.tag FROM freq, total WHERE freq.c > total.n * $2"
+        )
+        .bind(tags)
+        .bind(min_fraction)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default(),
+        Some(_) => vec![],
+        None => sqlx::query_as(
+            "WITH total AS (SELECT count(*)::float8 AS n FROM memory_index), \
+             freq AS (SELECT tag, count(*) AS c FROM (SELECT unnest(tags) AS tag FROM memory_index) t GROUP BY tag) \
+             SELECT freq.tag FROM freq, total WHERE freq.c > total.n * $1"
+        )
+        .bind(min_fraction)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default(),
+    };
+    rows.into_iter().map(|(t,)| t).collect()
+}
+
+/// Truncated, single-line preview of memory content — used as a graph-node label
+/// fallback when no explicit summary was set (e.g. watcher-captured memories).
+fn content_preview(content: &str) -> String {
+    let flat: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let truncated: String = flat.chars().take(100).collect();
+    if flat.chars().count() > 100 {
+        format!("{truncated}…")
+    } else {
+        truncated
     }
 }
 

@@ -102,6 +102,19 @@ impl FalkorDbClient {
                 .query_async::<redis::Value>(&mut self.conn)
                 .await;
         }
+
+        // FalkorDB caps ANY query's returned rows at RESULTSET_SIZE (default 10000)
+        // regardless of a Cypher LIMIT clause — this is a server config, not
+        // per-query, and resets to default on container restart, so it must be
+        // re-applied at every connect. -1 = unlimited; callers still guard with
+        // their own LIMIT clauses (e.g. get_all_edges' 100000 safety cap).
+        let _ = redis::cmd("GRAPH.CONFIG")
+            .arg("SET")
+            .arg("RESULTSET_SIZE")
+            .arg(-1)
+            .query_async::<redis::Value>(&mut self.conn)
+            .await;
+
         info!("FalkorDB graph store ready (temporal schema)");
         Ok(())
     }
@@ -521,6 +534,11 @@ impl FalkorDbClient {
     }
 
     /// Upsert a memory node and auto-create RELATED_TO edges to nodes sharing ≥1 tag.
+    /// `excluded_tags` filters out overly-common/boilerplate tags (e.g. "session",
+    /// "watcher" injected on every auto-captured memory) from the linking predicate —
+    /// without this, a handful of near-universal tags turn the whole graph into a
+    /// supernode (millions of edges, unqueryable). Caller computes the exclusion set
+    /// via tag frequency (see `frequent_tags` in main.rs/mcp.rs).
     pub async fn save_node(
         &mut self,
         id: Uuid,
@@ -529,6 +547,7 @@ impl FalkorDbClient {
         importance: f32,
         tags: &[String],
         created_at: &str,
+        excluded_tags: &[String],
     ) -> Result<()> {
         let tags_lit = cypher_string_list(tags);
         let user_id_lit = escape_option_str(user_id);
@@ -549,7 +568,9 @@ impl FalkorDbClient {
             .await
             .context("FalkorDB MERGE node failed")?;
 
-        if !tags.is_empty() {
+        let linkable: Vec<String> = tags.iter().filter(|t| !excluded_tags.contains(t)).cloned().collect();
+        if !linkable.is_empty() {
+            let excluded_lit = cypher_string_list(excluded_tags);
             // Only connect memories belonging to the same tenant.
             // FalkorDB bug: ANY() predicate in WHERE is silently dropped in cross-join queries;
             // use list comprehension + size() in a WITH clause instead. MERGE is idempotent
@@ -558,7 +579,7 @@ impl FalkorDbClient {
                 "MATCH (a:Memory {{id: \"{id}\"}}), (b:Memory) \
                  WHERE b.id <> \"{id}\" \
                    AND (a.user_id = b.user_id OR (a.user_id IS NULL AND b.user_id IS NULL)) \
-                 WITH a, b, [t IN a.tags WHERE t IN b.tags] AS common \
+                 WITH a, b, [t IN a.tags WHERE t IN b.tags AND NOT t IN {excluded_lit}] AS common \
                  WHERE size(common) > 0 \
                  MERGE (a)-[:RELATED_TO]->(b) \
                  MERGE (b)-[:RELATED_TO]->(a)"
@@ -574,13 +595,83 @@ impl FalkorDbClient {
         Ok(())
     }
 
+    /// Upsert a memory node's properties only — no RELATED_TO relinking.
+    /// Used by bulk rebuild: save_node()'s per-call edge relink rescans every existing
+    /// Memory node (O(n) per call), so looping it over a large history is O(n²) round
+    /// trips. Upsert all nodes with this cheap call instead, then call
+    /// relink_all_tag_edges() once at the end to compute edges in a single query.
+    pub async fn upsert_node(
+        &mut self,
+        id: Uuid,
+        user_id: Option<&str>,
+        summary: Option<&str>,
+        importance: f32,
+        tags: &[String],
+        created_at: &str,
+    ) -> Result<()> {
+        let tags_lit = cypher_string_list(tags);
+        let user_id_lit = escape_option_str(user_id);
+        let summary_lit = escape_option_str(summary);
+
+        let q = format!(
+            "MERGE (m:Memory {{id: \"{id}\"}}) \
+             SET m.user_id = {user_id_lit}, \
+                 m.summary = {summary_lit}, \
+                 m.importance = {importance}, \
+                 m.tags = {tags_lit}, \
+                 m.created_at = \"{created_at}\""
+        );
+        redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async::<redis::Value>(&mut self.conn)
+            .await
+            .context("FalkorDB MERGE node failed")?;
+        Ok(())
+    }
+
+    /// Recompute RELATED_TO edges for every Memory pair sharing a tag, in one query —
+    /// the bulk-rebuild counterpart to save_node()'s per-node auto-edge relink.
+    /// Still O(n²) pair comparisons, but done natively inside FalkorDB in a single
+    /// round trip instead of N sequential app-driven scans.
+    /// `excluded_tags` — see save_node's doc comment; critical here, since without it
+    /// this query creates a supernode clique out of any near-universal tag.
+    pub async fn relink_all_tag_edges(&mut self, user_id: Option<&str>, excluded_tags: &[String]) -> Result<()> {
+        let user_filter = match user_id {
+            Some(uid) => format!(
+                " AND a.user_id = \"{}\" AND b.user_id = \"{}\"",
+                escape_str(uid),
+                escape_str(uid)
+            ),
+            None => String::new(),
+        };
+        let excluded_lit = cypher_string_list(excluded_tags);
+        let q = format!(
+            "MATCH (a:Memory), (b:Memory) \
+             WHERE a.id < b.id{user_filter} \
+             WITH a, b, [t IN a.tags WHERE t IN b.tags AND NOT t IN {excluded_lit}] AS common \
+             WHERE size(common) > 0 \
+             MERGE (a)-[:RELATED_TO]->(b) \
+             MERGE (b)-[:RELATED_TO]->(a)"
+        );
+        redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async::<redis::Value>(&mut self.conn)
+            .await
+            .context("FalkorDB relink_all_tag_edges failed")?;
+        Ok(())
+    }
+
     /// Update a memory node's properties and re-sync RELATED_TO edges after tag changes.
+    /// `excluded_tags` — see save_node's doc comment.
     pub async fn update_node(
         &mut self,
         id: Uuid,
         summary: Option<&str>,
         importance: Option<f32>,
         tags: Option<&[String]>,
+        excluded_tags: &[String],
     ) -> Result<()> {
         // Build SET clause only for provided fields
         let mut sets = Vec::new();
@@ -621,12 +712,14 @@ impl FalkorDbClient {
                 .context("FalkorDB edge cleanup failed")?;
 
             // Re-create edges for current tags (same logic as save_node)
-            if !new_tags.is_empty() {
+            let linkable: Vec<&String> = new_tags.iter().filter(|t| !excluded_tags.contains(t)).collect();
+            if !linkable.is_empty() {
+                let excluded_lit = cypher_string_list(excluded_tags);
                 let q_add = format!(
                     "MATCH (a:Memory {{id: \"{id}\"}}), (b:Memory) \
                      WHERE b.id <> \"{id}\" \
                        AND (a.user_id = b.user_id OR (a.user_id IS NULL AND b.user_id IS NULL)) \
-                     WITH a, b, [t IN a.tags WHERE t IN b.tags] AS common \
+                     WITH a, b, [t IN a.tags WHERE t IN b.tags AND NOT t IN {excluded_lit}] AS common \
                      WHERE size(common) > 0 \
                      MERGE (a)-[:RELATED_TO]->(b) \
                      MERGE (b)-[:RELATED_TO]->(a)"
@@ -753,10 +846,13 @@ impl FalkorDbClient {
             ),
             None => String::new(),
         };
+        // Kept as a safety guard against unbounded-tag-linking regressions (see
+        // frequent_tags in main.rs/mcp.rs) — well above real edge counts (tens of
+        // thousands) but caps any future supernode blowup before it can time out queries.
         let q = format!(
             "MATCH (a:Memory)-[r]->(b:Memory){user_filter} \
              RETURN a.id AS from_id, b.id AS to_id, type(r) AS rel_type, r.relationship AS rel_name \
-             LIMIT 5000"
+             LIMIT 100000"
         );
         let result: redis::Value = redis::cmd("GRAPH.QUERY")
             .arg(GRAPH_NAME)
