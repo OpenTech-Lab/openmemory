@@ -116,6 +116,26 @@ struct CreateProjectGraphPayload {
     description: Option<String>,
 }
 
+/// Deserializes a present-but-possibly-null JSON field into `Some(value)`,
+/// leaving it `None` when the field is omitted entirely. Lets PATCH-style
+/// payloads distinguish "don't touch this field" from "clear it".
+fn deserialize_some<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateProjectGraphPayload {
+    name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    path: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    description: Option<Option<String>>,
+}
+
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 struct ProjectTask {
     id: Uuid,
@@ -1061,7 +1081,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents", get(list_agents).post(create_agent))
         .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
         .route("/projects", get(list_project_graphs).post(create_project_graph))
-        .route("/projects/:id", get(get_project_graph).delete(delete_project_graph))
+        .route("/projects/:id", get(get_project_graph).put(update_project_graph).delete(delete_project_graph))
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
         .route("/projects/:id/query", get(query_project_graph))
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
@@ -3468,6 +3488,140 @@ async fn get_project_graph(
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
         Err(e) => {
             error!("get_project_graph error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_graph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateProjectGraphPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if let Some(ref n) = payload.name {
+        if n.trim().is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name must be non-empty"}))).into_response();
+        }
+    }
+
+    let existing = sqlx::query("SELECT canonical_path FROM project_graphs WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await;
+    let current_canonical: Option<String> = match existing {
+        Ok(Some(r)) => r.try_get("canonical_path").unwrap_or(None),
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response(),
+        Err(e) => {
+            error!("update_project_graph fetch error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    // Resolve the path change, if any, into a (new_path, new_canonical_path) pair.
+    // `None` means "leave path/canonical_path/graph fields untouched".
+    let path_change: Option<(Option<String>, Option<String>)> = match payload.path {
+        None => None,
+        Some(None) => {
+            if current_canonical.is_some() { Some((None, None)) } else { None }
+        }
+        Some(Some(ref p)) if p.trim().is_empty() => {
+            if current_canonical.is_some() { Some((None, None)) } else { None }
+        }
+        Some(Some(ref p)) => {
+            let canonical = match project_graphs::canonicalize_project_path(p).await {
+                Ok(c) => c,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+            };
+            if current_canonical.as_deref() == Some(canonical.as_str()) {
+                None
+            } else {
+                Some((Some(p.clone()), Some(canonical)))
+            }
+        }
+    };
+
+    if let Some((_, Some(ref new_canonical))) = path_change {
+        let collision = sqlx::query("SELECT id FROM project_graphs WHERE canonical_path = $1 AND id != $2")
+            .bind(new_canonical)
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await;
+        match collision {
+            Ok(Some(_)) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "another project already uses this path"}))).into_response(),
+            Ok(None) => {}
+            Err(e) => {
+                error!("update_project_graph collision check error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        }
+    }
+
+    let path_changed = path_change.is_some();
+    let (new_path, new_canonical) = path_change.unwrap_or((None, None));
+    let description_set = payload.description.is_some();
+    let new_description = payload.description.flatten();
+
+    let row = sqlx::query(
+        "UPDATE project_graphs SET \
+         name = COALESCE($1, name), \
+         description = CASE WHEN $2 THEN $3 ELSE description END, \
+         path = CASE WHEN $4 THEN $5 ELSE path END, \
+         canonical_path = CASE WHEN $4 THEN $6 ELSE canonical_path END, \
+         graph_data = CASE WHEN $4 THEN '{}'::jsonb ELSE graph_data END, \
+         graph_hash = CASE WHEN $4 THEN NULL ELSE graph_hash END, \
+         graph_file_size = CASE WHEN $4 THEN 0 ELSE graph_file_size END, \
+         node_count = CASE WHEN $4 THEN 0 ELSE node_count END, \
+         edge_count = CASE WHEN $4 THEN 0 ELSE edge_count END, \
+         imported_at = CASE WHEN $4 THEN NULL ELSE imported_at END, \
+         updated_at = NOW() \
+         WHERE id = $7 \
+         RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
+                   graph_hash, graph_file_size, imported_at, created_at, updated_at"
+    )
+    .bind(&payload.name)
+    .bind(description_set)
+    .bind(&new_description)
+    .bind(path_changed)
+    .bind(&new_path)
+    .bind(&new_canonical)
+    .bind(id)
+    .fetch_one(&state.db)
+    .await;
+
+    if path_changed {
+        if let Ok(mut cache) = state.pg_cache.lock() {
+            cache.remove(&id);
+        }
+    }
+
+    match row {
+        Ok(r) => {
+            let project = serde_json::json!({
+                "id": r.try_get::<Uuid, _>("id").ok().map(|u| u.to_string()),
+                "name": r.try_get::<String, _>("name").ok(),
+                "path": r.try_get::<Option<String>, _>("path").ok().flatten(),
+                "canonical_path": r.try_get::<Option<String>, _>("canonical_path").ok().flatten(),
+                "description": r.try_get::<Option<String>, _>("description").ok().flatten(),
+                "node_count": r.try_get::<i32, _>("node_count").ok(),
+                "edge_count": r.try_get::<i32, _>("edge_count").ok(),
+                "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
+                "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
+                "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
+                "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+                "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
+            });
+            Json(project).into_response()
+        }
+        Err(e) if e.to_string().contains("unique") => {
+            (StatusCode::CONFLICT, Json(serde_json::json!({"error": "another project already uses this path"}))).into_response()
+        }
+        Err(e) => {
+            error!("update_project_graph error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }

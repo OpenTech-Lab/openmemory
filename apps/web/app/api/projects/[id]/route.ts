@@ -36,6 +36,12 @@ export async function GET(_req: Request, { params }: Params) {
   return proxy(`${API_URL}/projects/${id}`, 'GET');
 }
 
+export async function PUT(req: Request, { params }: Params) {
+  const { id } = await params;
+  const body = await req.json();
+  return proxy(`${API_URL}/projects/${id}`, 'PUT', body);
+}
+
 export async function DELETE(_req: Request, { params }: Params) {
   const { id } = await params;
   return proxy(`${API_URL}/projects/${id}`, 'DELETE');

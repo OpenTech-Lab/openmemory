@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2 } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, Eye } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -141,6 +141,12 @@ function ProjectsPageContent() {
   const [rebuildingId, setRebuildingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Edit project dialog
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [projectEditForm, setProjectEditForm] = useState({ name: '', path: '', description: '' });
+  const [isSavingProject, setIsSavingProject] = useState(false);
+  const [confirmPathChange, setConfirmPathChange] = useState(false);
 
   // Create task dialog
   const [showTaskDialog, setShowTaskDialog] = useState(false);
@@ -265,6 +271,55 @@ function ProjectsPageContent() {
       setDeletingId(null);
       setConfirmDeleteId(null);
     }
+  };
+
+  const openProjectEdit = (project: Project) => {
+    setEditingProject(project);
+    setProjectEditForm({
+      name: project.name,
+      path: project.path ?? '',
+      description: project.description ?? '',
+    });
+  };
+
+  const commitProjectSave = async () => {
+    if (!editingProject) return;
+    setIsSavingProject(true);
+    try {
+      const res = await fetch(`/api/projects/${editingProject.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: projectEditForm.name.trim(),
+          path: projectEditForm.path.trim() || null,
+          description: projectEditForm.description.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        toast.error(b.error ?? 'Failed to save project');
+        return;
+      }
+      setEditingProject(null);
+      setConfirmPathChange(false);
+      await fetchProjects();
+      toast.success('Project updated');
+    } catch {
+      toast.error('Failed to save project');
+    } finally {
+      setIsSavingProject(false);
+    }
+  };
+
+  const handleSaveProject = () => {
+    if (!editingProject) return;
+    if (!projectEditForm.name.trim()) { toast.error('Name is required'); return; }
+    const pathChanged = projectEditForm.path.trim() !== (editingProject.path ?? '');
+    if (pathChanged) {
+      setConfirmPathChange(true);
+      return;
+    }
+    commitProjectSave();
   };
 
   const handleCreateTask = async () => {
@@ -513,8 +568,8 @@ function ProjectsPageContent() {
       cell: ({ row }) =>
         row.original.node_count > 0 ? (
           <Link href={`/projects/${row.original.id}`}>
-            <Button variant="outline" size="sm" className="h-7 text-xs">
-              View
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="View graph">
+              <Eye className="h-3.5 w-3.5" />
             </Button>
           </Link>
         ) : null,
@@ -523,14 +578,30 @@ function ProjectsPageContent() {
       id: 'actions',
       header: () => <div className="text-right">Actions</div>,
       cell: ({ row }) => (
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-1">
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit project" onClick={() => openProjectEdit(row.original)}>
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
           {row.original.path && (
-            <Button variant="ghost" size="sm" onClick={() => handleRebuild(row.original.id)} disabled={rebuildingId === row.original.id}>
-              {rebuildingId === row.original.id ? <RefreshCw className="h-3 w-3 animate-spin" /> : 'Rebuild'}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="Rebuild graph"
+              onClick={() => handleRebuild(row.original.id)}
+              disabled={rebuildingId === row.original.id}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${rebuildingId === row.original.id ? 'animate-spin' : ''}`} />
             </Button>
           )}
-          <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDeleteId(row.original.id)}>
-            Delete
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-destructive"
+            title="Delete project"
+            onClick={() => setConfirmDeleteId(row.original.id)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
       ),
@@ -746,6 +817,75 @@ function ProjectsPageContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Edit Project Dialog */}
+      <Dialog open={!!editingProject} onOpenChange={open => !open && setEditingProject(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Project</DialogTitle>
+            <DialogDescription>
+              Changing the path clears the indexed graph — you&apos;ll need to Rebuild afterward.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Name</Label>
+              <Input
+                value={projectEditForm.name}
+                onChange={e => setProjectEditForm(f => ({ ...f, name: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Folder Path <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Input
+                value={projectEditForm.path}
+                onChange={e => setProjectEditForm(f => ({ ...f, path: e.target.value }))}
+                placeholder="/home/user/my-project"
+                className="font-mono text-sm"
+              />
+            </div>
+            <div>
+              <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Textarea
+                value={projectEditForm.description}
+                onChange={e => setProjectEditForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="What this project is about"
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingProject(null)}>Cancel</Button>
+            <Button onClick={handleSaveProject} disabled={isSavingProject}>
+              {isSavingProject && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Path Change Confirm */}
+      <AlertDialog open={confirmPathChange} onOpenChange={setConfirmPathChange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Change project path?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Changing the path clears the indexed knowledge graph for this project — you&apos;ll need
+              to run Rebuild afterward to re-index the new location. Tasks are not affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={commitProjectSave}
+              disabled={isSavingProject}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Continue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Create Task / Routine Dialog */}
       <Dialog open={showTaskDialog} onOpenChange={setShowTaskDialog}>
