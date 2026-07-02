@@ -732,7 +732,7 @@ impl McpServer {
                 },
                 {
                     "name": "env_http_request",
-                    "description": "Make an HTTP request with a stored secret injected as the auth header. The secret value is never exposed to the agent — the server resolves it internally and forwards the request. Use this to call external APIs (Cloudflare, GitHub, etc.) whose credentials are stored as secret env params.",
+                    "description": "Make an HTTP request with a stored secret injected as the auth header. The secret value is never exposed to the agent — the server resolves it internally and forwards the request. Use this to call external APIs (Cloudflare, GitHub, etc.) whose credentials are stored as secret env params. If OPENMEMORY_HTTP_ALLOWED_HOSTS is configured on the server, requests to hosts outside that allowlist are rejected before the secret is resolved.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -1644,6 +1644,25 @@ impl McpServer {
         let auth_key = args["auth_key"].as_str().context("missing auth_key")?.to_string();
         let auth_header = args["auth_header"].as_str().unwrap_or("Authorization").to_string();
         let auth_prefix = args["auth_prefix"].as_str().unwrap_or("Bearer ").to_string();
+
+        // Optional host allowlist (OPENMEMORY_HTTP_ALLOWED_HOSTS): if set, refuse to
+        // resolve or attach the secret unless the destination host is on the list.
+        // Checked before any DB access so a disallowed host never triggers a decrypt.
+        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
+            let allowed_hosts: Vec<String> = allowed
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            if !allowed_hosts.iter().any(|h| h == &host) {
+                anyhow::bail!(
+                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
+                    host
+                );
+            }
+        }
 
         // Resolve the secret from the DB — never returned to the agent
         let row: Option<(Vec<u8>, bool)> = sqlx::query_as(

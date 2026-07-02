@@ -712,6 +712,30 @@ pnpm test
 - **No Cloud Dependencies**: Works completely offline
 - **Open Source**: Full transparency - audit the code yourself
 
+### Env Parameter Auth
+
+`env.set` and `env.delete` on the HTTP API (`/mcp`) require the API bearer token —
+same token used for `env.get` on secret params. The `mem` CLI reads it automatically
+from `OPENMEMORY_API_TOKEN` or `~/.openmemory/api_token`; no extra setup needed.
+
+### `env_http_request` Host Allowlist
+
+The `env_http_request` MCP tool injects a decrypted secret into an outbound HTTP
+request without exposing the value to the agent. Because the agent chooses the
+destination URL, a compromised or prompt-injected agent could otherwise point this
+at an arbitrary host to exfiltrate the secret. Set `OPENMEMORY_HTTP_ALLOWED_HOSTS`
+(comma-separated hostnames) on the `openmemory-mcp` process to restrict which hosts
+it's allowed to call — requests to any other host are rejected before the secret is
+resolved. Unset by default (any host allowed) for backward compatibility.
+
+### Encryption Key
+
+Env-param secret values are encrypted at rest with a key derived from
+`OPENMEMORY_SECRET_KEY`. If unset, the server falls back to a well-known dev key —
+fine for local experimentation, but anyone with DB access can decrypt secrets in
+that mode. Set `OPENMEMORY_SECRET_KEY` to a random value before storing anything
+sensitive.
+
 ---
 
 ## 🤝 Contributing

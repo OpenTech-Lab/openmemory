@@ -1,3 +1,10 @@
+# NOTE: postgres/opensearch/redis/falkordb below publish ports on all interfaces
+# (e.g. "5432:5432") with no authentication beyond the default dev credentials.
+# openmemory-server itself binds to 127.0.0.1 and is token-gated (see README §
+# "Privacy & Security"), but these backing stores are not. For personal,
+# single-machine use this is the accepted tradeoff; if running on a shared or
+# network-exposed host, prefix each port mapping with "127.0.0.1:" to restrict
+# them to localhost too.
 services:
   postgres:
     image: postgres:17-alpine

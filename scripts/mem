@@ -8,6 +8,13 @@ set -euo pipefail
 BASE_URL="${OPENMEMORY_URL:-http://localhost:18080}"
 CMD="${1:-}"
 
+# Resolve the API token: explicit env var, then the persisted token file
+# written by the server on first run (mirrors resolve_api_token() in main.rs).
+API_TOKEN="${OPENMEMORY_API_TOKEN:-}"
+if [ -z "$API_TOKEN" ] && [ -f "$HOME/.openmemory/api_token" ]; then
+    API_TOKEN=$(tr -d '[:space:]' < "$HOME/.openmemory/api_token")
+fi
+
 _require_jq() {
     if ! command -v jq >/dev/null 2>&1; then
         echo "error: jq is required (brew install jq / apt install jq)" >&2
@@ -18,10 +25,13 @@ _require_jq() {
 _post() {
     local payload="$1"
     local http_code body response
+    local auth_args=()
+    [ -n "$API_TOKEN" ] && auth_args=(-H "Authorization: Bearer $API_TOKEN")
     # Sentinel __STATUS__ is safe for controlled JSON API responses (dev CLI only)
     response=$(curl -s -w "\n__STATUS__%{http_code}" \
         -X POST "$BASE_URL/mcp" \
         -H 'content-type: application/json' \
+        "${auth_args[@]}" \
         -d "$payload")
     http_code=$(printf '%s' "$response" | tail -1 | sed 's/__STATUS__//')
     body=$(printf '%s' "$response" | sed '$d' | sed 's/__STATUS__[0-9]*//')
@@ -43,9 +53,12 @@ _post() {
 _get() {
     local path="$1"
     local http_code body response
+    local auth_args=()
+    [ -n "$API_TOKEN" ] && auth_args=(-H "Authorization: Bearer $API_TOKEN")
     response=$(curl -s -w "\n__STATUS__%{http_code}" \
         -X GET "$BASE_URL$path" \
-        -H 'accept: application/json')
+        -H 'accept: application/json' \
+        "${auth_args[@]}")
     http_code=$(printf '%s' "$response" | tail -1 | sed 's/__STATUS__//')
     body=$(printf '%s' "$response" | sed '$d' | sed 's/__STATUS__[0-9]*//')
 

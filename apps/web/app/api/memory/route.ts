@@ -15,6 +15,8 @@ export async function POST(request: Request) {
     // Endpoints that require Bearer auth on the backend
     const AUTH_REQUIRED = new Set([
       'env.get',
+      'env.set',
+      'env.delete',
       'graph.set_llm_config',
       'graph.analyze_all',
     ]);

@@ -1000,7 +1000,19 @@ async fn main() -> anyhow::Result<()> {
 
     let secret_key = std::env::var("OPENMEMORY_SECRET_KEY")
         .unwrap_or_else(|_| {
-            warn!("OPENMEMORY_SECRET_KEY not set — using insecure dev default. Set this in production.");
+            warn!(
+                "\n\n\
+                 ╔══════════════════════════════════════════════════════════╗\n\
+                 ║  OpenMemory: OPENMEMORY_SECRET_KEY is NOT set             ║\n\
+                 ║                                                          ║\n\
+                 ║  All env-param secrets (API keys, etc.) are being        ║\n\
+                 ║  encrypted with a well-known, hard-coded dev key.        ║\n\
+                 ║  Anyone with DB access can decrypt them.                 ║\n\
+                 ║                                                          ║\n\
+                 ║  Set OPENMEMORY_SECRET_KEY to a random secret before     ║\n\
+                 ║  storing anything sensitive.                             ║\n\
+                 ╚══════════════════════════════════════════════════════════╝\n"
+            );
             "dev-secret-key-change-me".to_string()
         });
     let encryption_key = derive_key(&secret_key);
@@ -1517,6 +1529,42 @@ fn token_file_path() -> std::path::PathBuf {
     home.join(".openmemory").join("api_token")
 }
 
+/// Write the token file with owner-only (0600) permissions on Unix.
+fn write_token_file(path: &std::path::Path, token: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(token.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, token)
+    }
+}
+
+/// Best-effort: tighten permissions on an existing token file that may have
+/// been created before this check existed (or with a looser umask).
+fn tighten_token_file_perms(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                    warn!("Could not tighten permissions on {}: {e}", path.display());
+                }
+            }
+        }
+    }
+}
+
 fn resolve_api_token() -> String {
     // 1. Explicit env var takes precedence (Docker / CI / scripting)
     if let Ok(token) = std::env::var("OPENMEMORY_API_TOKEN") {
@@ -1533,6 +1581,7 @@ fn resolve_api_token() -> String {
         let token = stored.trim().to_string();
         if !token.is_empty() {
             info!("API token loaded from {}", path.display());
+            tighten_token_file_perms(&path);
             return token;
         }
     }
@@ -1542,7 +1591,7 @@ fn resolve_api_token() -> String {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match std::fs::write(&path, &token) {
+    match write_token_file(&path, &token) {
         Ok(_) => {
             warn!(
                 "\n\n\
@@ -2583,13 +2632,10 @@ async fn mcp(
         }
 
         McpRequest::EnvSet { key, value, is_secret, description } => {
-            // Prevent unauthenticated callers from overwriting LLM config keys,
-            // which would bypass the auth gate on graph.set_llm_config.
-            const LLM_RESERVED: &[&str] = &["GRAPH_LLM_PROVIDER", "GRAPH_LLM_API_KEY", "GRAPH_LLM_MODEL"];
-            if LLM_RESERVED.contains(&key.as_str()) && !is_authenticated(&headers, &state.api_token) {
+            if !is_authenticated(&headers, &state.api_token) {
                 return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({"error": "authentication required to set LLM config keys"})),
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
                 ));
             }
 
@@ -2681,6 +2727,13 @@ async fn mcp(
         }
 
         McpRequest::EnvDelete { key } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
             let result = sqlx::query("DELETE FROM env_params WHERE key = $1")
                 .bind(&key)
                 .execute(&state.db)
