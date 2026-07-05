@@ -891,12 +891,12 @@ impl McpServer {
                 },
                 {
                     "name": "project_task_list",
-                    "description": "List tasks for a project. Optionally filter by status (todo, in_progress, done).",
+                    "description": "List tasks for a project. Optionally filter by status (todo, in_progress, done, cancelled, scheduled).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
-                            "status": {"type": "string", "description": "Filter by status: todo | in_progress | done"},
+                            "status": {"type": "string", "description": "Filter by status: todo | in_progress | done | cancelled | scheduled"},
                             "limit": {"type": "integer", "description": "Max results (default 50)"},
                             "offset": {"type": "integer", "description": "Pagination offset (default 0)"}
                         },
@@ -912,7 +912,7 @@ impl McpServer {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "title": {"type": "string", "description": "Task title"},
                             "description": {"type": "string", "description": "Optional detailed description"},
-                            "status": {"type": "string", "description": "todo | in_progress | done (default: todo)"},
+                            "status": {"type": "string", "description": "todo | in_progress | done | cancelled (default: todo)"},
                             "priority": {"type": "string", "description": "low | medium | high (default: medium)"},
                             "assigned_to": {"type": "string", "description": "human | agent | null"}
                         },
@@ -921,7 +921,7 @@ impl McpServer {
                 },
                 {
                     "name": "project_task_update",
-                    "description": "Update a task's title, description, status, priority, or assigned_to. Only provided fields are changed.",
+                    "description": "Update a task's title, description, status, priority, or assigned_to. Only provided fields are changed. Use status 'cancelled' (not 'done') for tasks that are being dropped/superseded rather than completed.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -929,7 +929,7 @@ impl McpServer {
                             "task_id": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
-                            "status": {"type": "string", "description": "todo | in_progress | done"},
+                            "status": {"type": "string", "description": "todo | in_progress | done | cancelled"},
                             "priority": {"type": "string", "description": "low | medium | high"},
                             "assigned_to": {"type": "string", "description": "human | agent | null"}
                         },

@@ -11,9 +11,10 @@ RUN cargo build --release --bin openmemory-server
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-# ca-certificates for rustls root cert validation; curl for healthcheck
+# ca-certificates for rustls root cert validation; curl for healthcheck;
+# git for the project-graph indexer's commit-history collection
 RUN apt-get update \
-    && apt-get install -y ca-certificates curl \
+    && apt-get install -y ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as non-root user

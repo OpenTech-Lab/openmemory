@@ -206,6 +206,12 @@ export function ProjectGraph2D({ graphData, queryResult, forceFullDetail = false
           {selected.node.source_file && (
             <p className="text-xs text-muted-foreground font-mono mb-3 truncate">{selected.node.source_file as string}</p>
           )}
+          {selected.node.file_type === 'commit' && (
+            <p className="text-xs text-muted-foreground mb-3">
+              {selected.node.author as string}
+              {selected.node.date ? ` · ${new Date(selected.node.date as string).toLocaleDateString()}` : ''}
+            </p>
+          )}
 
           {selected.node._members ? (
             <div>

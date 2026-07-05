@@ -29,7 +29,7 @@ export interface GraphifyData {
 export interface GraphQueryResult {
   query: string;
   seed_nodes: string[];
-  nodes: Array<{ id: string; label: string; file_type?: string; community?: number; source_file?: string }>;
+  nodes: Array<{ id: string; label: string; file_type?: string; community?: number; source_file?: string; author?: string; date?: string }>;
   edges: Array<{ source: string; target: string; relation: string }>;
   truncated: boolean;
 }
@@ -71,6 +71,7 @@ export const FILE_TYPE_PALETTE: Record<string, string> = {
   image:     '#ec4899',
   rationale: '#8b5cf6',
   concept:   '#06b6d4',
+  commit:    '#d97706',
 };
 
 export function fileTypeColor(fileType: string | undefined): string {
@@ -161,6 +162,18 @@ function buildCommunityDisplayGraph(data: GraphifyData): { nodes: DisplayNode[];
   return { nodes, edges, nodeMap };
 }
 
+// Commit nodes (git history) clutter the full-graph and community views, where they'd
+// dwarf the code structure they're meant to annotate. They still surface in query mode,
+// since a search is the point at which "which commit touched this" becomes useful.
+function filterOutCommitNodes(data: GraphifyData): GraphifyData {
+  const nodes = (data.nodes ?? []).filter(n => n.file_type !== 'commit');
+  if (nodes.length === (data.nodes?.length ?? 0)) return data;
+  const keepIds = new Set(nodes.map(n => n.id));
+  const edgeList = data.links ?? data.edges ?? [];
+  const edges = edgeList.filter(e => keepIds.has(e.source) && keepIds.has(e.target));
+  return { ...data, nodes, links: edges, edges: undefined };
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 export function buildDisplayGraph(
   data: GraphifyData,
@@ -180,6 +193,7 @@ export function buildDisplayGraph(
       const isSeed = seedSet.has(n.id);
       const nodeData: GraphifyNode = {
         id: n.id, label: n.label, file_type: n.file_type, community: n.community, source_file: n.source_file,
+        author: n.author, date: n.date,
       };
       nodeMap.set(n.id, nodeData);
       nodes.push({
@@ -199,9 +213,11 @@ export function buildDisplayGraph(
     return { nodes, edges, nodeMap, isCommunity: false };
   }
 
+  const filteredData = filterOutCommitNodes(data);
+
   // Community view: full graph exceeds the readable cap.
-  if (shouldShowCommunityView(data, queryResult, forceFullDetail)) {
-    const { nodes, edges, nodeMap } = buildCommunityDisplayGraph(data);
+  if (shouldShowCommunityView(filteredData, queryResult, forceFullDetail)) {
+    const { nodes, edges, nodeMap } = buildCommunityDisplayGraph(filteredData);
     return { nodes, edges, nodeMap, isCommunity: true };
   }
 
@@ -209,14 +225,14 @@ export function buildDisplayGraph(
   const nodeMap = new Map<string, GraphifyNode>();
   const nodes: DisplayNode[] = [];
   const seen = new Set<string>();
-  for (const n of data.nodes ?? []) {
+  for (const n of filteredData.nodes ?? []) {
     if (seen.has(n.id)) continue;
     seen.add(n.id);
     nodeMap.set(n.id, n);
     nodes.push({ id: n.id, label: n.label ?? n.id, color: fileTypeColor(n.file_type), size: 3, isSeed: false, data: n });
   }
 
-  const edges: DisplayEdge[] = (data.links ?? data.edges ?? [])
+  const edges: DisplayEdge[] = (filteredData.links ?? filteredData.edges ?? [])
     .filter(e => seen.has(e.source) && seen.has(e.target))
     .map(e => ({ source: e.source, target: e.target, relation: e.relation ?? '' }));
 

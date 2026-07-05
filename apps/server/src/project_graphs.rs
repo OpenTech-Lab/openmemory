@@ -35,6 +35,12 @@ pub struct GraphNode {
     pub community: Option<i64>,
     pub source_file: Option<String>,
     pub source_location: Option<String>,
+    /// Commit author name — only present on `file_type: "commit"` nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// Commit author date (ISO 8601) — only present on `file_type: "commit"` nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// A directed edge between two nodes.
@@ -457,6 +463,8 @@ pub fn node_from_json(id: &str, node_val: &serde_json::Value) -> GraphNode {
         community: node_val["community"].as_i64(),
         source_file: node_val["source_file"].as_str().map(sanitize_string),
         source_location: node_val["source_location"].as_str().map(sanitize_string),
+        author: node_val["author"].as_str().map(sanitize_string),
+        date: node_val["date"].as_str().map(sanitize_string),
     }
 }
 

@@ -31,6 +31,10 @@ const EXTRA_IGNORE_DIRS: &[&str] = &[
     "target", "node_modules", ".git", "dist", "build", "__pycache__", ".venv", "venv",
 ];
 
+/// Default number of recent commits to index as graph nodes. Overridable via
+/// `OPENMEMORY_GIT_HISTORY_COMMITS` env var; `0` disables the feature entirely.
+const DEFAULT_GIT_HISTORY_COMMITS: usize = 200;
+
 #[derive(Clone, Copy)]
 enum Lang {
     Rust,
@@ -329,6 +333,96 @@ fn normalize_path(p: &Path) -> String {
     out.join("/")
 }
 
+/// Read recent git commit history from `repo_root` and turn it into commit nodes plus
+/// `modified` edges pointing at file nodes already discovered in this index run. Never
+/// fails the caller — any git error (not a repo, git missing, unparseable output) yields
+/// an empty history, since a stale/absent history is far less harmful than a broken index.
+fn collect_git_history(repo_root: &Path, node_ids: &HashSet<String>) -> (Vec<Value>, Vec<Value>) {
+    let max_commits: usize = std::env::var("OPENMEMORY_GIT_HISTORY_COMMITS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_GIT_HISTORY_COMMITS);
+    if max_commits == 0 {
+        return (Vec::new(), Vec::new());
+    }
+
+    // \x01 delimits commit records, \x00 delimits header fields within a record.
+    // %h=abbrev hash, %an=author name, %aI=author date (ISO 8601), %s=subject.
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("-c")
+        .arg(format!("safe.directory={}", repo_root.display()))
+        .args([
+            "log",
+            "-n",
+            &max_commits.to_string(),
+            "--pretty=format:%x01%h%x00%an%x00%aI%x00%s",
+            "--name-only",
+        ])
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            tracing::debug!(
+                "indexer: git log exited non-zero (likely not a git repo): {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            return (Vec::new(), Vec::new());
+        }
+        Err(e) => {
+            tracing::debug!("indexer: git log failed to run: {e}");
+            return (Vec::new(), Vec::new());
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut seen_commit_edges: HashSet<(String, String)> = HashSet::new();
+
+    for record in stdout.split('\x01').skip(1) {
+        let mut lines = record.lines();
+        let header = match lines.next() {
+            Some(h) => h,
+            None => continue,
+        };
+        let mut parts = header.splitn(4, '\x00');
+        let (hash, author, date, subject) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(h), Some(a), Some(d), Some(s)) => (h, a, d, s),
+            _ => continue,
+        };
+
+        let commit_id = format!("commit:{hash}");
+        let label: String = subject.chars().take(100).collect();
+        nodes.push(json!({
+            "id": commit_id,
+            "label": label,
+            "file_type": "commit",
+            "author": author,
+            "date": date,
+        }));
+
+        for file_line in lines {
+            let file_line = file_line.trim();
+            if file_line.is_empty() || !node_ids.contains(file_line) {
+                continue;
+            }
+            let key = (commit_id.clone(), file_line.to_string());
+            if seen_commit_edges.insert(key) {
+                edges.push(json!({
+                    "source": commit_id,
+                    "target": file_line,
+                    "relation": "modified",
+                }));
+            }
+        }
+    }
+
+    (nodes, edges)
+}
+
 /// Walk `path`, parse recognized source files, and build a NetworkX node-link graph.
 /// Returns `(graph_json, sha256_hex_hash, size_bytes, canonical_path)` — same signature as
 /// the old `project_graphs::load_graph_json`, so call sites only swap which function they call.
@@ -532,6 +626,13 @@ fn index_project_blocking(path: &str) -> Result<(Value, String, u64, String)> {
         }
     }
 
+    // Git history: commit nodes + `modified` edges to files already discovered above.
+    // Only wires edges to files that exist in this index run — deleted/renamed-away
+    // paths are silently dropped rather than creating dangling edges.
+    let (history_nodes, history_edges) = collect_git_history(&canonical, &node_ids);
+    nodes.extend(history_nodes);
+    edges.extend(history_edges);
+
     // Deterministic ordering so re-indexing with no file changes yields the same hash.
     nodes.sort_by(|a, b| a["id"].as_str().unwrap_or("").cmp(b["id"].as_str().unwrap_or("")));
     edges.sort_by(|a, b| {
@@ -656,6 +757,88 @@ mod tests {
             server_file["community"], web_file["community"],
             "files in different subdirectories under the same top-level dir must not share a community: {nodes:?}"
         );
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test Author")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test Author")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .expect("git command failed to run");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[tokio::test]
+    async fn collects_git_commit_nodes_and_modified_edges() {
+        let tmp = std::env::temp_dir().join(format!("indexer_test_git_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        write(&tmp, "src/main.rs", "fn main() {}\n");
+        git(&tmp, &["init", "-q"]);
+        git(&tmp, &["add", "."]);
+        git(&tmp, &["commit", "-q", "-m", "initial commit"]);
+
+        let (graph, _, _, _) = index_project(tmp.to_str().unwrap()).await.unwrap();
+
+        let nodes = graph["nodes"].as_array().unwrap();
+        let commit_node = nodes.iter().find(|n| n["file_type"] == "commit");
+        assert!(commit_node.is_some(), "{nodes:?}");
+        let commit_node = commit_node.unwrap();
+        assert_eq!(commit_node["label"], "initial commit");
+        assert_eq!(commit_node["author"], "Test Author");
+        assert!(commit_node["date"].as_str().is_some());
+
+        let commit_id = commit_node["id"].as_str().unwrap();
+        let edges = graph["links"].as_array().unwrap();
+        let has_modified = edges.iter().any(|e| {
+            e["relation"] == "modified" && e["source"] == commit_id && e["target"] == "src/main.rs"
+        });
+        assert!(has_modified, "{edges:?}");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn no_git_history_for_non_repo_directory() {
+        let tmp = std::env::temp_dir().join(format!("indexer_test_nogit_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        write(&tmp, "src/main.rs", "fn main() {}\n");
+        // Deliberately no `git init` — indexing a plain directory must not fail or produce
+        // commit nodes.
+
+        let (graph, _, _, _) = index_project(tmp.to_str().unwrap()).await.unwrap();
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert!(!nodes.iter().any(|n| n["file_type"] == "commit"), "{nodes:?}");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn git_history_disabled_via_env_var() {
+        let tmp = std::env::temp_dir().join(format!("indexer_test_git_off_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        write(&tmp, "src/main.rs", "fn main() {}\n");
+        git(&tmp, &["init", "-q"]);
+        git(&tmp, &["add", "."]);
+        git(&tmp, &["commit", "-q", "-m", "initial commit"]);
+
+        // SAFETY: this test mutates process-wide env state. index_project spawns its work via
+        // spawn_blocking onto a fresh blocking thread, so run this test with
+        // `--test-threads=1` (or accept it may race other env-sensitive tests) to avoid
+        // cross-test interference — see indexer.rs test module doc note below.
+        std::env::set_var("OPENMEMORY_GIT_HISTORY_COMMITS", "0");
+        let result = index_project(tmp.to_str().unwrap()).await;
+        std::env::remove_var("OPENMEMORY_GIT_HISTORY_COMMITS");
+
+        let (graph, _, _, _) = result.unwrap();
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert!(!nodes.iter().any(|n| n["file_type"] == "commit"), "{nodes:?}");
 
         fs::remove_dir_all(&tmp).ok();
     }
