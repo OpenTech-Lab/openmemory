@@ -33,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Plus, RefreshCw, Eye, EyeOff, Pencil, Trash2, Lock, Globe } from 'lucide-react';
+import { Plus, RefreshCw, Eye, EyeOff, Pencil, Trash2, Lock, Globe, Upload, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface EnvParam {
@@ -53,6 +53,20 @@ async function callApi(body: object): Promise<Response> {
   });
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // readAsDataURL yields "data:<mime>;base64,<data>" — strip the prefix
+      const result = reader.result as string;
+      const comma = result.indexOf(',');
+      resolve(comma === -1 ? result : result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 export function EnvParamsPanel() {
   const [params, setParams] = useState<EnvParam[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -60,8 +74,10 @@ export function EnvParamsPanel() {
 
   // Add dialog
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<'text' | 'file'>('text');
   const [addKey, setAddKey] = useState('');
   const [addValue, setAddValue] = useState('');
+  const [addFile, setAddFile] = useState<File | null>(null);
   const [addIsSecret, setAddIsSecret] = useState(false);
   const [addDescription, setAddDescription] = useState('');
 
@@ -109,21 +125,31 @@ export function EnvParamsPanel() {
   }, [revealTimer]);
 
   const handleAdd = async () => {
-    if (!addKey.trim() || !addValue.trim()) return;
+    if (!addKey.trim()) return;
+    if (addMode === 'text' && !addValue.trim()) return;
+    if (addMode === 'file' && !addFile) return;
     setIsSaving(true);
     try {
-      const res = await callApi({
-        type: 'env.set',
-        key: addKey.trim(),
-        value: addValue,
-        is_secret: addIsSecret,
-        description: addDescription.trim() || undefined,
-      });
+      const res = addMode === 'file' && addFile
+        ? await callApi({
+            type: 'env.set_file',
+            key: addKey.trim(),
+            file_content_base64: await fileToBase64(addFile),
+            description: addDescription.trim() || undefined,
+          })
+        : await callApi({
+            type: 'env.set',
+            key: addKey.trim(),
+            value: addValue,
+            is_secret: addIsSecret,
+            description: addDescription.trim() || undefined,
+          });
       const data = await res.json();
       if (data.error) { toast.error(data.error); return; }
       toast.success(`Parameter '${addKey.trim()}' saved`);
       setIsAddOpen(false);
-      setAddKey(''); setAddValue(''); setAddIsSecret(false); setAddDescription('');
+      setAddKey(''); setAddValue(''); setAddFile(null); setAddMode('text');
+      setAddIsSecret(false); setAddDescription('');
       fetchParams();
     } catch {
       toast.error('Failed to save parameter');
@@ -326,14 +352,54 @@ export function EnvParamsPanel() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="add-value">Value <span className="text-destructive">*</span></Label>
-              <Input
-                id="add-value"
-                type="password"
-                placeholder="Enter value"
-                value={addValue}
-                onChange={(e) => setAddValue(e.target.value)}
-              />
+              <div className="flex items-center justify-between">
+                <Label htmlFor={addMode === 'text' ? 'add-value' : 'add-file'}>
+                  {addMode === 'text' ? 'Value' : 'File'} <span className="text-destructive">*</span>
+                </Label>
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    variant={addMode === 'text' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    className="h-6 px-2 text-xs gap-1"
+                    onClick={() => { setAddMode('text'); setAddFile(null); }}
+                  >
+                    <FileText className="h-3 w-3" /> Text
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={addMode === 'file' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    className="h-6 px-2 text-xs gap-1"
+                    onClick={() => { setAddMode('file'); setAddValue(''); setAddIsSecret(true); }}
+                  >
+                    <Upload className="h-3 w-3" /> File
+                  </Button>
+                </div>
+              </div>
+              {addMode === 'text' ? (
+                <Input
+                  id="add-value"
+                  type="password"
+                  placeholder="Enter value"
+                  value={addValue}
+                  onChange={(e) => setAddValue(e.target.value)}
+                />
+              ) : (
+                <>
+                  <Input
+                    id="add-file"
+                    type="file"
+                    onChange={(e) => setAddFile(e.target.files?.[0] ?? null)}
+                    className="cursor-pointer file:cursor-pointer"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {addFile
+                      ? `${addFile.name} (${(addFile.size / 1024).toFixed(1)} KB) — always stored as a secret.`
+                      : 'Uploaded files are read directly by the server and always stored as a secret; agents can use them via env_http_request / env_sign_jwt but never read the raw content back.'}
+                  </p>
+                </>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="add-desc">Description</Label>
@@ -345,31 +411,44 @@ export function EnvParamsPanel() {
                 rows={2}
               />
             </div>
-            <div className="flex items-center gap-3">
-              <Switch
-                id="add-secret"
-                checked={addIsSecret}
-                onCheckedChange={setAddIsSecret}
-              />
-              <div className="space-y-0.5">
-                <Label htmlFor="add-secret" className="cursor-pointer">
-                  {addIsSecret ? (
-                    <span className="flex items-center gap-1.5"><Lock className="h-3.5 w-3.5" /> Secret</span>
-                  ) : (
-                    <span className="flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" /> Normal</span>
-                  )}
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {addIsSecret
-                    ? 'Agents can write but cannot read this value back.'
-                    : 'Agents can read and write this value freely.'}
-                </p>
+            {addMode === 'text' && (
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="add-secret"
+                  checked={addIsSecret}
+                  onCheckedChange={setAddIsSecret}
+                />
+                <div className="space-y-0.5">
+                  <Label htmlFor="add-secret" className="cursor-pointer">
+                    {addIsSecret ? (
+                      <span className="flex items-center gap-1.5"><Lock className="h-3.5 w-3.5" /> Secret</span>
+                    ) : (
+                      <span className="flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" /> Normal</span>
+                    )}
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {addIsSecret
+                      ? 'Agents can write but cannot read this value back.'
+                      : 'Agents can read and write this value freely.'}
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsAddOpen(false)}>Cancel</Button>
-            <Button onClick={handleAdd} disabled={isSaving || !addKey.trim() || !addValue.trim()}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsAddOpen(false);
+                setAddMode('text'); setAddFile(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAdd}
+              disabled={isSaving || !addKey.trim() || (addMode === 'text' ? !addValue.trim() : !addFile)}
+            >
               {isSaving ? 'Saving…' : 'Save'}
             </Button>
           </DialogFooter>
@@ -397,10 +476,13 @@ export function EnvParamsPanel() {
               <Input
                 id="edit-value"
                 type="password"
-                placeholder="Enter new value"
+                placeholder="••••••••"
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
               />
+              <p className="text-xs text-muted-foreground">
+                The current value is hidden. Enter a new value to overwrite it.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="edit-desc">Description</Label>

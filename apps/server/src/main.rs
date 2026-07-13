@@ -710,6 +710,18 @@ enum McpRequest {
         description: Option<String>,
     },
 
+    // File uploads from the web UI: the browser can't hand us a server-side
+    // path (unlike the MCP env_set_file tool, which reads a path on the same
+    // machine as the agent), so the frontend base64-encodes the file client-side
+    // and posts the bytes here. Always stored as a secret, matching env_set_file.
+    #[serde(rename = "env.set_file")]
+    EnvSetFile {
+        key: String,
+        file_content_base64: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+
     #[serde(rename = "env.get")]
     EnvGet { key: String },
 
@@ -2688,6 +2700,57 @@ async fn mcp(
                     Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({ "error": "Failed to set parameter" })),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::EnvSetFile { key, file_content_base64, description } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            // Validate it's actually base64 before storing — catches a
+            // corrupted client-side encode early instead of failing silently
+            // at decrypt/use time later.
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            if STANDARD.decode(file_content_base64.trim()).is_err() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "file_content_base64 is not valid base64" })),
+                ));
+            }
+
+            let encrypted = encrypt_value(&state.encryption_key, &file_content_base64);
+            let now = Utc::now();
+
+            let result = sqlx::query(
+                r#"
+                INSERT INTO env_params (key, value_encrypted, is_secret, description, created_at, updated_at)
+                VALUES ($1, $2, TRUE, $3, $4, $4)
+                ON CONFLICT (key) DO UPDATE SET
+                    value_encrypted = EXCLUDED.value_encrypted,
+                    description = COALESCE(EXCLUDED.description, env_params.description),
+                    updated_at = EXCLUDED.updated_at
+                "#,
+            )
+            .bind(&key)
+            .bind(&encrypted)
+            .bind(&description)
+            .bind(now)
+            .execute(&state.db)
+            .await;
+
+            match result {
+                Ok(_) => Ok((StatusCode::OK, Json(McpResponse::EnvSetResult { key }))),
+                Err(e) => {
+                    error!("Failed to set env param from file: {e}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "Failed to save uploaded file" })),
                     ))
                 }
             }

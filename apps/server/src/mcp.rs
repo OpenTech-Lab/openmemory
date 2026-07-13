@@ -732,7 +732,86 @@ impl McpServer {
                 },
                 {
                     "name": "env_http_request",
-                    "description": "Make an HTTP request with a stored secret injected as the auth header. The secret value is never exposed to the agent — the server resolves it internally and forwards the request. Use this to call external APIs (Cloudflare, GitHub, etc.) whose credentials are stored as secret env params. If OPENMEMORY_HTTP_ALLOWED_HOSTS is configured on the server, requests to hosts outside that allowlist are rejected before the secret is resolved.",
+                    "description": "Make an HTTP request with a stored secret injected as the auth header (default) or as the full request URL itself. The secret value is never exposed to the agent — the server resolves it internally and forwards the request. Use auth-header mode for API keys/tokens (Cloudflare, GitHub, etc.). Use secret_target='url' for self-authenticating URLs like incoming webhooks (e.g. AWS Amplify build webhooks), where the URL itself is the credential — in that mode omit 'url' entirely. If OPENMEMORY_HTTP_ALLOWED_HOSTS is configured on the server, requests to hosts outside that allowlist are rejected before the secret is resolved.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method: GET, POST, PUT, PATCH, DELETE",
+                                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Full URL to request. Required unless secret_target='url' (in which case the secret itself is the URL and this is ignored)."
+                            },
+                            "auth_key": {
+                                "type": "string",
+                                "description": "Name of the secret env param whose value will be used as the auth credential (e.g. CLAUDEFLARE_API_TOKEN_ACCESS), or as the full URL when secret_target='url'"
+                            },
+                            "secret_target": {
+                                "type": "string",
+                                "description": "Where the secret goes: 'header' (default) puts it in an auth header alongside the 'url' arg; 'url' means the secret itself IS the full request URL (no auth header sent) — for self-authenticating URLs like incoming webhooks.",
+                                "enum": ["header", "url"]
+                            },
+                            "auth_header": {
+                                "type": "string",
+                                "description": "Header name for the credential. Defaults to 'Authorization'. Ignored when secret_target='url'."
+                            },
+                            "auth_prefix": {
+                                "type": "string",
+                                "description": "Prefix for the header value. Defaults to 'Bearer '. Set to '' for bare token headers like X-Auth-Key. Ignored when secret_target='url'."
+                            },
+                            "body": {
+                                "type": "object",
+                                "description": "Optional JSON request body (for POST/PUT/PATCH)"
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": "Optional additional headers as key-value pairs"
+                            }
+                        },
+                        "required": ["method", "auth_key"]
+                    }
+                },
+                {
+                    "name": "env_sign_jwt",
+                    "description": "Sign a JWT using a stored secret as the signing key and return the token. The raw key value is never exposed to the agent, but the returned token IS a live, usable bearer credential for its ttl_seconds lifetime — prefer env_http_request_jwt when you just need to call an API, since that keeps the token server-side too and never returns it. exp/iat are added automatically from ttl_seconds — do not pass them in claims.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the signing key (PEM for ES256/RS256, raw string for HS256)"
+                            },
+                            "algorithm": {
+                                "type": "string",
+                                "description": "JWT signing algorithm",
+                                "enum": ["ES256", "RS256", "HS256"]
+                            },
+                            "header_extra": {
+                                "type": "object",
+                                "description": "Extra JWT header fields, e.g. {\"kid\": \"...\"}"
+                            },
+                            "claims": {
+                                "type": "object",
+                                "description": "JWT claims, e.g. {\"iss\": \"...\", \"aud\": \"appstoreconnect-v1\"}. iat/exp are added automatically."
+                            },
+                            "ttl_seconds": {
+                                "type": "integer",
+                                "description": "Token lifetime in seconds. Default 1200, capped at 1200."
+                            },
+                            "key_from_file": {
+                                "type": "boolean",
+                                "description": "Set true if 'key' was stored via env_set_file (base64-encoded) — decodes back to raw bytes before signing. Default false (for keys stored via env_set as plain text)."
+                            }
+                        },
+                        "required": ["key", "algorithm", "claims"]
+                    }
+                },
+                {
+                    "name": "env_http_request_jwt",
+                    "description": "Make an HTTP request authenticated with a freshly-signed JWT, all server-side — the signing key and the resulting token both stay on the server; only the API response is returned to the agent. Use this instead of env_sign_jwt + a separate request whenever you're just calling an API (e.g. App Store Connect: algorithm=ES256, header_extra={\"kid\":...}, claims={\"iss\":...,\"aud\":\"appstoreconnect-v1\"}). exp/iat are added automatically from ttl_seconds — do not pass them in claims.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -745,17 +824,88 @@ impl McpServer {
                                 "type": "string",
                                 "description": "Full URL to request"
                             },
-                            "auth_key": {
+                            "key": {
                                 "type": "string",
-                                "description": "Name of the secret env param whose value will be used as the auth credential (e.g. CLAUDEFLARE_API_TOKEN_ACCESS)"
+                                "description": "Name of the secret env param holding the signing key (PEM for ES256/RS256, raw string for HS256)"
                             },
-                            "auth_header": {
+                            "algorithm": {
                                 "type": "string",
-                                "description": "Header name for the credential. Defaults to 'Authorization'."
+                                "description": "JWT signing algorithm",
+                                "enum": ["ES256", "RS256", "HS256"]
                             },
-                            "auth_prefix": {
+                            "header_extra": {
+                                "type": "object",
+                                "description": "Extra JWT header fields, e.g. {\"kid\": \"...\"}"
+                            },
+                            "claims": {
+                                "type": "object",
+                                "description": "JWT claims, e.g. {\"iss\": \"...\", \"aud\": \"appstoreconnect-v1\"}. iat/exp are added automatically."
+                            },
+                            "ttl_seconds": {
+                                "type": "integer",
+                                "description": "Token lifetime in seconds. Default 1200, capped at 1200."
+                            },
+                            "body": {
+                                "type": "object",
+                                "description": "Optional JSON request body (for POST/PUT/PATCH)"
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": "Optional additional headers as key-value pairs"
+                            },
+                            "key_from_file": {
+                                "type": "boolean",
+                                "description": "Set true if 'key' was stored via env_set_file (base64-encoded) — decodes back to raw bytes before signing. Default false (for keys stored via env_set as plain text)."
+                            }
+                        },
+                        "required": ["method", "url", "key", "algorithm", "claims"]
+                    }
+                },
+                {
+                    "name": "env_set_file",
+                    "description": "Store a local file's contents as an env secret. The server reads the file from disk and encrypts it directly — the agent never has to pass the file's bytes as a tool argument, so raw file content never appears in the agent's own tool calls or transcript. Use this for uploading credential files (service account JSON, .p8/.p12 keys, certs) instead of env_set. Always stored as a secret (unreadable by agents) and base64-encoded internally, so both text and binary files work. Use env_http_request / env_http_request_jwt / env_sign_jwt afterward to use the stored file safely.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
                                 "type": "string",
-                                "description": "Prefix for the header value. Defaults to 'Bearer '. Set to '' for bare token headers like X-Auth-Key."
+                                "description": "Parameter name to store the file under"
+                            },
+                            "file_path": {
+                                "type": "string",
+                                "description": "Absolute path to the file on disk (server reads it directly)"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional human-readable description"
+                            }
+                        },
+                        "required": ["key", "file_path"]
+                    }
+                },
+                {
+                    "name": "env_google_service_account_request",
+                    "description": "Call a Google Cloud / Google API authenticated as a service account, entirely server-side. Reads a GCP service account JSON secret (as stored by env_set_file), extracts client_email/private_key/token_uri from it, signs the RS256 JWT assertion, exchanges it for an OAuth2 access token at Google's token endpoint, then makes the actual API request with that token — none of the private key, JWT assertion, or access token ever reach the agent. Only the final API response is returned.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the full GCP service account JSON (base64, as stored by env_set_file)"
+                            },
+                            "scopes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "OAuth2 scopes to request, e.g. [\"https://www.googleapis.com/auth/cloud-platform\"]"
+                            },
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method for the target API request",
+                                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Full URL of the target Google API request"
                             },
                             "body": {
                                 "type": "object",
@@ -766,7 +916,7 @@ impl McpServer {
                                 "description": "Optional additional headers as key-value pairs"
                             }
                         },
-                        "required": ["method", "url", "auth_key"]
+                        "required": ["key", "scopes", "method", "url"]
                     }
                 },
                 {
@@ -1015,6 +1165,10 @@ impl McpServer {
             "env_list" => self.env_list(arguments).await,
             "env_delete" => self.env_delete(arguments).await,
             "env_http_request" => self.env_http_request(arguments).await,
+            "env_sign_jwt" => self.env_sign_jwt(arguments).await,
+            "env_http_request_jwt" => self.env_http_request_jwt(arguments).await,
+            "env_set_file" => self.env_set_file(arguments).await,
+            "env_google_service_account_request" => self.env_google_service_account_request(arguments).await,
             "project_graph_list" => self.project_graph_list(arguments).await,
             "project_graph_create" => self.project_graph_create(arguments).await,
             "project_graph_query" => self.project_graph_query(arguments).await,
@@ -1640,29 +1794,14 @@ impl McpServer {
 
     async fn env_http_request(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
         let method = args["method"].as_str().context("missing method")?.to_uppercase();
-        let url = args["url"].as_str().context("missing url")?.to_string();
         let auth_key = args["auth_key"].as_str().context("missing auth_key")?.to_string();
         let auth_header = args["auth_header"].as_str().unwrap_or("Authorization").to_string();
         let auth_prefix = args["auth_prefix"].as_str().unwrap_or("Bearer ").to_string();
-
-        // Optional host allowlist (OPENMEMORY_HTTP_ALLOWED_HOSTS): if set, refuse to
-        // resolve or attach the secret unless the destination host is on the list.
-        // Checked before any DB access so a disallowed host never triggers a decrypt.
-        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
-            let allowed_hosts: Vec<String> = allowed
-                .split(',')
-                .map(|h| h.trim().to_lowercase())
-                .filter(|h| !h.is_empty())
-                .collect();
-            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
-            let host = parsed.host_str().unwrap_or("").to_lowercase();
-            if !allowed_hosts.iter().any(|h| h == &host) {
-                anyhow::bail!(
-                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
-                    host
-                );
-            }
-        }
+        // "header" (default): secret goes in an auth header, url comes from the
+        // "url" arg. "url": the secret itself IS the full request URL (for
+        // self-authenticating URLs like incoming webhooks) — no auth header is
+        // sent, and the "url" arg is ignored/not required.
+        let secret_target = args["secret_target"].as_str().unwrap_or("header").to_string();
 
         // Resolve the secret from the DB — never returned to the agent
         let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
@@ -1679,7 +1818,30 @@ impl McpServer {
                 .context("failed to decrypt secret")?,
         };
 
-        let auth_value = format!("{}{}", auth_prefix, secret_value);
+        let url = if secret_target == "url" {
+            secret_value.trim().to_string()
+        } else {
+            args["url"].as_str().context("missing url")?.to_string()
+        };
+
+        // Optional host allowlist (OPENMEMORY_HTTP_ALLOWED_HOSTS): if set, refuse to
+        // resolve or attach the secret unless the destination host is on the list.
+        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
+            let allowed_hosts: Vec<String> = allowed
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            if !allowed_hosts.iter().any(|h| h == &host) {
+                anyhow::bail!(
+                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
+                    host
+                );
+            }
+        }
+
         let client = HttpClient::new();
 
         let mut req = match method.as_str() {
@@ -1690,8 +1852,12 @@ impl McpServer {
             "DELETE" => client.delete(&url),
             other    => anyhow::bail!("Unsupported HTTP method: {}", other),
         }
-        .header(&auth_header, &auth_value)
         .header("Content-Type", "application/json");
+
+        if secret_target != "url" {
+            let auth_value = format!("{}{}", auth_prefix, secret_value);
+            req = req.header(&auth_header, &auth_value);
+        }
 
         // Inject any extra headers
         if let Some(headers) = args["headers"].as_object() {
@@ -1703,17 +1869,370 @@ impl McpServer {
         }
 
         // Attach body for mutating methods
-        if let Some(body) = args.get("body") {
-            if !body.is_null() {
-                req = req.body(body.to_string());
-            }
-        }
+        // Always set a body (even empty) — some APIs (e.g. Google's) require
+        // Content-Length on POST/PUT/PATCH and reject requests with none set.
+        // reqwest doesn't auto-emit Content-Length for a zero-length body, so
+        // set it explicitly in that case.
+        req = match args.get("body") {
+            Some(body) if !body.is_null() => req.body(body.to_string()),
+            _ => req.header("Content-Length", "0").body(""),
+        };
 
         let response = req.send().await.context("HTTP request failed")?;
         let status = response.status().as_u16();
         let body_text = response.text().await.unwrap_or_default();
 
         // Try to pretty-print JSON responses, fall back to raw text
+        let display = serde_json::from_str::<serde_json::Value>(&body_text)
+            .map(|v| serde_json::to_string_pretty(&v).unwrap_or(body_text.clone()))
+            .unwrap_or(body_text);
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("HTTP {} — status {}\n\n{}", method, status, display)
+            }],
+            "isError": status >= 400
+        }))
+    }
+
+    // Shared by env_sign_jwt (returns the token to the agent) and
+    // env_http_request_jwt (uses the token internally, never returns it).
+    async fn sign_jwt_from_args(&self, args: &serde_json::Value) -> Result<String> {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+
+        let key_name = args["key"].as_str().context("missing key")?.to_string();
+        let algorithm = args["algorithm"].as_str().context("missing algorithm")?.to_string();
+        let claims_in = args["claims"].as_object().context("missing claims")?.clone();
+        let ttl_seconds = args["ttl_seconds"].as_i64().unwrap_or(1200).clamp(1, 1200);
+
+        // Resolve the signing key from the DB — never returned to the agent
+        let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT value_encrypted, is_secret FROM env_params WHERE key = $1",
+        )
+        .bind(&key_name)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to query signing key")?;
+
+        let mut key_value = match row {
+            None => anyhow::bail!("Parameter '{}' not found in env params", key_name),
+            Some((encrypted, _)) => decrypt_value(&self.encryption_key, &encrypted)
+                .context("failed to decrypt signing key")?,
+        };
+
+        // Keys uploaded via env_set_file are stored base64-encoded (so binary
+        // files round-trip safely) — decode back to the raw PEM/secret bytes.
+        if args["key_from_file"].as_bool().unwrap_or(false) {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let decoded = STANDARD
+                .decode(key_value.trim())
+                .context("key_from_file was set but the stored value isn't valid base64")?;
+            key_value = String::from_utf8(decoded)
+                .context("decoded file key is not valid UTF-8 text (binary keys aren't supported by jsonwebtoken)")?;
+        }
+
+        let alg = match algorithm.as_str() {
+            "ES256" => Algorithm::ES256,
+            "RS256" => Algorithm::RS256,
+            "HS256" => Algorithm::HS256,
+            other => anyhow::bail!("Unsupported algorithm: {} (use ES256, RS256, or HS256)", other),
+        };
+
+        let encoding_key = match alg {
+            Algorithm::ES256 => EncodingKey::from_ec_pem(key_value.as_bytes())
+                .context("failed to parse EC private key (expected PEM)")?,
+            Algorithm::RS256 => EncodingKey::from_rsa_pem(key_value.as_bytes())
+                .context("failed to parse RSA private key (expected PEM)")?,
+            Algorithm::HS256 => EncodingKey::from_secret(key_value.as_bytes()),
+            _ => unreachable!(),
+        };
+
+        let mut header = Header::new(alg);
+        if let Some(extra) = args["header_extra"].as_object() {
+            for (k, v) in extra {
+                match k.as_str() {
+                    "kid" => header.kid = v.as_str().map(|s| s.to_string()),
+                    _ => {} // other header fields aren't exposed by jsonwebtoken::Header; extend here if needed
+                }
+            }
+        }
+
+        let now = Utc::now().timestamp();
+        let mut claims: serde_json::Map<String, serde_json::Value> = claims_in;
+        claims.insert("iat".to_string(), json!(now));
+        claims.insert("exp".to_string(), json!(now + ttl_seconds));
+
+        encode(&header, &serde_json::Value::Object(claims), &encoding_key)
+            .context("failed to sign JWT")
+    }
+
+    async fn env_sign_jwt(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let token = self.sign_jwt_from_args(args).await?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": token
+            }]
+        }))
+    }
+
+    async fn env_http_request_jwt(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let method = args["method"].as_str().context("missing method")?.to_uppercase();
+        let url = args["url"].as_str().context("missing url")?.to_string();
+
+        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
+            let allowed_hosts: Vec<String> = allowed
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            if !allowed_hosts.iter().any(|h| h == &host) {
+                anyhow::bail!(
+                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
+                    host
+                );
+            }
+        }
+
+        // Signed internally; the token never leaves this function.
+        let token = self.sign_jwt_from_args(args).await?;
+
+        let client = HttpClient::new();
+        let mut req = match method.as_str() {
+            "GET"    => client.get(&url),
+            "POST"   => client.post(&url),
+            "PUT"    => client.put(&url),
+            "PATCH"  => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            other    => anyhow::bail!("Unsupported HTTP method: {}", other),
+        }
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json");
+
+        if let Some(headers) = args["headers"].as_object() {
+            for (k, v) in headers {
+                if let Some(v_str) = v.as_str() {
+                    req = req.header(k.as_str(), v_str);
+                }
+            }
+        }
+
+        // Always set a body (even empty) — some APIs (e.g. Google's) require
+        // Content-Length on POST/PUT/PATCH and reject requests with none set.
+        // reqwest doesn't auto-emit Content-Length for a zero-length body, so
+        // set it explicitly in that case.
+        req = match args.get("body") {
+            Some(body) if !body.is_null() => req.body(body.to_string()),
+            _ => req.header("Content-Length", "0").body(""),
+        };
+
+        let response = req.send().await.context("HTTP request failed")?;
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_default();
+
+        let display = serde_json::from_str::<serde_json::Value>(&body_text)
+            .map(|v| serde_json::to_string_pretty(&v).unwrap_or(body_text.clone()))
+            .unwrap_or(body_text);
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("HTTP {} — status {}\n\n{}", method, status, display)
+            }],
+            "isError": status >= 400
+        }))
+    }
+
+    async fn env_set_file(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        let key = args["key"].as_str().context("missing key")?.to_string();
+        let file_path = args["file_path"].as_str().context("missing file_path")?.to_string();
+        let description = args["description"].as_str().map(|s| s.to_string());
+
+        // Read on the server side — the file's bytes never pass through the
+        // agent's own tool-call arguments or response text.
+        let bytes = tokio::fs::read(&file_path)
+            .await
+            .with_context(|| format!("failed to read file '{}'", file_path))?;
+        let encoded = STANDARD.encode(&bytes);
+
+        let encrypted = encrypt_value(&self.encryption_key, &encoded);
+        let now = Utc::now();
+        let file_desc = description.unwrap_or_else(|| format!("uploaded from {}", file_path));
+
+        sqlx::query(
+            r#"
+            INSERT INTO env_params (key, value_encrypted, is_secret, description, created_at, updated_at)
+            VALUES ($1, $2, TRUE, $3, $4, $4)
+            ON CONFLICT (key) DO UPDATE SET
+                value_encrypted = EXCLUDED.value_encrypted,
+                description = COALESCE(EXCLUDED.description, env_params.description),
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(&key)
+        .bind(&encrypted)
+        .bind(&file_desc)
+        .bind(now)
+        .execute(&self.db)
+        .await
+        .context("failed to store file as env param")?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Stored {} bytes from '{}' as secret parameter '{}'",
+                    bytes.len(), file_path, key
+                )
+            }]
+        }))
+    }
+
+    async fn env_google_service_account_request(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+
+        let key_name = args["key"].as_str().context("missing key")?.to_string();
+        let scopes: Vec<String> = args["scopes"]
+            .as_array()
+            .context("missing scopes")?
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        let method = args["method"].as_str().context("missing method")?.to_uppercase();
+        let url = args["url"].as_str().context("missing url")?.to_string();
+
+        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
+            let allowed_hosts: Vec<String> = allowed
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            if !allowed_hosts.iter().any(|h| h == &host) {
+                anyhow::bail!(
+                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
+                    host
+                );
+            }
+        }
+
+        // Resolve the service account JSON — never returned to the agent
+        let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT value_encrypted, is_secret FROM env_params WHERE key = $1",
+        )
+        .bind(&key_name)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to query service account secret")?;
+
+        let stored = match row {
+            None => anyhow::bail!("Parameter '{}' not found in env params", key_name),
+            Some((encrypted, _)) => decrypt_value(&self.encryption_key, &encrypted)
+                .context("failed to decrypt service account secret")?,
+        };
+
+        let decoded = STANDARD
+            .decode(stored.trim())
+            .context("stored value isn't valid base64 (expected a file uploaded via env_set_file)")?;
+        let sa_json: serde_json::Value = serde_json::from_slice(&decoded)
+            .context("decoded file isn't valid JSON (expected a GCP service account key file)")?;
+
+        let client_email = sa_json["client_email"]
+            .as_str()
+            .context("service account JSON missing client_email")?
+            .to_string();
+        let private_key_pem = sa_json["private_key"]
+            .as_str()
+            .context("service account JSON missing private_key")?
+            .to_string();
+        let token_uri = sa_json["token_uri"]
+            .as_str()
+            .unwrap_or("https://oauth2.googleapis.com/token")
+            .to_string();
+
+        // Step 1: sign the JWT-bearer assertion (RS256, per Google's
+        // server-to-server OAuth2 flow). Never returned to the agent.
+        let now = Utc::now().timestamp();
+        let claims = json!({
+            "iss": client_email,
+            "scope": scopes.join(" "),
+            "aud": token_uri,
+            "iat": now,
+            "exp": now + 3600,
+        });
+        let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
+            .context("failed to parse service account private key (expected PEM)")?;
+        let assertion = encode(&Header::new(Algorithm::RS256), &claims, &encoding_key)
+            .context("failed to sign service account JWT assertion")?;
+
+        // Step 2: exchange the assertion for a short-lived access token.
+        // Never returned to the agent.
+        let client = HttpClient::new();
+        let token_response = client
+            .post(&token_uri)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", assertion.as_str()),
+            ])
+            .send()
+            .await
+            .context("token exchange request failed")?;
+        let token_status = token_response.status();
+        let token_body: serde_json::Value = token_response
+            .json()
+            .await
+            .context("failed to parse token endpoint response")?;
+
+        if !token_status.is_success() {
+            anyhow::bail!("Token exchange failed (HTTP {}): {}", token_status, token_body);
+        }
+
+        let access_token = token_body["access_token"]
+            .as_str()
+            .context("token endpoint response missing access_token")?
+            .to_string();
+
+        // Step 3: the actual API call, authenticated with the access token.
+        let mut req = match method.as_str() {
+            "GET"    => client.get(&url),
+            "POST"   => client.post(&url),
+            "PUT"    => client.put(&url),
+            "PATCH"  => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            other    => anyhow::bail!("Unsupported HTTP method: {}", other),
+        }
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Content-Type", "application/json");
+
+        if let Some(headers) = args["headers"].as_object() {
+            for (k, v) in headers {
+                if let Some(v_str) = v.as_str() {
+                    req = req.header(k.as_str(), v_str);
+                }
+            }
+        }
+
+        // Always set a body (even empty) — some APIs (e.g. Google's) require
+        // Content-Length on POST/PUT/PATCH and reject requests with none set.
+        // reqwest doesn't auto-emit Content-Length for a zero-length body, so
+        // set it explicitly in that case.
+        req = match args.get("body") {
+            Some(body) if !body.is_null() => req.body(body.to_string()),
+            _ => req.header("Content-Length", "0").body(""),
+        };
+
+        let response = req.send().await.context("HTTP request failed")?;
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_default();
+
         let display = serde_json::from_str::<serde_json::Value>(&body_text)
             .map(|v| serde_json::to_string_pretty(&v).unwrap_or(body_text.clone()))
             .unwrap_or(body_text);
