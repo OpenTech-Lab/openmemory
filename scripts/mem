@@ -93,6 +93,18 @@ Environment parameter commands:
   env-list
   env-delete <key>
 
+Resource catalog commands (local paths + website URLs):
+  resource-list [--kind path|url] [--query TEXT] [--tags a,b]
+  resource-tags
+  resource-get <id-or-name>
+  resource-add <name> --kind path|url --location <loc> [--description TEXT] [--tags a,b] [--env-keys a,b]
+  resource-update <uuid> [--name N] [--kind path|url] [--location L] [--description TEXT] [--tags a,b] [--env-keys a,b] [--clear-env-keys] [--clear-description]
+  resource-delete <uuid>
+  # Env-declared roots (also appear in resource-list):
+  #   mem env-set RESOURCE_PATH.<slug> /abs/path --description "..."
+  #   mem env-set RESOURCE_URL.<slug> https://... --description "..."
+  #   mem env-set RESOURCE_AUTH.<slug> CREDENTIAL_KEY_NAME   # links env_param_key
+
 Session watcher commands (Mode 3):
   sessions [--limit 50]                list recorded sessions
   sessions <uuid>                      show session details
@@ -231,6 +243,130 @@ case "$CMD" in
     shift
     ENV_KEY="${1:?error: key required — usage: mem env-delete <key>}"
     PAYLOAD=$(jq -n --arg key "$ENV_KEY" '{type:"env.delete",key:$key}')
+    _post "$PAYLOAD"
+    ;;
+
+  resource-list)
+    _require_jq
+    shift
+    KIND="null"
+    QUERY="null"
+    TAGS="null"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --kind) KIND=$(jq -n --arg v "$2" '$v'); shift 2 ;;
+            --query) QUERY=$(jq -n --arg v "$2" '$v'); shift 2 ;;
+            --tags) TAGS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .); shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PAYLOAD=$(jq -n \
+        --argjson kind "$KIND" \
+        --argjson query "$QUERY" \
+        --argjson tags "$TAGS" \
+        '{type:"resource.list",kind:$kind,query:$query,tags:$tags}')
+    _post "$PAYLOAD"
+    ;;
+
+  resource-tags)
+    _require_jq
+    shift
+    _post '{"type":"resource.tags"}'
+    ;;
+
+  resource-get)
+    _require_jq
+    shift
+    ID_OR_NAME="${1:?error: id or name required — usage: mem resource-get <id-or-name>}"
+    PAYLOAD=$(jq -n --arg id "$ID_OR_NAME" '{type:"resource.get",id_or_name:$id}')
+    _post "$PAYLOAD"
+    ;;
+
+  resource-add)
+    _require_jq
+    shift
+    NAME="${1:?error: name required — usage: mem resource-add <name> --kind path|url --location <loc>}"
+    shift
+    KIND=""
+    LOCATION=""
+    DESC="null"
+    TAGS="[]"
+    ENV_KEYS="[]"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --kind) KIND="$2"; shift 2 ;;
+            --location) LOCATION="$2"; shift 2 ;;
+            --description) DESC=$(jq -n --arg v "$2" '$v'); shift 2 ;;
+            --tags)
+                TAGS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                shift 2 ;;
+            --env-keys)
+                ENV_KEYS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    if [ -z "$KIND" ] || [ -z "$LOCATION" ]; then
+        echo "error: --kind and --location are required" >&2
+        exit 1
+    fi
+    PAYLOAD=$(jq -n \
+        --arg name "$NAME" \
+        --arg kind "$KIND" \
+        --arg location "$LOCATION" \
+        --argjson description "$DESC" \
+        --argjson tags "$TAGS" \
+        --argjson env_param_keys "$ENV_KEYS" \
+        '{type:"resource.add",name:$name,kind:$kind,location:$location,description:$description,tags:$tags,env_param_keys:$env_param_keys}')
+    _post "$PAYLOAD"
+    ;;
+
+  resource-update)
+    _require_jq
+    shift
+    ID="${1:?error: uuid required — usage: mem resource-update <uuid> [...]}"
+    shift
+    # Build patch object field by field
+    PATCH=$(jq -n --arg id "$ID" '{type:"resource.update",id:$id}')
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name)
+                PATCH=$(printf '%s' "$PATCH" | jq --arg v "$2" '. + {name:$v}')
+                shift 2 ;;
+            --kind)
+                PATCH=$(printf '%s' "$PATCH" | jq --arg v "$2" '. + {kind:$v}')
+                shift 2 ;;
+            --location)
+                PATCH=$(printf '%s' "$PATCH" | jq --arg v "$2" '. + {location:$v}')
+                shift 2 ;;
+            --description)
+                PATCH=$(printf '%s' "$PATCH" | jq --arg v "$2" '. + {description:$v}')
+                shift 2 ;;
+            --tags)
+                T=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                PATCH=$(printf '%s' "$PATCH" | jq --argjson t "$T" '. + {tags:$t}')
+                shift 2 ;;
+            --env-keys)
+                E=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                PATCH=$(printf '%s' "$PATCH" | jq --argjson e "$E" '. + {env_param_keys:$e}')
+                shift 2 ;;
+            --clear-env-keys)
+                PATCH=$(printf '%s' "$PATCH" | jq '. + {env_param_keys:[]}')
+                shift ;;
+            --clear-description)
+                PATCH=$(printf '%s' "$PATCH" | jq '. + {description:null}')
+                shift ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    _post "$PATCH"
+    ;;
+
+  resource-delete)
+    _require_jq
+    shift
+    ID="${1:?error: uuid required — usage: mem resource-delete <uuid>}"
+    PAYLOAD=$(jq -n --arg id "$ID" '{type:"resource.delete",id:$id}')
     _post "$PAYLOAD"
     ;;
 

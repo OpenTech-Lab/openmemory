@@ -1,6 +1,7 @@
 mod crypto;
 mod falkordb;
 mod llm;
+mod resources;
 
 use openmemory_server::run_session_migrations;
 use openmemory_server::project_graphs;
@@ -730,6 +731,66 @@ enum McpRequest {
 
     #[serde(rename = "env.delete")]
     EnvDelete { key: String },
+
+    #[serde(rename = "resource.list")]
+    ResourceList {
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        #[serde(default)]
+        query: Option<String>,
+    },
+
+    #[serde(rename = "resource.tags")]
+    ResourceTags {},
+
+    #[serde(rename = "resource.get")]
+    ResourceGet {
+        /// UUID or name / env slug
+        id_or_name: String,
+    },
+
+    #[serde(rename = "resource.add")]
+    ResourceAdd {
+        name: String,
+        kind: String,
+        location: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        #[serde(default)]
+        env_param_keys: Option<Vec<String>>,
+    },
+
+    #[serde(rename = "resource.update")]
+    ResourceUpdate {
+        id: Uuid,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        location: Option<String>,
+        /// Pass null explicitly to clear; omit to leave unchanged.
+        #[serde(default)]
+        description: Option<Option<String>>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        /// Replaces the full set when present (even `[]`); omit to leave unchanged.
+        #[serde(default)]
+        env_param_keys: Option<Vec<String>>,
+    },
+
+    #[serde(rename = "resource.delete")]
+    ResourceDelete { id: Uuid },
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceTagCount {
+    tag: String,
+    count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -884,6 +945,42 @@ enum McpResponse {
 
     #[serde(rename = "env.delete.result")]
     EnvDeleteResult { key: String },
+
+    #[serde(rename = "resource.list.result")]
+    ResourceListResult {
+        resources: Vec<resources::ResourceView>,
+        total: usize,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<String>,
+    },
+
+    #[serde(rename = "resource.tags.result")]
+    ResourceTagsResult {
+        tags: Vec<ResourceTagCount>,
+    },
+
+    #[serde(rename = "resource.get.result")]
+    ResourceGetResult {
+        resource: resources::ResourceView,
+    },
+
+    #[serde(rename = "resource.add.result")]
+    ResourceAddResult {
+        id: Uuid,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
+    },
+
+    #[serde(rename = "resource.update.result")]
+    ResourceUpdateResult {
+        id: Uuid,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
+    },
+
+    #[serde(rename = "resource.delete.result")]
+    ResourceDeleteResult { id: Uuid },
 }
 
 // List result - combined from both stores
@@ -1194,6 +1291,9 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .execute(db)
         .await
         .ok();
+
+    // resources catalog (paths / URLs + optional env_param_keys links)
+    resources::ensure_resources_table(db).await?;
 
     // Add graph_analyzed_at column if not present (tracks which memories have been LLM-extracted)
     sqlx::query(
@@ -2837,6 +2937,167 @@ async fn mcp(
                 }
             }
         }
+
+        McpRequest::ResourceList { kind, tags, query } => {
+            match resources::list_resources(
+                &state.db,
+                &state.encryption_key,
+                kind.as_deref(),
+                tags.as_deref(),
+                query.as_deref(),
+            )
+            .await
+            {
+                Ok((resources, warnings)) => {
+                    let total = resources.len();
+                    Ok((
+                        StatusCode::OK,
+                        Json(McpResponse::ResourceListResult {
+                            resources,
+                            total,
+                            warnings,
+                        }),
+                    ))
+                }
+                Err(e) => {
+                    error!("ResourceList failed: {e}");
+                    Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": e.to_string() })),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::ResourceTags {} => match resources::list_distinct_tags(&state.db).await {
+            Ok(tags) => Ok((
+                StatusCode::OK,
+                Json(McpResponse::ResourceTagsResult {
+                    tags: tags
+                        .into_iter()
+                        .map(|(tag, count)| ResourceTagCount { tag, count })
+                        .collect(),
+                }),
+            )),
+            Err(e) => {
+                error!("ResourceTags failed: {e}");
+                Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                ))
+            }
+        },
+
+        McpRequest::ResourceGet { id_or_name } => {
+            match resources::get_resource(&state.db, &state.encryption_key, &id_or_name).await {
+                Ok(Some(resource)) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::ResourceGetResult { resource }),
+                )),
+                Ok(None) => Err((
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "Resource not found" })),
+                )),
+                Err(e) => {
+                    error!("ResourceGet failed: {e}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": "Database error" })),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::ResourceAdd {
+            name,
+            kind,
+            location,
+            description,
+            tags,
+            env_param_keys,
+        } => {
+            let tags = tags.unwrap_or_default();
+            let env_param_keys = env_param_keys.unwrap_or_default();
+            match resources::add_resource(
+                &state.db,
+                &name,
+                &kind,
+                &location,
+                description.as_deref(),
+                &tags,
+                &env_param_keys,
+            )
+            .await
+            {
+                Ok((id, warning)) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::ResourceAddResult { id, name, warning }),
+                )),
+                Err(e) => {
+                    error!("ResourceAdd failed: {e}");
+                    Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": e.to_string() })),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::ResourceUpdate {
+            id,
+            name,
+            kind,
+            location,
+            description,
+            tags,
+            env_param_keys,
+        } => {
+            let desc_arg: Option<Option<&str>> = description
+                .as_ref()
+                .map(|inner| inner.as_deref());
+            match resources::update_resource(
+                &state.db,
+                id,
+                name.as_deref(),
+                kind.as_deref(),
+                location.as_deref(),
+                desc_arg,
+                tags.as_deref(),
+                env_param_keys.as_deref(),
+            )
+            .await
+            {
+                Ok(warning) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::ResourceUpdateResult { id, warning }),
+                )),
+                Err(e) => {
+                    let msg = e.to_string();
+                    let status = if msg.contains("not found") {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    };
+                    Err((status, Json(serde_json::json!({ "error": msg }))))
+                }
+            }
+        }
+
+        McpRequest::ResourceDelete { id } => match resources::delete_resource(&state.db, id).await {
+            Ok(()) => Ok((
+                StatusCode::OK,
+                Json(McpResponse::ResourceDeleteResult { id }),
+            )),
+            Err(e) => {
+                let msg = e.to_string();
+                let status = if msg.contains("not found") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                Err((status, Json(serde_json::json!({ "error": msg }))))
+            }
+        },
 
         McpRequest::GraphGetLlmConfig {} => {
             let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
