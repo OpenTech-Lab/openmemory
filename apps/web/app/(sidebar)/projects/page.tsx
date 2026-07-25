@@ -130,6 +130,20 @@ const VERSION_STATUS_COLORS: Record<string, string> = {
   deprecated: 'border-destructive text-destructive',
 };
 
+function timeAgo(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
 function ProjectsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -654,6 +668,15 @@ function ProjectsPageContent() {
       accessorKey: 'edge_count',
       header: 'Edges',
       cell: ({ row }) => <Badge variant="outline">{row.original.edge_count.toLocaleString()}</Badge>,
+    },
+    {
+      accessorKey: 'updated_at',
+      header: 'Last Updated',
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground" title={new Date(row.original.updated_at).toLocaleString()}>
+          {timeAgo(row.original.updated_at)}
+        </span>
+      ),
     },
     {
       id: 'actions',
