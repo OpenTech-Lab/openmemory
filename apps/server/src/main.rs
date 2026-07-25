@@ -6,6 +6,7 @@ mod resources;
 use openmemory_server::run_session_migrations;
 use openmemory_server::project_graphs;
 use openmemory_server::indexer;
+use openmemory_server::git_browser;
 
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
@@ -110,11 +111,14 @@ struct MessagesParams {
 fn default_limit() -> i64 { 50 }
 fn default_messages_limit() -> i64 { 200 }
 
+const VALID_VERSION_STATUSES: [&str; 4] = ["active", "maintenance", "archived", "deprecated"];
+
 #[derive(Debug, Deserialize)]
 struct CreateProjectGraphPayload {
     name: String,
     path: Option<String>,
     description: Option<String>,
+    version_status: Option<String>,
 }
 
 /// Deserializes a present-but-possibly-null JSON field into `Some(value)`,
@@ -135,6 +139,7 @@ struct UpdateProjectGraphPayload {
     path: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_some")]
     description: Option<Option<String>>,
+    version_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -232,6 +237,19 @@ struct QueryProjectGraphParams {
 }
 fn default_pg_hops() -> u8 { 2 }
 fn default_pg_limit() -> usize { 50 }
+
+#[derive(Debug, Deserialize)]
+struct ListProjectFilesParams {
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListProjectCommitsParams {
+    #[serde(default = "default_commit_limit")]
+    limit: usize,
+}
+fn default_commit_limit() -> usize { 300 }
 
 // Watcher agent config types
 #[derive(Serialize, FromRow)]
@@ -1195,6 +1213,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id", get(get_project_graph).put(update_project_graph).delete(delete_project_graph))
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
         .route("/projects/:id/query", get(query_project_graph))
+        .route("/projects/:id/files", get(list_project_files))
+        .route("/projects/:id/commits", get(list_project_commits))
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
         .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
         .route("/projects/:id/routines", get(list_project_routines).post(create_project_routine))
@@ -1342,6 +1362,10 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("ALTER TABLE project_graphs ALTER COLUMN path DROP NOT NULL")
         .execute(db).await.ok();
     sqlx::query("ALTER TABLE project_graphs ALTER COLUMN canonical_path DROP NOT NULL")
+        .execute(db).await.ok();
+
+    // Manual version-status label for a project (active/maintenance/archived/deprecated)
+    sqlx::query("ALTER TABLE project_graphs ADD COLUMN IF NOT EXISTS version_status TEXT NOT NULL DEFAULT 'active'")
         .execute(db).await.ok();
 
     // Project tasks table
@@ -3648,7 +3672,7 @@ async fn list_project_graphs(
 
     let rows = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
         "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
-         graph_hash, graph_file_size, imported_at, created_at, updated_at \
+         graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status \
          FROM project_graphs ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
@@ -3677,6 +3701,10 @@ async fn create_project_graph(
 
     if payload.name.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name must be non-empty"}))).into_response();
+    }
+    let version_status = payload.version_status.clone().unwrap_or_else(|| "active".to_string());
+    if !VALID_VERSION_STATUSES.contains(&version_status.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid version_status"}))).into_response();
     }
 
     let (graph_data, graph_hash, file_size, path_stored, canonical_stored, node_count, edge_count) =
@@ -3708,14 +3736,14 @@ async fn create_project_graph(
     let row = if canonical_stored.is_some() {
         sqlx::query(
             "INSERT INTO project_graphs \
-             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) \
+             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at, version_status) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10) \
              ON CONFLICT (canonical_path) DO UPDATE SET \
                name = $1, description = $4, graph_data = $5, graph_hash = $6, \
                graph_file_size = $7, node_count = $8, edge_count = $9, \
                imported_at = NOW(), updated_at = NOW() \
              RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                       graph_hash, graph_file_size, imported_at, created_at, updated_at, \
+                       graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status, \
                        (xmax = 0) AS was_inserted"
         )
         .bind(&payload.name)
@@ -3727,20 +3755,22 @@ async fn create_project_graph(
         .bind(file_size)
         .bind(node_count)
         .bind(edge_count)
+        .bind(&version_status)
         .fetch_one(&state.db)
         .await
     } else {
         sqlx::query(
             "INSERT INTO project_graphs \
-             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count) \
-             VALUES ($1, NULL, NULL, $2, $3, NULL, 0, 0, 0) \
+             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, version_status) \
+             VALUES ($1, NULL, NULL, $2, $3, NULL, 0, 0, 0, $4) \
              RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                       graph_hash, graph_file_size, imported_at, created_at, updated_at, \
+                       graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status, \
                        TRUE AS was_inserted"
         )
         .bind(&payload.name)
         .bind(&payload.description)
         .bind(serde_json::json!({}))
+        .bind(&version_status)
         .fetch_one(&state.db)
         .await
     };
@@ -3762,6 +3792,7 @@ async fn create_project_graph(
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
+                "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
             });
             (status, Json(project)).into_response()
         }
@@ -3783,7 +3814,7 @@ async fn get_project_graph(
 
     let row = sqlx::query(
         "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
-         graph_data, graph_hash, graph_file_size, imported_at, created_at, updated_at \
+         graph_data, graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status \
          FROM project_graphs WHERE id = $1"
     )
     .bind(id)
@@ -3808,6 +3839,7 @@ async fn get_project_graph(
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
+                "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
             });
             Json(project).into_response()
         }
@@ -3832,6 +3864,11 @@ async fn update_project_graph(
     if let Some(ref n) = payload.name {
         if n.trim().is_empty() {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name must be non-empty"}))).into_response();
+        }
+    }
+    if let Some(ref vs) = payload.version_status {
+        if !VALID_VERSION_STATUSES.contains(&vs.as_str()) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid version_status"}))).into_response();
         }
     }
 
@@ -3904,10 +3941,11 @@ async fn update_project_graph(
          node_count = CASE WHEN $4 THEN 0 ELSE node_count END, \
          edge_count = CASE WHEN $4 THEN 0 ELSE edge_count END, \
          imported_at = CASE WHEN $4 THEN NULL ELSE imported_at END, \
+         version_status = COALESCE($8, version_status), \
          updated_at = NOW() \
          WHERE id = $7 \
          RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                   graph_hash, graph_file_size, imported_at, created_at, updated_at"
+                   graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status"
     )
     .bind(&payload.name)
     .bind(description_set)
@@ -3916,6 +3954,7 @@ async fn update_project_graph(
     .bind(&new_path)
     .bind(&new_canonical)
     .bind(id)
+    .bind(&payload.version_status)
     .fetch_one(&state.db)
     .await;
 
@@ -3940,6 +3979,7 @@ async fn update_project_graph(
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
+                "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
             });
             Json(project).into_response()
         }
@@ -4067,6 +4107,95 @@ async fn rebuild_project_graph(
         Err(e) => {
             error!("rebuild_project_graph update error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// Fetches `canonical_path` for `id`, resolving the shared 400/404 cases every git-browsing
+/// handler needs before it can shell out. `Ok(Err(response))` lets callers `return` it directly.
+async fn resolve_git_project_root(
+    state: &AppState,
+    id: Uuid,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let row = sqlx::query("SELECT canonical_path FROM project_graphs WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await;
+
+    let canonical_path: Option<String> = match row {
+        Ok(Some(r)) => r.try_get("canonical_path").unwrap_or(None),
+        Ok(None) => {
+            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response());
+        }
+        Err(e) => {
+            error!("resolve_git_project_root fetch error: {e}");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response());
+        }
+    };
+
+    let canonical_path = match canonical_path {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "this project has no folder path"}))).into_response());
+        }
+    };
+
+    let root = std::path::PathBuf::from(&canonical_path);
+    if !git_browser::has_git_repo(&root) {
+        return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not_a_git_repo"}))).into_response());
+    }
+    Ok(root)
+}
+
+async fn list_project_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListProjectFilesParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let root = match resolve_git_project_root(&state, id).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let requested_path = params.path.clone();
+    let entries = tokio::task::spawn_blocking(move || git_browser::list_directory(&root, &params.path)).await;
+    match entries {
+        Ok(Ok(entries)) => Json(serde_json::json!({"path": requested_path, "entries": entries})).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => {
+            error!("list_project_files task panicked: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
+    }
+}
+
+async fn list_project_commits(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListProjectCommitsParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let root = match resolve_git_project_root(&state, id).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let limit = params.limit;
+    let commits = tokio::task::spawn_blocking(move || git_browser::commit_graph(&root, limit)).await;
+    match commits {
+        Ok(commits) => Json(serde_json::json!({"commits": commits})).into_response(),
+        Err(e) => {
+            error!("list_project_commits task panicked: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
         }
     }
 }

@@ -57,6 +57,7 @@ interface Project {
   created_at: string;
   updated_at: string;
   task_count?: number;
+  version_status: string;
 }
 
 interface Task {
@@ -115,6 +116,20 @@ const FREQ_LABELS: Record<string, string> = {
   daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly',
 };
 
+const VERSION_STATUS_LABELS: Record<string, string> = {
+  active: 'Active',
+  maintenance: 'Maintenance',
+  archived: 'Archived',
+  deprecated: 'Deprecated',
+};
+
+const VERSION_STATUS_COLORS: Record<string, string> = {
+  active: 'border-green-500 text-green-600 dark:text-green-400',
+  maintenance: 'border-blue-400 text-blue-600 dark:text-blue-400',
+  archived: 'border-border text-muted-foreground',
+  deprecated: 'border-destructive text-destructive',
+};
+
 function ProjectsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -149,7 +164,7 @@ function ProjectsPageContent() {
 
   // Create project dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [createForm, setCreateForm] = useState({ name: '', path: '', description: '' });
+  const [createForm, setCreateForm] = useState({ name: '', path: '', description: '', version_status: 'active' });
   const [isCreating, setIsCreating] = useState(false);
   const [rebuildingId, setRebuildingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -157,7 +172,8 @@ function ProjectsPageContent() {
 
   // Edit project dialog
   const [editingProject, setEditingProject] = useState<Project | null>(null);
-  const [projectEditForm, setProjectEditForm] = useState({ name: '', path: '', description: '' });
+  const [projectEditForm, setProjectEditForm] = useState({ name: '', path: '', description: '', version_status: 'active' });
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [confirmPathChange, setConfirmPathChange] = useState(false);
 
@@ -235,7 +251,7 @@ function ProjectsPageContent() {
     if (!createForm.name.trim()) { toast.error('Name is required'); return; }
     setIsCreating(true);
     try {
-      const body: Record<string, string> = { name: createForm.name };
+      const body: Record<string, string> = { name: createForm.name, version_status: createForm.version_status };
       if (createForm.path.trim()) body.path = createForm.path.trim();
       if (createForm.description.trim()) body.description = createForm.description.trim();
       const res = await fetch('/api/projects', {
@@ -249,7 +265,7 @@ function ProjectsPageContent() {
         return;
       }
       setShowCreateDialog(false);
-      setCreateForm({ name: '', path: '', description: '' });
+      setCreateForm({ name: '', path: '', description: '', version_status: 'active' });
       fetchProjects();
       toast.success('Project created');
     } catch {
@@ -292,7 +308,30 @@ function ProjectsPageContent() {
       name: project.name,
       path: project.path ?? '',
       description: project.description ?? '',
+      version_status: project.version_status ?? 'active',
     });
+  };
+
+  const handleVersionStatusChange = async (id: string, version_status: string) => {
+    const previous = projects;
+    setProjects(prev => prev.map(p => (p.id === id ? { ...p, version_status } : p)));
+    setUpdatingStatusId(id);
+    try {
+      const res = await fetch(`/api/projects/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version_status }),
+      });
+      if (!res.ok) {
+        setProjects(previous);
+        toast.error('Failed to update version status');
+      }
+    } catch {
+      setProjects(previous);
+      toast.error('Failed to update version status');
+    } finally {
+      setUpdatingStatusId(null);
+    }
   };
 
   const commitProjectSave = async () => {
@@ -306,6 +345,7 @@ function ProjectsPageContent() {
           name: projectEditForm.name.trim(),
           path: projectEditForm.path.trim() || null,
           description: projectEditForm.description.trim() || null,
+          version_status: projectEditForm.version_status,
         }),
       });
       if (!res.ok) {
@@ -584,6 +624,26 @@ function ProjectsPageContent() {
         ),
     },
     {
+      accessorKey: 'version_status',
+      header: 'Version Status',
+      cell: ({ row }) => (
+        <Select
+          value={row.original.version_status ?? 'active'}
+          onValueChange={v => handleVersionStatusChange(row.original.id, v)}
+          disabled={updatingStatusId === row.original.id}
+        >
+          <SelectTrigger className={`h-7 w-36 text-xs ${VERSION_STATUS_COLORS[row.original.version_status] ?? ''}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {Object.entries(VERSION_STATUS_LABELS).map(([value, label]) => (
+              <SelectItem key={value} value={value}>{label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ),
+    },
+    {
       accessorKey: 'node_count',
       header: 'Nodes',
       cell: ({ row }) => <Badge variant="secondary">{row.original.node_count.toLocaleString()}</Badge>,
@@ -840,6 +900,17 @@ function ProjectsPageContent() {
                 rows={2}
               />
             </div>
+            <div>
+              <Label>Version Status</Label>
+              <Select value={createForm.version_status} onValueChange={v => setCreateForm(f => ({ ...f, version_status: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(VERSION_STATUS_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCreateDialog(false)}>Cancel</Button>
@@ -885,6 +956,17 @@ function ProjectsPageContent() {
                 placeholder="What this project is about"
                 rows={2}
               />
+            </div>
+            <div>
+              <Label>Version Status</Label>
+              <Select value={projectEditForm.version_status} onValueChange={v => setProjectEditForm(f => ({ ...f, version_status: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(VERSION_STATUS_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>

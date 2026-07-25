@@ -25,6 +25,8 @@ import {
 import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand } from 'lucide-react';
 import { toast } from 'sonner';
 import { MAX_NODES_FULL, type GraphifyData, type GraphQueryResult } from '@/components/project-graph-types';
+import { ProjectFilesBrowser } from '@/components/project-files-browser';
+import { ProjectCommitGraph } from '@/components/project-commit-graph';
 
 const ProjectGraph2D = dynamic(
   () => import('@/components/project-graph-2d').then(m => m.ProjectGraph2D),
@@ -61,6 +63,7 @@ interface Project {
   created_at: string;
   updated_at: string;
   graph_data?: { nodes?: unknown[] } | null;
+  version_status?: string;
 }
 
 interface Routine {
@@ -105,7 +108,7 @@ export default function ProjectDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
-  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines'>('graph');
+  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'files' | 'history'>('graph');
 
   // Graph query
   const [queryInput, setQueryInput] = useState('');
@@ -413,6 +416,22 @@ export default function ProjectDetailPage() {
         >
           Routines {routines.length > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{routines.length}</span>}
         </button>
+        {hasGraph && (
+          <button
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'files' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveTab('files')}
+          >
+            Files
+          </button>
+        )}
+        {hasGraph && (
+          <button
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'history' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveTab('history')}
+          >
+            History
+          </button>
+        )}
       </div>
 
       {/* Content */}
@@ -657,6 +676,16 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Files tab */}
+        {activeTab === 'files' && hasGraph && (
+          <ProjectFilesBrowser projectId={project.id} />
+        )}
+
+        {/* History tab */}
+        {activeTab === 'history' && hasGraph && (
+          <ProjectCommitGraph projectId={project.id} />
         )}
       </div>
 
