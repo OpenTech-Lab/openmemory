@@ -27,6 +27,8 @@ import { toast } from 'sonner';
 import { MAX_NODES_FULL, type GraphifyData, type GraphQueryResult } from '@/components/project-graph-types';
 import { ProjectFilesBrowser } from '@/components/project-files-browser';
 import { ProjectCommitGraph } from '@/components/project-commit-graph';
+import { LabelChipInput } from '@/components/label-chip-input';
+import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 
 const ProjectGraph2D = dynamic(
   () => import('@/components/project-graph-2d').then(m => m.ProjectGraph2D),
@@ -90,6 +92,7 @@ interface Task {
   created_by: string;
   created_at: string;
   updated_at: string;
+  labels: string[];
 }
 
 const STATUS_LABELS: Record<string, string> = { scheduled: 'Scheduled', todo: 'Todo', in_progress: 'In Progress', done: 'Done', cancelled: 'Cancelled' };
@@ -122,7 +125,7 @@ export default function ProjectDetailPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [showTaskDialog, setShowTaskDialog] = useState(false);
-  const [taskForm, setTaskForm] = useState({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '' });
+  const [taskForm, setTaskForm] = useState({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] as string[] });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
 
   // Routines
@@ -320,13 +323,14 @@ export default function ProjectDetailPage() {
     if (!taskForm.title.trim()) { toast.error('Title is required'); return; }
     setIsCreatingTask(true);
     try {
-      const body: Record<string, string> = {
+      const body: Record<string, string | string[]> = {
         title: taskForm.title,
         status: taskForm.status,
         priority: taskForm.priority,
       };
       if (taskForm.description.trim()) body.description = taskForm.description.trim();
       if (taskForm.assigned_to) body.assigned_to = taskForm.assigned_to;
+      if (taskForm.labels.length) body.labels = taskForm.labels;
       const res = await fetch(`/api/projects/${id}/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -338,7 +342,7 @@ export default function ProjectDetailPage() {
         return;
       }
       setShowTaskDialog(false);
-      setTaskForm({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '' });
+      setTaskForm({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] });
       fetchTasks();
       toast.success('Task created');
     } catch {
@@ -574,6 +578,11 @@ export default function ProjectDetailPage() {
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <span className={`text-xs ${PRIORITY_COLORS[task.priority] ?? ''}`}>{task.priority}</span>
+                      {task.labels?.map(l => (
+                        <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
+                          {l}
+                        </span>
+                      ))}
                       {task.assigned_to === 'human' && <User className="h-3.5 w-3.5 text-muted-foreground" />}
                       {task.assigned_to === 'agent' && <Bot className="h-3.5 w-3.5 text-muted-foreground" />}
                       <button
@@ -814,6 +823,10 @@ export default function ProjectDetailPage() {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+            <div>
+              <Label>Labels</Label>
+              <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
             </div>
           </div>
           <DialogFooter>

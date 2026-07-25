@@ -25,6 +25,7 @@ pub struct ProjectGraphRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub version_status: String,
+    pub effective_version_status: String,
 }
 
 /// A single node in a knowledge graph.

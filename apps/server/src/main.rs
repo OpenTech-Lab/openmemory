@@ -155,6 +155,7 @@ struct ProjectTask {
     routine_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    labels: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +165,7 @@ struct CreateTaskPayload {
     status: Option<String>,
     priority: Option<String>,
     assigned_to: Option<String>,
+    labels: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +175,18 @@ struct UpdateTaskPayload {
     status: Option<String>,
     priority: Option<String>,
     assigned_to: Option<String>,
+    labels: Option<Vec<String>>,
+}
+
+/// Trim/lowercase/dedupe task labels — built-ins and free-text custom labels alike.
+fn normalize_labels(labels: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = labels.iter()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 #[derive(Debug, Deserialize)]
@@ -1390,6 +1404,12 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .context("failed to create project_tasks table")?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id)")
+        .execute(db).await.ok();
+
+    // Task labels (built-in + free-text), same convention as resources.tags.
+    sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT '{}'")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_labels ON project_tasks USING gin(labels)")
         .execute(db).await.ok();
 
     // Routine templates (repeating task definitions)
@@ -3671,9 +3691,22 @@ async fn list_project_graphs(
     }
 
     let rows = sqlx::query_as::<_, project_graphs::ProjectGraphRow>(
-        "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
-         graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status \
-         FROM project_graphs ORDER BY created_at DESC"
+        "WITH task_flags AS ( \
+           SELECT project_id, \
+             bool_or(status NOT IN ('done','cancelled') AND labels @> ARRAY['bug'])     AS has_open_bug, \
+             bool_or(status NOT IN ('done','cancelled') AND labels @> ARRAY['feature']) AS has_open_feature \
+           FROM project_tasks GROUP BY project_id \
+         ) \
+         SELECT pg.id, pg.name, pg.path, pg.canonical_path, pg.description, pg.node_count, pg.edge_count, \
+           pg.graph_hash, pg.graph_file_size, pg.imported_at, pg.created_at, pg.updated_at, pg.version_status, \
+           CASE \
+             WHEN COALESCE(tf.has_open_bug, false)     THEN 'bug_detected' \
+             WHEN COALESCE(tf.has_open_feature, false) THEN 'feature_updating' \
+             ELSE pg.version_status \
+           END AS effective_version_status \
+         FROM project_graphs pg \
+         LEFT JOIN task_flags tf ON tf.project_id = pg.id \
+         ORDER BY pg.created_at DESC"
     )
     .fetch_all(&state.db)
     .await;
@@ -3793,6 +3826,7 @@ async fn create_project_graph(
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
                 "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
+                "effective_version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
             });
             (status, Json(project)).into_response()
         }
@@ -3813,9 +3847,22 @@ async fn get_project_graph(
     }
 
     let row = sqlx::query(
-        "SELECT id, name, path, canonical_path, description, node_count, edge_count, \
-         graph_data, graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status \
-         FROM project_graphs WHERE id = $1"
+        "WITH task_flags AS ( \
+           SELECT project_id, \
+             bool_or(status NOT IN ('done','cancelled') AND labels @> ARRAY['bug'])     AS has_open_bug, \
+             bool_or(status NOT IN ('done','cancelled') AND labels @> ARRAY['feature']) AS has_open_feature \
+           FROM project_tasks WHERE project_id = $1 GROUP BY project_id \
+         ) \
+         SELECT pg.id, pg.name, pg.path, pg.canonical_path, pg.description, pg.node_count, pg.edge_count, \
+           pg.graph_data, pg.graph_hash, pg.graph_file_size, pg.imported_at, pg.created_at, pg.updated_at, pg.version_status, \
+           CASE \
+             WHEN COALESCE(tf.has_open_bug, false)     THEN 'bug_detected' \
+             WHEN COALESCE(tf.has_open_feature, false) THEN 'feature_updating' \
+             ELSE pg.version_status \
+           END AS effective_version_status \
+         FROM project_graphs pg \
+         LEFT JOIN task_flags tf ON tf.project_id = pg.id \
+         WHERE pg.id = $1"
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -3840,6 +3887,7 @@ async fn get_project_graph(
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
                 "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
+                "effective_version_status": r.try_get::<String, _>("effective_version_status").unwrap_or_else(|_| "active".to_string()),
             });
             Json(project).into_response()
         }
@@ -3930,22 +3978,38 @@ async fn update_project_graph(
     let new_description = payload.description.flatten();
 
     let row = sqlx::query(
-        "UPDATE project_graphs SET \
-         name = COALESCE($1, name), \
-         description = CASE WHEN $2 THEN $3 ELSE description END, \
-         path = CASE WHEN $4 THEN $5 ELSE path END, \
-         canonical_path = CASE WHEN $4 THEN $6 ELSE canonical_path END, \
-         graph_data = CASE WHEN $4 THEN '{}'::jsonb ELSE graph_data END, \
-         graph_hash = CASE WHEN $4 THEN NULL ELSE graph_hash END, \
-         graph_file_size = CASE WHEN $4 THEN 0 ELSE graph_file_size END, \
-         node_count = CASE WHEN $4 THEN 0 ELSE node_count END, \
-         edge_count = CASE WHEN $4 THEN 0 ELSE edge_count END, \
-         imported_at = CASE WHEN $4 THEN NULL ELSE imported_at END, \
-         version_status = COALESCE($8, version_status), \
-         updated_at = NOW() \
-         WHERE id = $7 \
-         RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                   graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status"
+        "WITH updated AS ( \
+           UPDATE project_graphs SET \
+             name = COALESCE($1, name), \
+             description = CASE WHEN $2 THEN $3 ELSE description END, \
+             path = CASE WHEN $4 THEN $5 ELSE path END, \
+             canonical_path = CASE WHEN $4 THEN $6 ELSE canonical_path END, \
+             graph_data = CASE WHEN $4 THEN '{}'::jsonb ELSE graph_data END, \
+             graph_hash = CASE WHEN $4 THEN NULL ELSE graph_hash END, \
+             graph_file_size = CASE WHEN $4 THEN 0 ELSE graph_file_size END, \
+             node_count = CASE WHEN $4 THEN 0 ELSE node_count END, \
+             edge_count = CASE WHEN $4 THEN 0 ELSE edge_count END, \
+             imported_at = CASE WHEN $4 THEN NULL ELSE imported_at END, \
+             version_status = COALESCE($8, version_status), \
+             updated_at = NOW() \
+           WHERE id = $7 \
+           RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
+                     graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status \
+         ), \
+         task_flags AS ( \
+           SELECT project_id, \
+             bool_or(status NOT IN ('done','cancelled') AND labels @> ARRAY['bug'])     AS has_open_bug, \
+             bool_or(status NOT IN ('done','cancelled') AND labels @> ARRAY['feature']) AS has_open_feature \
+           FROM project_tasks WHERE project_id = $7 GROUP BY project_id \
+         ) \
+         SELECT u.*, \
+           CASE \
+             WHEN COALESCE(tf.has_open_bug, false)     THEN 'bug_detected' \
+             WHEN COALESCE(tf.has_open_feature, false) THEN 'feature_updating' \
+             ELSE u.version_status \
+           END AS effective_version_status \
+         FROM updated u \
+         LEFT JOIN task_flags tf ON tf.project_id = u.id"
     )
     .bind(&payload.name)
     .bind(description_set)
@@ -3980,6 +4044,7 @@ async fn update_project_graph(
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
                 "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
+                "effective_version_status": r.try_get::<String, _>("effective_version_status").unwrap_or_else(|_| "active".to_string()),
             });
             Json(project).into_response()
         }
@@ -4309,7 +4374,7 @@ async fn list_project_tasks(
     let rows = match (&params.status, &params.routine_id) {
         (Some(status), Some(routine_id)) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 AND routine_id = $3 \
                  ORDER BY created_at DESC LIMIT $4 OFFSET $5"
             )
@@ -4318,7 +4383,7 @@ async fn list_project_tasks(
         }
         (Some(status), None) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 \
                  ORDER BY created_at DESC LIMIT $3 OFFSET $4"
             )
@@ -4327,7 +4392,7 @@ async fn list_project_tasks(
         }
         (None, Some(routine_id)) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
                  FROM project_tasks WHERE project_id = $1 AND routine_id = $2 \
                  ORDER BY created_at DESC LIMIT $3 OFFSET $4"
             )
@@ -4336,7 +4401,7 @@ async fn list_project_tasks(
         }
         (None, None) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
                  FROM project_tasks WHERE project_id = $1 \
                  ORDER BY created_at DESC LIMIT $2 OFFSET $3"
             )
@@ -4370,11 +4435,12 @@ async fn create_project_task(
 
     let status = payload.status.as_deref().unwrap_or("todo");
     let priority = payload.priority.as_deref().unwrap_or("medium");
+    let labels = normalize_labels(&payload.labels.clone().unwrap_or_default());
 
     let row = sqlx::query_as::<_, ProjectTask>(
-        "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'human') \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at"
+        "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, labels, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'human') \
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels"
     )
     .bind(project_id)
     .bind(&payload.title)
@@ -4382,6 +4448,7 @@ async fn create_project_task(
     .bind(status)
     .bind(priority)
     .bind(&payload.assigned_to)
+    .bind(&labels)
     .fetch_one(&state.db)
     .await;
 
@@ -4404,6 +4471,8 @@ async fn update_project_task(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
+    let labels = payload.labels.as_ref().map(|l| normalize_labels(l));
+
     let row = sqlx::query_as::<_, ProjectTask>(
         "UPDATE project_tasks SET \
          title = COALESCE($1, title), \
@@ -4411,15 +4480,17 @@ async fn update_project_task(
          status = COALESCE($3, status), \
          priority = COALESCE($4, priority), \
          assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
+         labels = COALESCE($6, labels), \
          updated_at = NOW() \
-         WHERE id = $6 AND project_id = $7 \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at"
+         WHERE id = $7 AND project_id = $8 \
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels"
     )
     .bind(&payload.title)
     .bind(&payload.description)
     .bind(&payload.status)
     .bind(&payload.priority)
     .bind(&payload.assigned_to)
+    .bind(&labels)
     .bind(task_id)
     .bind(project_id)
     .fetch_optional(&state.db)

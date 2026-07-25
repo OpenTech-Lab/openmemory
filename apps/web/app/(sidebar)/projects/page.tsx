@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History, Sparkles } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -44,6 +44,8 @@ import {
   SheetFooter,
 } from '@/components/ui/sheet';
 import { toast } from 'sonner';
+import { LabelChipInput } from '@/components/label-chip-input';
+import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 
 interface Project {
   id: string;
@@ -58,6 +60,7 @@ interface Project {
   updated_at: string;
   task_count?: number;
   version_status: string;
+  effective_version_status: string;
 }
 
 interface Task {
@@ -73,6 +76,7 @@ interface Task {
   created_at: string;
   updated_at: string;
   project_name?: string;
+  labels: string[];
 }
 
 interface Routine {
@@ -128,6 +132,16 @@ const VERSION_STATUS_COLORS: Record<string, string> = {
   maintenance: 'border-blue-400 text-blue-600 dark:text-blue-400',
   archived: 'border-border text-muted-foreground',
   deprecated: 'border-destructive text-destructive',
+};
+
+const EFFECTIVE_STATUS_EXTRA_LABELS: Record<string, string> = {
+  bug_detected: 'Bug Detected',
+  feature_updating: 'Feature Updating',
+};
+
+const EFFECTIVE_STATUS_EXTRA_COLORS: Record<string, string> = {
+  bug_detected: 'border-red-500 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30',
+  feature_updating: 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30',
 };
 
 function timeAgo(iso: string): string {
@@ -203,6 +217,7 @@ function ProjectsPageContent() {
     task_type: 'regular' as 'regular' | 'scheduled',
     frequency: 'daily',
     cron_expr: '',
+    labels: [] as string[],
   });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
 
@@ -397,7 +412,7 @@ function ProjectsPageContent() {
     if (isScheduled && !effectiveFreq) { toast.error('Cron expression required'); return; }
     setIsCreatingTask(true);
     try {
-      const body: Record<string, string> = {
+      const body: Record<string, string | string[]> = {
         title: taskForm.title,
         priority: taskForm.priority,
       };
@@ -411,6 +426,7 @@ function ProjectsPageContent() {
       } else {
         url = `/api/projects/${taskForm.project_id}/tasks`;
         body.status = taskForm.status;
+        if (taskForm.labels.length) body.labels = taskForm.labels;
       }
 
       const res = await fetch(url, {
@@ -424,7 +440,7 @@ function ProjectsPageContent() {
         return;
       }
       setShowTaskDialog(false);
-      setTaskForm({ project_id: '', title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', task_type: 'regular', frequency: 'daily', cron_expr: '' });
+      setTaskForm({ project_id: '', title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', task_type: 'regular', frequency: 'daily', cron_expr: '', labels: [] });
       fetchTasksForBoard(projects);
       toast.success(isScheduled ? 'Routine created' : 'Task created');
     } catch {
@@ -642,22 +658,37 @@ function ProjectsPageContent() {
     {
       accessorKey: 'version_status',
       header: 'Version Status',
-      cell: ({ row }) => (
-        <Select
-          value={row.original.version_status ?? 'active'}
-          onValueChange={v => handleVersionStatusChange(row.original.id, v)}
-          disabled={updatingStatusId === row.original.id}
-        >
-          <SelectTrigger className={`h-7 w-36 text-xs ${VERSION_STATUS_COLORS[row.original.version_status] ?? ''}`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(VERSION_STATUS_LABELS).map(([value, label]) => (
-              <SelectItem key={value} value={value}>{label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ),
+      cell: ({ row }) => {
+        const eff = row.original.effective_version_status ?? row.original.version_status ?? 'active';
+        const isComputed = eff === 'bug_detected' || eff === 'feature_updating';
+        if (isComputed) {
+          return (
+            <span
+              className={`inline-flex items-center gap-1 h-7 px-2 rounded-md border text-xs font-medium ${EFFECTIVE_STATUS_EXTRA_COLORS[eff]}`}
+              title={`Automatic — based on an open ${eff === 'bug_detected' ? "'bug'" : "'feature'"} labeled task. Manual status is still ${VERSION_STATUS_LABELS[row.original.version_status] ?? row.original.version_status}.`}
+            >
+              <Sparkles className="h-3 w-3" />
+              {EFFECTIVE_STATUS_EXTRA_LABELS[eff]}
+            </span>
+          );
+        }
+        return (
+          <Select
+            value={row.original.version_status ?? 'active'}
+            onValueChange={v => handleVersionStatusChange(row.original.id, v)}
+            disabled={updatingStatusId === row.original.id}
+          >
+            <SelectTrigger className={`h-7 w-36 text-xs ${VERSION_STATUS_COLORS[row.original.version_status] ?? ''}`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(VERSION_STATUS_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        );
+      },
     },
     {
       accessorKey: 'node_count',
@@ -1128,6 +1159,13 @@ function ProjectsPageContent() {
                 </Select>
               </div>
             </div>
+
+            {taskForm.task_type === 'regular' && (
+              <div>
+                <Label>Labels</Label>
+                <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowTaskDialog(false)}>Cancel</Button>
@@ -1648,6 +1686,11 @@ function TaskCard({ task, showProject, onStatusCycle, onOpen, onEdit, onDelete }
           <span className={`text-xs ${PRIORITY_COLORS[task.priority] ?? 'text-muted-foreground'}`}>
             {task.priority}
           </span>
+          {task.labels?.map(l => (
+            <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
+              {l}
+            </span>
+          ))}
           {task.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
           {task.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
           {showProject && task.project_name && (
