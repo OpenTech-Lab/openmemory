@@ -156,6 +156,10 @@ struct ProjectTask {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     labels: Vec<String>,
+    parent_id: Option<Uuid>,
+    start_date: Option<chrono::NaiveDate>,
+    due_date: Option<chrono::NaiveDate>,
+    sort_order: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +170,9 @@ struct CreateTaskPayload {
     priority: Option<String>,
     assigned_to: Option<String>,
     labels: Option<Vec<String>>,
+    parent_id: Option<Uuid>,
+    start_date: Option<chrono::NaiveDate>,
+    due_date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +183,12 @@ struct UpdateTaskPayload {
     priority: Option<String>,
     assigned_to: Option<String>,
     labels: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    parent_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    start_date: Option<Option<chrono::NaiveDate>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    due_date: Option<Option<chrono::NaiveDate>>,
 }
 
 /// Trim/lowercase/dedupe task labels — built-ins and free-text custom labels alike.
@@ -1448,6 +1461,18 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
 
     // Add routine_id FK to tasks (nullable — only set on routine-generated tasks)
     sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS routine_id UUID REFERENCES project_routines(id) ON DELETE SET NULL")
+        .execute(db).await.ok();
+
+    // Hierarchical subtasks + Gantt scheduling fields.
+    sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES project_tasks(id) ON DELETE CASCADE")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS start_date DATE")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS due_date DATE")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_parent_id ON project_tasks(parent_id)")
         .execute(db).await.ok();
 
     info!("PostgreSQL migrations complete");
@@ -4367,6 +4392,26 @@ async fn query_project_graph(
 // Project Task handlers
 // ---------------------------------------------------------------------------
 
+/// Walks the ancestor chain starting at `new_parent_id` to check whether making it the
+/// parent of `task_id` would introduce a cycle (including `new_parent_id == task_id`).
+async fn would_create_cycle(db: &PgPool, task_id: Uuid, new_parent_id: Uuid) -> Result<bool, sqlx::Error> {
+    let mut current = new_parent_id;
+    loop {
+        if current == task_id {
+            return Ok(true);
+        }
+        let parent: Option<Uuid> = sqlx::query_scalar("SELECT parent_id FROM project_tasks WHERE id = $1")
+            .bind(current)
+            .fetch_optional(db)
+            .await?
+            .flatten();
+        match parent {
+            Some(next) => current = next,
+            None => return Ok(false),
+        }
+    }
+}
+
 async fn list_project_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4383,36 +4428,36 @@ async fn list_project_tasks(
     let rows = match (&params.status, &params.routine_id) {
         (Some(status), Some(routine_id)) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 AND routine_id = $3 \
-                 ORDER BY created_at DESC LIMIT $4 OFFSET $5"
+                 ORDER BY sort_order ASC, created_at DESC LIMIT $4 OFFSET $5"
             )
             .bind(project_id).bind(status).bind(routine_id).bind(limit).bind(offset)
             .fetch_all(&state.db).await
         }
         (Some(status), None) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 \
-                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+                 ORDER BY sort_order ASC, created_at DESC LIMIT $3 OFFSET $4"
             )
             .bind(project_id).bind(status).bind(limit).bind(offset)
             .fetch_all(&state.db).await
         }
         (None, Some(routine_id)) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
                  FROM project_tasks WHERE project_id = $1 AND routine_id = $2 \
-                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+                 ORDER BY sort_order ASC, created_at DESC LIMIT $3 OFFSET $4"
             )
             .bind(project_id).bind(routine_id).bind(limit).bind(offset)
             .fetch_all(&state.db).await
         }
         (None, None) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
                  FROM project_tasks WHERE project_id = $1 \
-                 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+                 ORDER BY sort_order ASC, created_at DESC LIMIT $2 OFFSET $3"
             )
             .bind(project_id).bind(limit).bind(offset)
             .fetch_all(&state.db).await
@@ -4446,10 +4491,21 @@ async fn create_project_task(
     let priority = payload.priority.as_deref().unwrap_or("medium");
     let labels = normalize_labels(&payload.labels.clone().unwrap_or_default());
 
+    if let Some(parent_id) = payload.parent_id {
+        let parent_project: Option<Uuid> = sqlx::query_scalar("SELECT project_id FROM project_tasks WHERE id = $1")
+            .bind(parent_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
+        if parent_project != Some(project_id) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "parent_id must reference a task in the same project"}))).into_response();
+        }
+    }
+
     let row = sqlx::query_as::<_, ProjectTask>(
-        "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, labels, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'human') \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels"
+        "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, labels, created_by, parent_id, start_date, due_date) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'human', $8, $9, $10) \
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order"
     )
     .bind(project_id)
     .bind(&payload.title)
@@ -4458,6 +4514,9 @@ async fn create_project_task(
     .bind(priority)
     .bind(&payload.assigned_to)
     .bind(&labels)
+    .bind(payload.parent_id)
+    .bind(payload.start_date)
+    .bind(payload.due_date)
     .fetch_one(&state.db)
     .await;
 
@@ -4482,6 +4541,35 @@ async fn update_project_task(
 
     let labels = payload.labels.as_ref().map(|l| normalize_labels(l));
 
+    // parent_id: Some(Some(id)) = reparent, Some(None) = clear to root, None = leave untouched.
+    if let Some(Some(new_parent_id)) = payload.parent_id {
+        let parent_project: Option<Uuid> = sqlx::query_scalar("SELECT project_id FROM project_tasks WHERE id = $1")
+            .bind(new_parent_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
+        if parent_project != Some(project_id) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "parent_id must reference a task in the same project"}))).into_response();
+        }
+        match would_create_cycle(&state.db, task_id, new_parent_id).await {
+            Ok(true) => {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "parent_id would create a cycle"}))).into_response();
+            }
+            Ok(false) => {}
+            Err(e) => {
+                error!("update_project_task cycle check error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        }
+    }
+
+    let parent_id_set = payload.parent_id.is_some();
+    let parent_id_value = payload.parent_id.flatten();
+    let start_date_set = payload.start_date.is_some();
+    let start_date_value = payload.start_date.flatten();
+    let due_date_set = payload.due_date.is_some();
+    let due_date_value = payload.due_date.flatten();
+
     let row = sqlx::query_as::<_, ProjectTask>(
         "UPDATE project_tasks SET \
          title = COALESCE($1, title), \
@@ -4490,9 +4578,12 @@ async fn update_project_task(
          priority = COALESCE($4, priority), \
          assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
          labels = COALESCE($6, labels), \
+         parent_id = CASE WHEN $9 THEN $10 ELSE parent_id END, \
+         start_date = CASE WHEN $11 THEN $12 ELSE start_date END, \
+         due_date = CASE WHEN $13 THEN $14 ELSE due_date END, \
          updated_at = NOW() \
          WHERE id = $7 AND project_id = $8 \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels"
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order"
     )
     .bind(&payload.title)
     .bind(&payload.description)
@@ -4502,6 +4593,12 @@ async fn update_project_task(
     .bind(&labels)
     .bind(task_id)
     .bind(project_id)
+    .bind(parent_id_set)
+    .bind(parent_id_value)
+    .bind(start_date_set)
+    .bind(start_date_value)
+    .bind(due_date_set)
+    .bind(due_date_value)
     .fetch_optional(&state.db)
     .await;
 

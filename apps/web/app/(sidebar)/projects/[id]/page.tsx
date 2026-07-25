@@ -94,6 +94,10 @@ interface Task {
   created_at: string;
   updated_at: string;
   labels: string[];
+  parent_id: string | null;
+  start_date: string | null;
+  due_date: string | null;
+  sort_order: number;
 }
 
 const STATUS_LABELS: Record<string, string> = { scheduled: 'Scheduled', todo: 'Todo', in_progress: 'In Progress', done: 'Done', cancelled: 'Cancelled' };

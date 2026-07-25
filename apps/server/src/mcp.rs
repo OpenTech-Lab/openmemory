@@ -1157,14 +1157,17 @@ impl McpServer {
                             "description": {"type": "string", "description": "Optional detailed description"},
                             "status": {"type": "string", "description": "todo | in_progress | done | cancelled (default: todo)"},
                             "priority": {"type": "string", "description": "low | medium | high (default: medium)"},
-                            "assigned_to": {"type": "string", "description": "human | agent | null"}
+                            "assigned_to": {"type": "string", "description": "human | agent | null"},
+                            "parent_id": {"type": "string", "description": "Optional UUID of a parent task, to create this as a subtask"},
+                            "start_date": {"type": "string", "description": "Optional start date, YYYY-MM-DD"},
+                            "due_date": {"type": "string", "description": "Optional due date, YYYY-MM-DD"}
                         },
                         "required": ["project_id", "title"]
                     }
                 },
                 {
                     "name": "project_task_update",
-                    "description": "Update a task's title, description, status, priority, or assigned_to. Only provided fields are changed. Use status 'cancelled' (not 'done') for tasks that are being dropped/superseded rather than completed.",
+                    "description": "Update a task's title, description, status, priority, assigned_to, parent, or dates. Only provided fields are changed; pass null for parent_id/start_date/due_date to clear them. Use status 'cancelled' (not 'done') for tasks that are being dropped/superseded rather than completed.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -1174,7 +1177,10 @@ impl McpServer {
                             "description": {"type": "string"},
                             "status": {"type": "string", "description": "todo | in_progress | done | cancelled"},
                             "priority": {"type": "string", "description": "low | medium | high"},
-                            "assigned_to": {"type": "string", "description": "human | agent | null"}
+                            "assigned_to": {"type": "string", "description": "human | agent | null"},
+                            "parent_id": {"type": ["string", "null"], "description": "UUID of a parent task, or null to detach this task from its parent"},
+                            "start_date": {"type": ["string", "null"], "description": "Start date YYYY-MM-DD, or null to clear"},
+                            "due_date": {"type": ["string", "null"], "description": "Due date YYYY-MM-DD, or null to clear"}
                         },
                         "required": ["project_id", "task_id"]
                     }
@@ -3194,17 +3200,17 @@ impl McpServer {
 
         let tasks = if let Some(status) = status_filter {
             sqlx::query(
-                "SELECT id, title, status, priority, assigned_to, created_by, created_at \
+                "SELECT id, title, status, priority, assigned_to, created_by, created_at, parent_id, start_date, due_date \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 \
-                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+                 ORDER BY sort_order ASC, created_at DESC LIMIT $3 OFFSET $4"
             )
             .bind(project_id).bind(status).bind(limit).bind(offset)
             .fetch_all(&self.db).await
         } else {
             sqlx::query(
-                "SELECT id, title, status, priority, assigned_to, created_by, created_at \
+                "SELECT id, title, status, priority, assigned_to, created_by, created_at, parent_id, start_date, due_date \
                  FROM project_tasks WHERE project_id = $1 \
-                 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+                 ORDER BY sort_order ASC, created_at DESC LIMIT $2 OFFSET $3"
             )
             .bind(project_id).bind(limit).bind(offset)
             .fetch_all(&self.db).await
@@ -3221,10 +3227,14 @@ impl McpServer {
             let status: String = t.try_get("status").unwrap_or_default();
             let priority: String = t.try_get("priority").unwrap_or_default();
             let assigned: Option<String> = t.try_get("assigned_to").unwrap_or(None);
+            let parent_id: Option<Uuid> = t.try_get("parent_id").unwrap_or(None);
+            let due_date: Option<chrono::NaiveDate> = t.try_get("due_date").unwrap_or(None);
             text.push_str(&format!(
-                "• [{}] {} ({}){}\n  id: {}\n",
+                "• [{}] {} ({}){}{}{}\n  id: {}\n",
                 status, title, priority,
                 assigned.as_deref().map(|a| format!(" → {}", a)).unwrap_or_default(),
+                due_date.map(|d| format!(" due: {}", d)).unwrap_or_default(),
+                parent_id.map(|p| format!(" parent: {}", p)).unwrap_or_default(),
                 id
             ));
         }
@@ -3240,13 +3250,28 @@ impl McpServer {
         let status = args["status"].as_str().unwrap_or("todo");
         let priority = args["priority"].as_str().unwrap_or("medium");
         let assigned_to = args["assigned_to"].as_str().map(|s| s.to_string());
+        let parent_id: Option<Uuid> = args["parent_id"].as_str()
+            .map(|s| s.parse::<Uuid>()).transpose().context("invalid parent_id UUID")?;
+        let start_date: Option<chrono::NaiveDate> = args["start_date"].as_str()
+            .map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")).transpose().context("invalid start_date, expected YYYY-MM-DD")?;
+        let due_date: Option<chrono::NaiveDate> = args["due_date"].as_str()
+            .map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")).transpose().context("invalid due_date, expected YYYY-MM-DD")?;
+
+        if let Some(pid) = parent_id {
+            let parent_project: Option<Uuid> = sqlx::query_scalar("SELECT project_id FROM project_tasks WHERE id = $1")
+                .bind(pid).fetch_optional(&self.db).await.unwrap_or(None);
+            if parent_project != Some(project_id) {
+                anyhow::bail!("parent_id must reference a task in the same project");
+            }
+        }
 
         let row = sqlx::query(
-            "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, created_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'agent') RETURNING id"
+            "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, created_by, parent_id, start_date, due_date) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'agent', $7, $8, $9) RETURNING id"
         )
         .bind(project_id).bind(&title).bind(&description)
         .bind(status).bind(priority).bind(&assigned_to)
+        .bind(parent_id).bind(start_date).bind(due_date)
         .fetch_one(&self.db).await.context("failed to create task")?;
 
         let id: Uuid = row.try_get("id").unwrap_or(Uuid::nil());
@@ -3267,6 +3292,27 @@ impl McpServer {
         let priority = args["priority"].as_str().map(|s| s.to_string());
         let assigned_to = args["assigned_to"].as_str().map(|s| s.to_string());
 
+        let parent_id_set = args.get("parent_id").is_some();
+        let parent_id_value: Option<Uuid> = args["parent_id"].as_str()
+            .map(|s| s.parse::<Uuid>()).transpose().context("invalid parent_id UUID")?;
+        let start_date_set = args.get("start_date").is_some();
+        let start_date_value: Option<chrono::NaiveDate> = args["start_date"].as_str()
+            .map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")).transpose().context("invalid start_date, expected YYYY-MM-DD")?;
+        let due_date_set = args.get("due_date").is_some();
+        let due_date_value: Option<chrono::NaiveDate> = args["due_date"].as_str()
+            .map(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")).transpose().context("invalid due_date, expected YYYY-MM-DD")?;
+
+        if let Some(new_parent_id) = parent_id_value {
+            let parent_project: Option<Uuid> = sqlx::query_scalar("SELECT project_id FROM project_tasks WHERE id = $1")
+                .bind(new_parent_id).fetch_optional(&self.db).await.unwrap_or(None);
+            if parent_project != Some(project_id) {
+                anyhow::bail!("parent_id must reference a task in the same project");
+            }
+            if would_create_cycle(&self.db, task_id, new_parent_id).await.context("cycle check failed")? {
+                anyhow::bail!("parent_id would create a cycle");
+            }
+        }
+
         let result = sqlx::query(
             "UPDATE project_tasks SET \
              title = COALESCE($1, title), \
@@ -3274,11 +3320,17 @@ impl McpServer {
              status = COALESCE($3, status), \
              priority = COALESCE($4, priority), \
              assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
+             parent_id = CASE WHEN $8 THEN $9 ELSE parent_id END, \
+             start_date = CASE WHEN $10 THEN $11 ELSE start_date END, \
+             due_date = CASE WHEN $12 THEN $13 ELSE due_date END, \
              updated_at = NOW() \
              WHERE id = $6 AND project_id = $7 RETURNING id"
         )
         .bind(&title).bind(&description).bind(&status).bind(&priority).bind(&assigned_to)
         .bind(task_id).bind(project_id)
+        .bind(parent_id_set).bind(parent_id_value)
+        .bind(start_date_set).bind(start_date_value)
+        .bind(due_date_set).bind(due_date_value)
         .fetch_optional(&self.db).await.context("failed to update task")?;
 
         if result.is_none() {
@@ -3532,6 +3584,26 @@ const AUTO_LINK_TAG_MAX_FRACTION: f64 = 0.02;
 /// `candidate_tags = Some(...)` scopes the check to just those tags (cheap, used
 /// on the hot memory_save path); `None` scans all distinct tags (used by the
 /// bulk rebuild, which needs the full picture).
+/// Walks the ancestor chain starting at `new_parent_id` to check whether making it the
+/// parent of `task_id` would introduce a cycle (including `new_parent_id == task_id`).
+async fn would_create_cycle(db: &PgPool, task_id: Uuid, new_parent_id: Uuid) -> Result<bool, sqlx::Error> {
+    let mut current = new_parent_id;
+    loop {
+        if current == task_id {
+            return Ok(true);
+        }
+        let parent: Option<Uuid> = sqlx::query_scalar("SELECT parent_id FROM project_tasks WHERE id = $1")
+            .bind(current)
+            .fetch_optional(db)
+            .await?
+            .flatten();
+        match parent {
+            Some(next) => current = next,
+            None => return Ok(false),
+        }
+    }
+}
+
 async fn frequent_tags(db: &PgPool, candidate_tags: Option<&[String]>, min_fraction: f64) -> Vec<String> {
     let rows: Vec<(String,)> = match candidate_tags {
         Some(tags) if !tags.is_empty() => sqlx::query_as(

@@ -77,6 +77,10 @@ interface Task {
   updated_at: string;
   project_name?: string;
   labels: string[];
+  parent_id: string | null;
+  start_date: string | null;
+  due_date: string | null;
+  sort_order: number;
 }
 
 interface Routine {
