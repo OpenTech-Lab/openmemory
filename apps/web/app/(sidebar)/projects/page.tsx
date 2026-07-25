@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, Eye, History } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -602,7 +602,9 @@ function ProjectsPageContent() {
       header: 'Name',
       cell: ({ row }) => (
         <div className="flex items-center gap-2">
-          <span className="font-medium">{row.original.name}</span>
+          <Link href={`/projects/${row.original.id}`} className="font-medium hover:underline">
+            {row.original.name}
+          </Link>
           {(taskCounts[row.original.id] ?? 0) > 0 && (
             <Badge variant="secondary" className="text-xs">
               {taskCounts[row.original.id]} task{taskCounts[row.original.id] !== 1 ? 's' : ''}
@@ -652,18 +654,6 @@ function ProjectsPageContent() {
       accessorKey: 'edge_count',
       header: 'Edges',
       cell: ({ row }) => <Badge variant="outline">{row.original.edge_count.toLocaleString()}</Badge>,
-    },
-    {
-      id: 'graph',
-      header: 'Graph',
-      cell: ({ row }) =>
-        row.original.node_count > 0 ? (
-          <Link href={`/projects/${row.original.id}`}>
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="View graph">
-              <Eye className="h-3.5 w-3.5" />
-            </Button>
-          </Link>
-        ) : null,
     },
     {
       id: 'actions',
