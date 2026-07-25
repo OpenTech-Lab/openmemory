@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, Kanban } from 'lucide-react';
+import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3 } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -36,7 +36,8 @@ const NAV_GROUPS = [
   {
     label: 'Projects',
     items: [
-      { href: '/projects', label: 'Projects', icon: Kanban },
+      { href: '/projects', label: 'List', icon: LayoutList },
+      { href: '/projects/board', label: 'Board', icon: Columns3 },
     ],
   },
   {
@@ -81,9 +82,11 @@ export function AppSidebar() {
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
                 {group.items.map((item) => {
+                  // '/projects' also covers /projects/[id] detail pages, but not the
+                  // separate /projects/board route (which has its own sidebar entry).
                   const isActive = item.href === '/projects'
-                    ? pathname.startsWith('/projects')
-                    : pathname === item.href;
+                    ? pathname === '/projects' || (pathname.startsWith('/projects/') && !pathname.startsWith('/projects/board'))
+                    : pathname === item.href || pathname.startsWith(`${item.href}/`);
                   return (
                     <SidebarMenuItem key={item.href}>
                       <SidebarMenuButton
