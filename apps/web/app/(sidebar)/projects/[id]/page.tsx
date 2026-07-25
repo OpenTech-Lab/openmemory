@@ -79,6 +79,7 @@ interface Routine {
   last_task_date: string | null;
   enabled: boolean;
   created_at: string;
+  labels: string[];
 }
 
 interface Task {
@@ -133,7 +134,8 @@ export default function ProjectDetailPage() {
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [isLoadingRoutines, setIsLoadingRoutines] = useState(false);
   const [showRoutineDialog, setShowRoutineDialog] = useState(false);
-  const [routineForm, setRoutineForm] = useState({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '' });
+  const [routineForm, setRoutineForm] = useState({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '', labels: [] as string[] });
+  const [editingRoutineId, setEditingRoutineId] = useState<string | null>(null);
   const [isCreatingRoutine, setIsCreatingRoutine] = useState(false);
   const [isCheckingRoutines, setIsCheckingRoutines] = useState(false);
 
@@ -269,29 +271,66 @@ export default function ProjectDetailPage() {
     }
   };
 
-  const handleCreateRoutine = async () => {
+  const openRoutineCreate = () => {
+    setEditingRoutineId(null);
+    setRoutineForm({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '', labels: [] });
+    setShowRoutineDialog(true);
+  };
+
+  const openRoutineEdit = (routine: Routine) => {
+    setEditingRoutineId(routine.id);
+    setRoutineForm({
+      title: routine.title,
+      description: routine.description ?? '',
+      frequency: routine.frequency,
+      priority: routine.priority,
+      assigned_to: routine.assigned_to ?? '',
+      labels: routine.labels ?? [],
+    });
+    setShowRoutineDialog(true);
+  };
+
+  const handleSaveRoutine = async () => {
     if (!routineForm.title.trim()) { toast.error('Title is required'); return; }
     setIsCreatingRoutine(true);
     try {
-      const body: Record<string, string> = {
-        title: routineForm.title,
-        frequency: routineForm.frequency,
-        priority: routineForm.priority,
-      };
-      if (routineForm.description.trim()) body.description = routineForm.description.trim();
-      if (routineForm.assigned_to) body.assigned_to = routineForm.assigned_to;
-      const res = await fetch(`/api/projects/${id}/routines`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) { toast.error('Failed to create routine'); return; }
+      let res: Response;
+      if (editingRoutineId) {
+        res = await fetch(`/api/projects/${id}/routines/${editingRoutineId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: routineForm.title,
+            description: routineForm.description.trim() || null,
+            frequency: routineForm.frequency,
+            priority: routineForm.priority,
+            assigned_to: routineForm.assigned_to || null,
+            labels: routineForm.labels,
+          }),
+        });
+      } else {
+        const body: Record<string, string | string[]> = {
+          title: routineForm.title,
+          frequency: routineForm.frequency,
+          priority: routineForm.priority,
+        };
+        if (routineForm.description.trim()) body.description = routineForm.description.trim();
+        if (routineForm.assigned_to) body.assigned_to = routineForm.assigned_to;
+        if (routineForm.labels.length) body.labels = routineForm.labels;
+        res = await fetch(`/api/projects/${id}/routines`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+      if (!res.ok) { toast.error(`Failed to ${editingRoutineId ? 'save' : 'create'} routine`); return; }
       setShowRoutineDialog(false);
-      setRoutineForm({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '' });
+      setEditingRoutineId(null);
+      setRoutineForm({ title: '', description: '', frequency: 'daily', priority: 'medium', assigned_to: '', labels: [] });
       fetchRoutines();
-      toast.success('Routine created');
+      toast.success(editingRoutineId ? 'Routine saved' : 'Routine created');
     } catch {
-      toast.error('Failed to create routine');
+      toast.error(`Failed to ${editingRoutineId ? 'save' : 'create'} routine`);
     } finally {
       setIsCreatingRoutine(false);
     }
@@ -666,7 +705,7 @@ export default function ProjectDetailPage() {
                     : <Repeat2 className="h-4 w-4 mr-1" />}
                   Check due
                 </Button>
-                <Button size="sm" onClick={() => setShowRoutineDialog(true)}>
+                <Button size="sm" onClick={openRoutineCreate}>
                   <Plus className="h-4 w-4 mr-1" /> Add Routine
                 </Button>
               </div>
@@ -685,7 +724,7 @@ export default function ProjectDetailPage() {
                   <code className="bg-muted px-1 rounded mx-1">routine_check</code>
                   it creates a dated task automatically.
                 </p>
-                <Button variant="outline" size="sm" onClick={() => setShowRoutineDialog(true)}>
+                <Button variant="outline" size="sm" onClick={openRoutineCreate}>
                   <Plus className="h-4 w-4 mr-1" /> Add first routine
                 </Button>
               </div>
@@ -699,9 +738,14 @@ export default function ProjectDetailPage() {
                       {routine.description && (
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">{routine.description}</p>
                       )}
-                      <div className="flex items-center gap-2 mt-1">
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <span className="text-xs border rounded px-1.5 py-0.5 capitalize">{routine.frequency}</span>
                         <span className={`text-xs ${PRIORITY_COLORS[routine.priority] ?? ''}`}>{routine.priority}</span>
+                        {routine.labels?.map(l => (
+                          <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
+                            {l}
+                          </span>
+                        ))}
                         {routine.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
                         {routine.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
                         <span className="text-xs text-muted-foreground">
@@ -716,6 +760,13 @@ export default function ProjectDetailPage() {
                         title={routine.enabled ? 'Disable' : 'Enable'}
                       >
                         {routine.enabled ? 'on' : 'off'}
+                      </button>
+                      <button
+                        onClick={() => openRoutineEdit(routine)}
+                        className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors ml-1"
+                        title="Edit routine"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={() => handleDeleteRoutine(routine.id)}
@@ -742,11 +793,11 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
-      {/* Add Routine Dialog */}
-      <Dialog open={showRoutineDialog} onOpenChange={setShowRoutineDialog}>
+      {/* Add/Edit Routine Dialog */}
+      <Dialog open={showRoutineDialog} onOpenChange={open => { setShowRoutineDialog(open); if (!open) setEditingRoutineId(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>New Routine</DialogTitle>
+            <DialogTitle>{editingRoutineId ? 'Edit Routine' : 'New Routine'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -802,12 +853,16 @@ export default function ProjectDetailPage() {
                 </Select>
               </div>
             </div>
+            <div>
+              <Label>Labels</Label>
+              <LabelChipInput value={routineForm.labels} onChange={labels => setRoutineForm(f => ({ ...f, labels }))} />
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRoutineDialog(false)}>Cancel</Button>
-            <Button onClick={handleCreateRoutine} disabled={isCreatingRoutine}>
+            <Button variant="outline" onClick={() => { setShowRoutineDialog(false); setEditingRoutineId(null); }}>Cancel</Button>
+            <Button onClick={handleSaveRoutine} disabled={isCreatingRoutine}>
               {isCreatingRoutine && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
-              Create
+              {editingRoutineId ? 'Save' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>

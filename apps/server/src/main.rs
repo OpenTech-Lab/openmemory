@@ -214,6 +214,7 @@ struct ProjectRoutine {
     enabled: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    labels: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +224,7 @@ struct CreateRoutinePayload {
     frequency: Option<String>,
     priority: Option<String>,
     assigned_to: Option<String>,
+    labels: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,6 +235,7 @@ struct UpdateRoutinePayload {
     priority: Option<String>,
     assigned_to: Option<String>,
     enabled: Option<bool>,
+    labels: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1435,6 +1438,12 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .context("failed to create project_routines table")?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_routines_project_id ON project_routines(project_id)")
+        .execute(db).await.ok();
+
+    // Routine labels (built-in + free-text), same convention as project_tasks.labels.
+    sqlx::query("ALTER TABLE project_routines ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT '{}'")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_routines_labels ON project_routines USING gin(labels)")
         .execute(db).await.ok();
 
     // Add routine_id FK to tasks (nullable — only set on routine-generated tasks)
@@ -4682,7 +4691,7 @@ async fn list_project_routines(
     }
     let rows = sqlx::query_as::<_, ProjectRoutine>(
         "SELECT id, project_id, title, description, frequency, priority, assigned_to, \
-         last_task_date, enabled, created_at, updated_at \
+         last_task_date, enabled, created_at, updated_at, labels \
          FROM project_routines WHERE project_id = $1 ORDER BY created_at ASC"
     )
     .bind(project_id)
@@ -4709,15 +4718,17 @@ async fn create_project_routine(
     }
     let frequency = payload.frequency.as_deref().unwrap_or("daily");
     let priority = payload.priority.as_deref().unwrap_or("medium");
+    let labels = normalize_labels(&payload.labels.clone().unwrap_or_default());
 
     let row = sqlx::query_as::<_, ProjectRoutine>(
-        "INSERT INTO project_routines (project_id, title, description, frequency, priority, assigned_to) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+        "INSERT INTO project_routines (project_id, title, description, frequency, priority, assigned_to, labels) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, project_id, title, description, frequency, priority, assigned_to, \
-                   last_task_date, enabled, created_at, updated_at"
+                   last_task_date, enabled, created_at, updated_at, labels"
     )
     .bind(project_id).bind(&payload.title).bind(&payload.description)
     .bind(frequency).bind(priority).bind(&payload.assigned_to)
+    .bind(&labels)
     .fetch_one(&state.db).await;
 
     match row {
@@ -4735,6 +4746,8 @@ async fn update_project_routine(
     if !is_authenticated(&headers, &state.api_token) {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
+    let labels = payload.labels.as_ref().map(|l| normalize_labels(l));
+
     let row = sqlx::query_as::<_, ProjectRoutine>(
         "UPDATE project_routines SET \
          title       = COALESCE($1, title), \
@@ -4743,15 +4756,17 @@ async fn update_project_routine(
          priority    = COALESCE($4, priority), \
          assigned_to = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE assigned_to END, \
          enabled     = COALESCE($6, enabled), \
+         labels      = COALESCE($9, labels), \
          updated_at  = NOW() \
          WHERE id = $7 AND project_id = $8 \
          RETURNING id, project_id, title, description, frequency, priority, assigned_to, \
-                   last_task_date, enabled, created_at, updated_at"
+                   last_task_date, enabled, created_at, updated_at, labels"
     )
     .bind(&payload.title).bind(&payload.description)
     .bind(&payload.frequency).bind(&payload.priority).bind(&payload.assigned_to)
     .bind(payload.enabled)
     .bind(routine_id).bind(project_id)
+    .bind(&labels)
     .fetch_optional(&state.db).await;
 
     match row {

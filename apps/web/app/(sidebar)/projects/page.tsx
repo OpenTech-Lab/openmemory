@@ -92,6 +92,7 @@ interface Routine {
   created_at: string;
   updated_at: string;
   project_name?: string;
+  labels: string[];
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -180,7 +181,7 @@ function ProjectsPageContent() {
   // Routine edit sheet
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
   const [routineSheetMode, setRoutineSheetMode] = useState<'view' | 'edit'>('view');
-  const [routineEditForm, setRoutineEditForm] = useState({ title: '', description: '', frequency: '', priority: '', assigned_to: '', enabled: true });
+  const [routineEditForm, setRoutineEditForm] = useState({ title: '', description: '', frequency: '', priority: '', assigned_to: '', enabled: true, labels: [] as string[] });
   const [isSavingRoutine, setIsSavingRoutine] = useState(false);
   const [confirmDeleteRoutine, setConfirmDeleteRoutine] = useState(false);
 
@@ -418,6 +419,7 @@ function ProjectsPageContent() {
       };
       if (taskForm.description.trim()) body.description = taskForm.description.trim();
       if (taskForm.assigned_to) body.assigned_to = taskForm.assigned_to;
+      if (taskForm.labels.length) body.labels = taskForm.labels;
 
       let url: string;
       if (isScheduled) {
@@ -426,7 +428,6 @@ function ProjectsPageContent() {
       } else {
         url = `/api/projects/${taskForm.project_id}/tasks`;
         body.status = taskForm.status;
-        if (taskForm.labels.length) body.labels = taskForm.labels;
       }
 
       const res = await fetch(url, {
@@ -467,26 +468,6 @@ function ProjectsPageContent() {
     } catch {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: task.status } : t));
       toast.error('Failed to move task');
-    }
-  };
-
-  const handleStatusCycle = async (task: Task) => {
-    const next = task.status === 'todo' ? 'in_progress' : task.status === 'in_progress' ? 'done' : 'todo';
-    // Optimistic update
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: next } : t));
-    try {
-      const res = await fetch(`/api/projects/${task.project_id}/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: next }),
-      });
-      if (!res.ok) {
-        setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t));
-        toast.error('Failed to update task');
-      }
-    } catch {
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t));
-      toast.error('Failed to update task');
     }
   };
 
@@ -541,6 +522,7 @@ function ProjectsPageContent() {
       priority: routine.priority,
       assigned_to: routine.assigned_to ?? '',
       enabled: routine.enabled,
+      labels: routine.labels ?? [],
     });
   };
 
@@ -574,6 +556,7 @@ function ProjectsPageContent() {
           priority: routineEditForm.priority,
           assigned_to: routineEditForm.assigned_to || null,
           enabled: routineEditForm.enabled,
+          labels: routineEditForm.labels,
         }),
       });
       if (!res.ok) { toast.error('Failed to save routine'); return; }
@@ -876,23 +859,21 @@ function ProjectsPageContent() {
                     </div>
                     <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-y-auto">
                       {colRoutines.map(routine => (
-                        <RoutineCard
+                        <BoardCard
                           key={routine.id}
-                          routine={routine}
+                          item={{ kind: 'routine', data: routine }}
                           showProject={boardFilter === 'all'}
-                          onOpen={openRoutineSheet}
-                          onEdit={routine => openRoutineSheet(routine, 'edit')}
+                          onOpen={() => openRoutineSheet(routine)}
+                          onEdit={() => openRoutineSheet(routine, 'edit')}
                         />
                       ))}
                       {colTasks.map(task => (
-                        <TaskCard
+                        <BoardCard
                           key={task.id}
-                          task={task}
+                          item={{ kind: 'task', data: task }}
                           showProject={boardFilter === 'all'}
-                          onStatusCycle={handleStatusCycle}
-                          onOpen={openTaskSheet}
-                          onEdit={task => openTaskSheet(task, 'edit')}
-                          onDelete={id => setConfirmDeleteTaskId(id)}
+                          onOpen={() => openTaskSheet(task)}
+                          onEdit={() => openTaskSheet(task, 'edit')}
                         />
                       ))}
                       {totalCount === 0 && (
@@ -1162,12 +1143,10 @@ function ProjectsPageContent() {
               </div>
             </div>
 
-            {taskForm.task_type === 'regular' && (
-              <div>
-                <Label>Labels</Label>
-                <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
-              </div>
-            )}
+            <div>
+              <Label>Labels</Label>
+              <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowTaskDialog(false)}>Cancel</Button>
@@ -1409,6 +1388,20 @@ function ProjectsPageContent() {
                   {selectedRoutine?.assigned_to === 'human' ? 'Human' : selectedRoutine?.assigned_to === 'agent' ? 'Agent' : 'Unassigned'}
                 </p>
               </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Labels</Label>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {selectedRoutine?.labels?.length ? (
+                    selectedRoutine.labels.map(l => (
+                      <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
+                        {l}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No labels</span>
+                  )}
+                </div>
+              </div>
               {selectedRoutine && (
                 <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
                   <p>Created: <span className="font-medium">{new Date(selectedRoutine.created_at).toLocaleString()}</span></p>
@@ -1469,6 +1462,10 @@ function ProjectsPageContent() {
                     <SelectItem value="agent">Agent</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div>
+                <Label>Labels</Label>
+                <LabelChipInput value={routineEditForm.labels} onChange={labels => setRoutineEditForm(f => ({ ...f, labels }))} />
               </div>
               {selectedRoutine && (
                 <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
@@ -1610,75 +1607,41 @@ export default function ProjectsPage() {
   );
 }
 
-function RoutineCard({ routine, showProject, onOpen, onEdit }: {
-  routine: Routine;
+type BoardCardItem =
+  | { kind: 'task'; data: Task }
+  | { kind: 'routine'; data: Routine };
+
+/// Renders a task or a routine as a board card. The two entities are structurally
+/// near-identical (title, priority, labels, assignee) — the only real differences are
+/// the primary badge (task status vs. routine frequency) and the drag handle (tasks only).
+function BoardCard({ item, showProject, onOpen, onEdit }: {
+  item: BoardCardItem;
   showProject: boolean;
-  onOpen: (routine: Routine) => void;
-  onEdit: (routine: Routine) => void;
+  onOpen: () => void;
+  onEdit: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
-  const freqLabel = FREQ_LABELS[routine.frequency] ?? routine.frequency;
+  const isTask = item.kind === 'task';
+  const task = item.kind === 'task' ? item.data : null;
+  const routine = item.kind === 'routine' ? item.data : null;
+  const isCancelled = task?.status === 'cancelled';
+  const showDragHandle = !!task && !isCancelled && task.status !== 'scheduled';
+  const title = isTask ? task!.title : routine!.title;
+  const priority = isTask ? task!.priority : routine!.priority;
+  const labels = isTask ? task!.labels : routine!.labels;
+  const assignedTo = isTask ? task!.assigned_to : routine!.assigned_to;
+  const projectName = isTask ? task!.project_name : routine!.project_name;
+
   return (
     <div
-      className="flex items-start gap-1.5 bg-background border border-purple-200/60 dark:border-purple-800/40 rounded-md shadow-sm transition-colors"
-      style={{ borderColor: hovered ? 'rgb(192 132 252 / 0.6)' : undefined }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className={`group flex items-start gap-1.5 bg-background border rounded-md shadow-sm transition-colors ${
+        isTask ? 'hover:border-primary/30' : 'border-purple-200/60 dark:border-purple-800/40 hover:border-purple-400/60 dark:hover:border-purple-600/60'
+      } ${isCancelled ? 'opacity-50' : ''}`}
     >
-      <div className="w-5 shrink-0" />
-      <div
-        className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer"
-        onClick={() => onOpen(routine)}
-      >
-        <p className="text-sm font-medium leading-snug mb-1.5">{routine.title}</p>
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-xs px-1.5 py-0.5 rounded border border-purple-400 text-purple-600 dark:text-purple-400 flex items-center gap-1">
-            <Repeat2 className="h-2.5 w-2.5" />{freqLabel}
-          </span>
-          <span className={`text-xs ${PRIORITY_COLORS[routine.priority] ?? 'text-muted-foreground'}`}>
-            {routine.priority}
-          </span>
-          {routine.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
-          {routine.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
-          {showProject && routine.project_name && (
-            <span className="text-xs text-muted-foreground truncate max-w-[80px]">{routine.project_name}</span>
-          )}
-        </div>
-      </div>
-      <div
-        className="shrink-0 mt-1.5 mr-1 transition-opacity"
-        style={{ opacity: hovered ? 1 : 0 }}
-      >
-        <button
-          onClick={e => { e.stopPropagation(); onEdit(routine); }}
-          className="p-1.5 rounded hover:bg-muted text-muted-foreground"
-          title="Edit routine"
-        >
-          <Pencil className="h-3 w-3" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function TaskCard({ task, showProject, onStatusCycle, onOpen, onEdit, onDelete }: {
-  task: Task;
-  showProject: boolean;
-  onStatusCycle: (task: Task) => void;
-  onOpen: (task: Task) => void;
-  onEdit: (task: Task) => void;
-  onDelete: (id: string) => void;
-  onDragStart?: (id: string) => void;
-}) {
-  const isCancelled = task.status === 'cancelled';
-  return (
-    <div className={`group flex items-start gap-1.5 bg-background border rounded-md shadow-sm transition-colors hover:border-primary/30 ${isCancelled ? 'opacity-50' : ''}`}>
-      {/* Drag handle — hidden for scheduled tasks */}
-      {!isCancelled && task.status !== 'scheduled' ? (
+      {showDragHandle ? (
         <div
           draggable
           onDragStart={e => {
-            e.dataTransfer.setData('taskId', task.id);
+            e.dataTransfer.setData('taskId', task!.id);
             e.dataTransfer.effectAllowed = 'move';
           }}
           className="shrink-0 flex items-center px-1 py-2.5 cursor-grab active:cursor-grabbing text-muted-foreground/30 hover:text-muted-foreground transition-colors rounded-l-md"
@@ -1692,29 +1655,32 @@ function TaskCard({ task, showProject, onStatusCycle, onOpen, onEdit, onDelete }
       )}
 
       {/* Card body — click to open sheet */}
-      <div
-        className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer"
-        onClick={() => onOpen(task)}
-      >
+      <div className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer" onClick={onOpen}>
         <p className={`text-sm font-medium leading-snug mb-1.5 ${isCancelled ? 'line-through text-muted-foreground' : ''}`}>
-          {task.title}
+          {title}
         </p>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_COLORS[task.status] ?? 'border-border text-muted-foreground'}`}>
-            {STATUS_LABELS[task.status] ?? task.status}
+          {task ? (
+            <span className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_COLORS[task.status] ?? 'border-border text-muted-foreground'}`}>
+              {STATUS_LABELS[task.status] ?? task.status}
+            </span>
+          ) : (
+            <span className="text-xs px-1.5 py-0.5 rounded border border-purple-400 text-purple-600 dark:text-purple-400 flex items-center gap-1">
+              <Repeat2 className="h-2.5 w-2.5" />{FREQ_LABELS[routine!.frequency] ?? routine!.frequency}
+            </span>
+          )}
+          <span className={`text-xs ${PRIORITY_COLORS[priority] ?? 'text-muted-foreground'}`}>
+            {priority}
           </span>
-          <span className={`text-xs ${PRIORITY_COLORS[task.priority] ?? 'text-muted-foreground'}`}>
-            {task.priority}
-          </span>
-          {task.labels?.map(l => (
+          {labels?.map(l => (
             <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
               {l}
             </span>
           ))}
-          {task.assigned_to === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
-          {task.assigned_to === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
-          {showProject && task.project_name && (
-            <span className="text-xs text-muted-foreground truncate max-w-[80px]">{task.project_name}</span>
+          {assignedTo === 'human' && <User className="h-3 w-3 text-muted-foreground" />}
+          {assignedTo === 'agent' && <Bot className="h-3 w-3 text-muted-foreground" />}
+          {showProject && projectName && (
+            <span className="text-xs text-muted-foreground truncate max-w-[80px]">{projectName}</span>
           )}
         </div>
       </div>
@@ -1722,9 +1688,9 @@ function TaskCard({ task, showProject, onStatusCycle, onOpen, onEdit, onDelete }
       {/* Action buttons — shown on hover */}
       <div className="shrink-0 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
-          onClick={e => { e.stopPropagation(); onEdit(task); }}
+          onClick={e => { e.stopPropagation(); onEdit(); }}
           className="p-1.5 rounded hover:bg-muted text-muted-foreground"
-          title="Edit task"
+          title={isTask ? 'Edit task' : 'Edit routine'}
         >
           <Pencil className="h-3 w-3" />
         </button>
