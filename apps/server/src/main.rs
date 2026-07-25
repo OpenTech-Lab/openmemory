@@ -173,6 +173,8 @@ struct UpdateTaskPayload {
 #[derive(Debug, Deserialize)]
 struct ListTasksParams {
     status: Option<String>,
+    #[serde(default)]
+    routine_id: Option<Uuid>,
     #[serde(default = "default_task_limit")]
     limit: i64,
     #[serde(default)]
@@ -4175,22 +4177,43 @@ async fn list_project_tasks(
     let limit = params.limit.clamp(1, 200);
     let offset = params.offset.max(0);
 
-    let rows = if let Some(ref status) = params.status {
-        sqlx::query_as::<_, ProjectTask>(
-            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
-             FROM project_tasks WHERE project_id = $1 AND status = $2 \
-             ORDER BY created_at DESC LIMIT $3 OFFSET $4"
-        )
-        .bind(project_id).bind(status).bind(limit).bind(offset)
-        .fetch_all(&state.db).await
-    } else {
-        sqlx::query_as::<_, ProjectTask>(
-            "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
-             FROM project_tasks WHERE project_id = $1 \
-             ORDER BY created_at DESC LIMIT $2 OFFSET $3"
-        )
-        .bind(project_id).bind(limit).bind(offset)
-        .fetch_all(&state.db).await
+    let rows = match (&params.status, &params.routine_id) {
+        (Some(status), Some(routine_id)) => {
+            sqlx::query_as::<_, ProjectTask>(
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                 FROM project_tasks WHERE project_id = $1 AND status = $2 AND routine_id = $3 \
+                 ORDER BY created_at DESC LIMIT $4 OFFSET $5"
+            )
+            .bind(project_id).bind(status).bind(routine_id).bind(limit).bind(offset)
+            .fetch_all(&state.db).await
+        }
+        (Some(status), None) => {
+            sqlx::query_as::<_, ProjectTask>(
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                 FROM project_tasks WHERE project_id = $1 AND status = $2 \
+                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+            )
+            .bind(project_id).bind(status).bind(limit).bind(offset)
+            .fetch_all(&state.db).await
+        }
+        (None, Some(routine_id)) => {
+            sqlx::query_as::<_, ProjectTask>(
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                 FROM project_tasks WHERE project_id = $1 AND routine_id = $2 \
+                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+            )
+            .bind(project_id).bind(routine_id).bind(limit).bind(offset)
+            .fetch_all(&state.db).await
+        }
+        (None, None) => {
+            sqlx::query_as::<_, ProjectTask>(
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at \
+                 FROM project_tasks WHERE project_id = $1 \
+                 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            )
+            .bind(project_id).bind(limit).bind(offset)
+            .fetch_all(&state.db).await
+        }
     };
 
     match rows {

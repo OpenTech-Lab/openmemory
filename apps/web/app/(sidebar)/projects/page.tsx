@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, Eye } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, Eye, History } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -68,6 +68,7 @@ interface Task {
   priority: string;
   assigned_to: string | null;
   created_by: string;
+  routine_id: string | null;
   created_at: string;
   updated_at: string;
   project_name?: string;
@@ -110,6 +111,10 @@ const PRIORITY_COLORS: Record<string, string> = {
   high: 'text-destructive',
 };
 
+const FREQ_LABELS: Record<string, string> = {
+  daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly',
+};
+
 function ProjectsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -124,15 +129,23 @@ function ProjectsPageContent() {
   const [boardFilter, setBoardFilter] = useState<string>('all');
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [taskSheetMode, setTaskSheetMode] = useState<'view' | 'edit'>('view');
   const [confirmDeleteTaskId, setConfirmDeleteTaskId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ title: '', description: '', status: '', priority: '', assigned_to: '' });
   const [isSavingTask, setIsSavingTask] = useState(false);
 
   // Routine edit sheet
   const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
+  const [routineSheetMode, setRoutineSheetMode] = useState<'view' | 'edit'>('view');
   const [routineEditForm, setRoutineEditForm] = useState({ title: '', description: '', frequency: '', priority: '', assigned_to: '', enabled: true });
   const [isSavingRoutine, setIsSavingRoutine] = useState(false);
   const [confirmDeleteRoutine, setConfirmDeleteRoutine] = useState(false);
+
+  // Routine execution history sheet
+  const [routineHistoryOpen, setRoutineHistoryOpen] = useState(false);
+  const [routineHistoryRoutine, setRoutineHistoryRoutine] = useState<Routine | null>(null);
+  const [routineHistoryTasks, setRoutineHistoryTasks] = useState<Task[]>([]);
+  const [isLoadingRoutineHistory, setIsLoadingRoutineHistory] = useState(false);
 
   // Create project dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -407,8 +420,9 @@ function ProjectsPageContent() {
     }
   };
 
-  const openTaskSheet = (task: Task) => {
+  const openTaskSheet = (task: Task, mode: 'view' | 'edit' = 'view') => {
     setSelectedTask(task);
+    setTaskSheetMode(mode);
     setEditForm({
       title: task.title,
       description: task.description ?? '',
@@ -445,8 +459,9 @@ function ProjectsPageContent() {
     }
   };
 
-  const openRoutineSheet = (routine: Routine) => {
+  const openRoutineSheet = (routine: Routine, mode: 'view' | 'edit' = 'view') => {
     setSelectedRoutine(routine);
+    setRoutineSheetMode(mode);
     setRoutineEditForm({
       title: routine.title,
       description: routine.description ?? '',
@@ -455,6 +470,22 @@ function ProjectsPageContent() {
       assigned_to: routine.assigned_to ?? '',
       enabled: routine.enabled,
     });
+  };
+
+  const openRoutineHistory = async (routine: Routine) => {
+    setRoutineHistoryRoutine(routine);
+    setRoutineHistoryOpen(true);
+    setIsLoadingRoutineHistory(true);
+    try {
+      const res = await fetch(`/api/projects/${routine.project_id}/tasks?routine_id=${routine.id}&limit=200`);
+      if (!res.ok) { toast.error('Failed to load execution history'); return; }
+      const data = await res.json();
+      setRoutineHistoryTasks(data.tasks ?? []);
+    } catch {
+      toast.error('Failed to load execution history');
+    } finally {
+      setIsLoadingRoutineHistory(false);
+    }
   };
 
   const handleSaveRoutine = async () => {
@@ -744,6 +775,7 @@ function ProjectsPageContent() {
                           routine={routine}
                           showProject={boardFilter === 'all'}
                           onOpen={openRoutineSheet}
+                          onEdit={routine => openRoutineSheet(routine, 'edit')}
                         />
                       ))}
                       {colTasks.map(task => (
@@ -753,6 +785,7 @@ function ProjectsPageContent() {
                           showProject={boardFilter === 'all'}
                           onStatusCycle={handleStatusCycle}
                           onOpen={openTaskSheet}
+                          onEdit={task => openTaskSheet(task, 'edit')}
                           onDelete={id => setConfirmDeleteTaskId(id)}
                         />
                       ))}
@@ -1017,6 +1050,15 @@ function ProjectsPageContent() {
           <SheetHeader className="px-6 py-4 border-b">
             <div className="flex items-center gap-2">
               <SheetTitle className="text-base">Task Detail</SheetTitle>
+              {taskSheetMode === 'view' && (
+                <button
+                  onClick={() => setTaskSheetMode('edit')}
+                  className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                  title="Edit task"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              )}
               <button
                 onClick={() => selectedTask && setConfirmDeleteTaskId(selectedTask.id)}
                 className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
@@ -1029,74 +1071,120 @@ function ProjectsPageContent() {
               <p className="text-xs text-muted-foreground">{selectedTask.project_name}</p>
             )}
           </SheetHeader>
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            <div>
-              <Label>Title</Label>
-              <Input
-                value={editForm.title}
-                onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
-              />
-            </div>
-            <div>
-              <Label>Description</Label>
-              <Textarea
-                value={editForm.description}
-                onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="Add details..."
-                rows={4}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+          {taskSheetMode === 'view' ? (
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <div>
-                <Label>Status</Label>
-                <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v }))}>
+                <Label className="text-xs text-muted-foreground">Title</Label>
+                <p className="text-sm font-medium mt-1">{selectedTask?.title}</p>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <p className="text-sm whitespace-pre-wrap mt-1">
+                  {selectedTask?.description || <span className="text-muted-foreground">No description</span>}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground">Status</Label>
+                  <p className="mt-1">
+                    <span className={`text-xs border rounded px-1.5 py-0.5 ${selectedTask ? (STATUS_COLORS[selectedTask.status] ?? '') : ''}`}>
+                      {selectedTask ? (STATUS_LABELS[selectedTask.status] ?? selectedTask.status) : ''}
+                    </span>
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Priority</Label>
+                  <p className={`text-sm mt-1 ${selectedTask ? (PRIORITY_COLORS[selectedTask.priority] ?? '') : ''}`}>
+                    {selectedTask?.priority}
+                  </p>
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Assigned to</Label>
+                <p className="text-sm mt-1">
+                  {selectedTask?.assigned_to === 'human' ? 'Human' : selectedTask?.assigned_to === 'agent' ? 'Agent' : 'Unassigned'}
+                </p>
+              </div>
+              {selectedTask && (
+                <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                  <p>Created by: <span className="font-medium">{selectedTask.created_by}</span></p>
+                  <p>Created: <span className="font-medium">{new Date(selectedTask.created_at).toLocaleString()}</span></p>
+                  <p>Updated: <span className="font-medium">{new Date(selectedTask.updated_at).toLocaleString()}</span></p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              <div>
+                <Label>Title</Label>
+                <Input
+                  value={editForm.title}
+                  onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label>Description</Label>
+                <Textarea
+                  value={editForm.description}
+                  onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
+                  placeholder="Add details..."
+                  rows={4}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Status</Label>
+                  <Select value={editForm.status} onValueChange={v => setEditForm(f => ({ ...f, status: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="scheduled">Scheduled</SelectItem>
+                      <SelectItem value="todo">Todo</SelectItem>
+                      <SelectItem value="in_progress">In Progress</SelectItem>
+                      <SelectItem value="done">Done</SelectItem>
+                      <SelectItem value="cancelled">Cancelled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Priority</Label>
+                  <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div>
+                <Label>Assigned to</Label>
+                <Select value={editForm.assigned_to || 'unassigned'} onValueChange={v => setEditForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="scheduled">Scheduled</SelectItem>
-                    <SelectItem value="todo">Todo</SelectItem>
-                    <SelectItem value="in_progress">In Progress</SelectItem>
-                    <SelectItem value="done">Done</SelectItem>
-                    <SelectItem value="cancelled">Cancelled</SelectItem>
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                    <SelectItem value="human">Human</SelectItem>
+                    <SelectItem value="agent">Agent</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <Label>Priority</Label>
-                <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              {selectedTask && (
+                <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                  <p>Created by: <span className="font-medium">{selectedTask.created_by}</span></p>
+                  <p>Created: <span className="font-medium">{new Date(selectedTask.created_at).toLocaleString()}</span></p>
+                  <p>Updated: <span className="font-medium">{new Date(selectedTask.updated_at).toLocaleString()}</span></p>
+                </div>
+              )}
             </div>
-            <div>
-              <Label>Assigned to</Label>
-              <Select value={editForm.assigned_to || 'unassigned'} onValueChange={v => setEditForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="unassigned">Unassigned</SelectItem>
-                  <SelectItem value="human">Human</SelectItem>
-                  <SelectItem value="agent">Agent</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {selectedTask && (
-              <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
-                <p>Created by: <span className="font-medium">{selectedTask.created_by}</span></p>
-                <p>Created: <span className="font-medium">{new Date(selectedTask.created_at).toLocaleString()}</span></p>
-                <p>Updated: <span className="font-medium">{new Date(selectedTask.updated_at).toLocaleString()}</span></p>
-              </div>
-            )}
-          </div>
+          )}
           <SheetFooter className="px-6 py-4 border-t">
             <Button variant="outline" onClick={() => setSelectedTask(null)}>Close</Button>
-            <Button onClick={handleSaveTask} disabled={isSavingTask}>
-              {isSavingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
-              Save
-            </Button>
+            {taskSheetMode === 'edit' && (
+              <Button onClick={handleSaveTask} disabled={isSavingTask}>
+                {isSavingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+                Save
+              </Button>
+            )}
           </SheetFooter>
         </SheetContent>
       </Sheet>
@@ -1106,7 +1194,23 @@ function ProjectsPageContent() {
         <SheetContent side="right" className="w-full sm:max-w-md flex flex-col gap-0 p-0">
           <SheetHeader className="px-6 py-4 border-b">
             <div className="flex items-center gap-2">
-              <SheetTitle className="text-base">Edit Routine</SheetTitle>
+              <SheetTitle className="text-base">{routineSheetMode === 'edit' ? 'Edit Routine' : 'Routine Detail'}</SheetTitle>
+              {routineSheetMode === 'view' && (
+                <button
+                  onClick={() => setRoutineSheetMode('edit')}
+                  className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                  title="Edit routine"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              )}
+              <button
+                onClick={() => selectedRoutine && openRoutineHistory(selectedRoutine)}
+                className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                title="View execution history"
+              >
+                <History className="h-4 w-4" />
+              </button>
               <button
                 onClick={() => setConfirmDeleteRoutine(true)}
                 className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
@@ -1119,72 +1223,164 @@ function ProjectsPageContent() {
               <p className="text-xs text-muted-foreground">{selectedRoutine.project_name}</p>
             )}
           </SheetHeader>
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            <div>
-              <Label>Title</Label>
-              <Input
-                value={routineEditForm.title}
-                onChange={e => setRoutineEditForm(f => ({ ...f, title: e.target.value }))}
-              />
-            </div>
-            <div>
-              <Label>Description</Label>
-              <Textarea
-                value={routineEditForm.description}
-                onChange={e => setRoutineEditForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="Instructions for the agent..."
-                rows={4}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+          {routineSheetMode === 'view' ? (
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <div>
-                <Label>Repeat</Label>
-                <Select value={routineEditForm.frequency} onValueChange={v => setRoutineEditForm(f => ({ ...f, frequency: v }))}>
+                <Label className="text-xs text-muted-foreground">Title</Label>
+                <p className="text-sm font-medium mt-1">{selectedRoutine?.title}</p>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <p className="text-sm whitespace-pre-wrap mt-1">
+                  {selectedRoutine?.description || <span className="text-muted-foreground">No description</span>}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground">Repeat</Label>
+                  <p className="text-sm mt-1 flex items-center gap-1">
+                    <Repeat2 className="h-3 w-3 text-muted-foreground" />
+                    {FREQ_LABELS[selectedRoutine?.frequency ?? ''] ?? selectedRoutine?.frequency}
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Priority</Label>
+                  <p className={`text-sm mt-1 ${selectedRoutine ? (PRIORITY_COLORS[selectedRoutine.priority] ?? '') : ''}`}>
+                    {selectedRoutine?.priority}
+                  </p>
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Assigned to</Label>
+                <p className="text-sm mt-1">
+                  {selectedRoutine?.assigned_to === 'human' ? 'Human' : selectedRoutine?.assigned_to === 'agent' ? 'Agent' : 'Unassigned'}
+                </p>
+              </div>
+              {selectedRoutine && (
+                <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                  <p>Created: <span className="font-medium">{new Date(selectedRoutine.created_at).toLocaleString()}</span></p>
+                  <p>Updated: <span className="font-medium">{new Date(selectedRoutine.updated_at).toLocaleString()}</span></p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              <div>
+                <Label>Title</Label>
+                <Input
+                  value={routineEditForm.title}
+                  onChange={e => setRoutineEditForm(f => ({ ...f, title: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label>Description</Label>
+                <Textarea
+                  value={routineEditForm.description}
+                  onChange={e => setRoutineEditForm(f => ({ ...f, description: e.target.value }))}
+                  placeholder="Instructions for the agent..."
+                  rows={4}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Repeat</Label>
+                  <Select value={routineEditForm.frequency} onValueChange={v => setRoutineEditForm(f => ({ ...f, frequency: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                      <SelectItem value="monthly">Monthly</SelectItem>
+                      <SelectItem value="yearly">Yearly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Priority</Label>
+                  <Select value={routineEditForm.priority} onValueChange={v => setRoutineEditForm(f => ({ ...f, priority: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div>
+                <Label>Assigned to</Label>
+                <Select value={routineEditForm.assigned_to || 'unassigned'} onValueChange={v => setRoutineEditForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="daily">Daily</SelectItem>
-                    <SelectItem value="weekly">Weekly</SelectItem>
-                    <SelectItem value="monthly">Monthly</SelectItem>
-                    <SelectItem value="yearly">Yearly</SelectItem>
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                    <SelectItem value="human">Human</SelectItem>
+                    <SelectItem value="agent">Agent</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <Label>Priority</Label>
-                <Select value={routineEditForm.priority} onValueChange={v => setRoutineEditForm(f => ({ ...f, priority: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                  </SelectContent>
-                </Select>
+              {selectedRoutine && (
+                <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                  <p>Created: <span className="font-medium">{new Date(selectedRoutine.created_at).toLocaleString()}</span></p>
+                  <p>Updated: <span className="font-medium">{new Date(selectedRoutine.updated_at).toLocaleString()}</span></p>
+                </div>
+              )}
+            </div>
+          )}
+          <SheetFooter className="px-6 py-4 border-t flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setSelectedRoutine(null)}>Close</Button>
+            {routineSheetMode === 'edit' && (
+              <Button className="flex-1" onClick={handleSaveRoutine} disabled={isSavingRoutine}>
+                {isSavingRoutine && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+                Save
+              </Button>
+            )}
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      {/* Routine Execution History Sheet */}
+      <Sheet open={routineHistoryOpen} onOpenChange={open => !open && setRoutineHistoryOpen(false)}>
+        <SheetContent side="right" className="w-full sm:max-w-md flex flex-col gap-0 p-0">
+          <SheetHeader className="px-6 py-4 border-b">
+            <SheetTitle className="text-base">Execution History</SheetTitle>
+            {routineHistoryRoutine && (
+              <p className="text-xs text-muted-foreground">
+                {routineHistoryRoutine.title}
+                {routineHistoryRoutine.project_name ? ` · ${routineHistoryRoutine.project_name}` : ''}
+              </p>
+            )}
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-4">
+            {isLoadingRoutineHistory ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                Loading...
               </div>
-            </div>
-            <div>
-              <Label>Assigned to</Label>
-              <Select value={routineEditForm.assigned_to || 'unassigned'} onValueChange={v => setRoutineEditForm(f => ({ ...f, assigned_to: v === 'unassigned' ? '' : v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="unassigned">Unassigned</SelectItem>
-                  <SelectItem value="human">Human</SelectItem>
-                  <SelectItem value="agent">Agent</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {selectedRoutine && (
-              <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
-                <p>Created: <span className="font-medium">{new Date(selectedRoutine.created_at).toLocaleString()}</span></p>
-                <p>Updated: <span className="font-medium">{new Date(selectedRoutine.updated_at).toLocaleString()}</span></p>
+            ) : routineHistoryTasks.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-12">No tasks generated yet</p>
+            ) : (
+              <div className="space-y-2">
+                {routineHistoryTasks.map(task => (
+                  <button
+                    key={task.id}
+                    onClick={() => { setRoutineHistoryOpen(false); openTaskSheet(task); }}
+                    className="w-full text-left rounded-md border p-3 hover:bg-accent transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium truncate">{task.title}</span>
+                      <span className={`text-xs shrink-0 border rounded px-1.5 py-0.5 ${STATUS_COLORS[task.status] ?? ''}`}>
+                        {STATUS_LABELS[task.status] ?? task.status}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {new Date(task.created_at).toLocaleString()}
+                    </p>
+                  </button>
+                ))}
               </div>
             )}
           </div>
-          <SheetFooter className="px-6 py-4 border-t flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setSelectedRoutine(null)}>Close</Button>
-            <Button className="flex-1" onClick={handleSaveRoutine} disabled={isSavingRoutine}>
-              {isSavingRoutine && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
-              Save
-            </Button>
+          <SheetFooter className="px-6 py-4 border-t">
+            <Button variant="outline" className="w-full" onClick={() => setRoutineHistoryOpen(false)}>Close</Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>
@@ -1261,15 +1457,13 @@ export default function ProjectsPage() {
   );
 }
 
-function RoutineCard({ routine, showProject, onOpen }: {
+function RoutineCard({ routine, showProject, onOpen, onEdit }: {
   routine: Routine;
   showProject: boolean;
   onOpen: (routine: Routine) => void;
+  onEdit: (routine: Routine) => void;
 }) {
   const [hovered, setHovered] = useState(false);
-  const FREQ_LABELS: Record<string, string> = {
-    daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly',
-  };
   const freqLabel = FREQ_LABELS[routine.frequency] ?? routine.frequency;
   return (
     <div
@@ -1303,7 +1497,7 @@ function RoutineCard({ routine, showProject, onOpen }: {
         style={{ opacity: hovered ? 1 : 0 }}
       >
         <button
-          onClick={e => { e.stopPropagation(); onOpen(routine); }}
+          onClick={e => { e.stopPropagation(); onEdit(routine); }}
           className="p-1.5 rounded hover:bg-muted text-muted-foreground"
           title="Edit routine"
         >
@@ -1314,11 +1508,12 @@ function RoutineCard({ routine, showProject, onOpen }: {
   );
 }
 
-function TaskCard({ task, showProject, onStatusCycle, onOpen, onDelete }: {
+function TaskCard({ task, showProject, onStatusCycle, onOpen, onEdit, onDelete }: {
   task: Task;
   showProject: boolean;
   onStatusCycle: (task: Task) => void;
   onOpen: (task: Task) => void;
+  onEdit: (task: Task) => void;
   onDelete: (id: string) => void;
   onDragStart?: (id: string) => void;
 }) {
@@ -1369,7 +1564,7 @@ function TaskCard({ task, showProject, onStatusCycle, onOpen, onDelete }: {
       {/* Action buttons — shown on hover */}
       <div className="shrink-0 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
-          onClick={e => { e.stopPropagation(); onOpen(task); }}
+          onClick={e => { e.stopPropagation(); onEdit(task); }}
           className="p-1.5 rounded hover:bg-muted text-muted-foreground"
           title="Edit task"
         >
