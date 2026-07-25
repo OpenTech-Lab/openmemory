@@ -237,18 +237,29 @@ export function ResourcesPanel() {
   // Tag filter
   const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
 
+  // Keyword search
+  const [searchQuery, setSearchQuery] = useState('');
+
   const distinctTags = useMemo(
     () => Array.from(new Set(resources.flatMap((r) => r.tags))).sort(),
     [resources]
   );
 
-  const filteredResources = useMemo(
-    () =>
-      activeTags.size === 0
-        ? resources
-        : resources.filter((r) => r.tags.some((t) => activeTags.has(t))),
-    [resources, activeTags]
-  );
+  const filteredResources = useMemo(() => {
+    let result = resources;
+    if (activeTags.size > 0) {
+      result = result.filter((r) => r.tags.some((t) => activeTags.has(t)));
+    }
+    const query = searchQuery.trim().toLowerCase();
+    if (query) {
+      result = result.filter((r) =>
+        [r.name, r.location, r.description ?? '', ...r.tags].some((field) =>
+          field.toLowerCase().includes(query)
+        )
+      );
+    }
+    return result;
+  }, [resources, activeTags, searchQuery]);
 
   const toggleTag = (tag: string) => {
     setActiveTags((prev) => {
@@ -397,6 +408,14 @@ export function ResourcesPanel() {
           </p>
         </div>
         <div className="flex gap-2">
+          {resources.length > 0 && (
+            <Input
+              placeholder="Search resources..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 w-[220px]"
+            />
+          )}
           <Button variant="outline" size="sm" onClick={fetchResources} disabled={isLoading}>
             <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
             Refresh
@@ -461,6 +480,12 @@ export function ResourcesPanel() {
               )}
             </div>
           )}
+          {filteredResources.length === 0 ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <Boxes className="h-10 w-10 mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No resources match your search.</p>
+            </div>
+          ) : (
           <div className="rounded-md border overflow-auto max-h-[600px]">
           <Table>
             <TableHeader>
@@ -569,6 +594,7 @@ export function ResourcesPanel() {
             </TableBody>
           </Table>
           </div>
+          )}
           </>
         )}
       </div>
