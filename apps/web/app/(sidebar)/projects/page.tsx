@@ -174,7 +174,7 @@ function ProjectsPageContent() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskSheetMode, setTaskSheetMode] = useState<'view' | 'edit'>('view');
   const [confirmDeleteTaskId, setConfirmDeleteTaskId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ title: '', description: '', status: '', priority: '', assigned_to: '' });
+  const [editForm, setEditForm] = useState({ title: '', description: '', status: '', priority: '', assigned_to: '', labels: [] as string[] });
   const [isSavingTask, setIsSavingTask] = useState(false);
 
   // Routine edit sheet
@@ -499,6 +499,7 @@ function ProjectsPageContent() {
       status: task.status,
       priority: task.priority,
       assigned_to: task.assigned_to ?? '',
+      labels: task.labels ?? [],
     });
   };
 
@@ -515,6 +516,7 @@ function ProjectsPageContent() {
           status: editForm.status,
           priority: editForm.priority,
           assigned_to: editForm.assigned_to || null,
+          labels: editForm.labels,
         }),
       });
       if (!res.ok) { toast.error('Failed to save task'); return; }
@@ -1238,6 +1240,20 @@ function ProjectsPageContent() {
                   {selectedTask?.assigned_to === 'human' ? 'Human' : selectedTask?.assigned_to === 'agent' ? 'Agent' : 'Unassigned'}
                 </p>
               </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Labels</Label>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {selectedTask?.labels?.length ? (
+                    selectedTask.labels.map(l => (
+                      <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
+                        {l}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No labels</span>
+                  )}
+                </div>
+              </div>
               {selectedTask && (
                 <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
                   <p>Created by: <span className="font-medium">{selectedTask.created_by}</span></p>
@@ -1300,6 +1316,10 @@ function ProjectsPageContent() {
                     <SelectItem value="agent">Agent</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div>
+                <Label>Labels</Label>
+                <LabelChipInput value={editForm.labels} onChange={labels => setEditForm(f => ({ ...f, labels }))} />
               </div>
               {selectedTask && (
                 <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">

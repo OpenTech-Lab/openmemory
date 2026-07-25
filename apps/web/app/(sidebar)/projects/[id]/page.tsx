@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand } from 'lucide-react';
+import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { MAX_NODES_FULL, type GraphifyData, type GraphQueryResult } from '@/components/project-graph-types';
 import { ProjectFilesBrowser } from '@/components/project-files-browser';
@@ -127,6 +127,7 @@ export default function ProjectDetailPage() {
   const [showTaskDialog, setShowTaskDialog] = useState(false);
   const [taskForm, setTaskForm] = useState({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] as string[] });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   // Routines
   const [routines, setRoutines] = useState<Routine[]>([]);
@@ -319,34 +320,70 @@ export default function ProjectDetailPage() {
     }
   };
 
-  const handleCreateTask = async () => {
+  const openTaskCreate = () => {
+    setEditingTaskId(null);
+    setTaskForm({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] });
+    setShowTaskDialog(true);
+  };
+
+  const openTaskEdit = (task: Task) => {
+    setEditingTaskId(task.id);
+    setTaskForm({
+      title: task.title,
+      description: task.description ?? '',
+      status: task.status,
+      priority: task.priority,
+      assigned_to: task.assigned_to ?? '',
+      labels: task.labels ?? [],
+    });
+    setShowTaskDialog(true);
+  };
+
+  const handleSaveTask = async () => {
     if (!taskForm.title.trim()) { toast.error('Title is required'); return; }
     setIsCreatingTask(true);
     try {
-      const body: Record<string, string | string[]> = {
-        title: taskForm.title,
-        status: taskForm.status,
-        priority: taskForm.priority,
-      };
-      if (taskForm.description.trim()) body.description = taskForm.description.trim();
-      if (taskForm.assigned_to) body.assigned_to = taskForm.assigned_to;
-      if (taskForm.labels.length) body.labels = taskForm.labels;
-      const res = await fetch(`/api/projects/${id}/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      let res: Response;
+      if (editingTaskId) {
+        res = await fetch(`/api/projects/${id}/tasks/${editingTaskId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: taskForm.title,
+            description: taskForm.description.trim() || null,
+            status: taskForm.status,
+            priority: taskForm.priority,
+            assigned_to: taskForm.assigned_to || null,
+            labels: taskForm.labels,
+          }),
+        });
+      } else {
+        const body: Record<string, string | string[]> = {
+          title: taskForm.title,
+          status: taskForm.status,
+          priority: taskForm.priority,
+        };
+        if (taskForm.description.trim()) body.description = taskForm.description.trim();
+        if (taskForm.assigned_to) body.assigned_to = taskForm.assigned_to;
+        if (taskForm.labels.length) body.labels = taskForm.labels;
+        res = await fetch(`/api/projects/${id}/tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        toast.error(b.error ?? 'Failed to create task');
+        toast.error(b.error ?? `Failed to ${editingTaskId ? 'save' : 'create'} task`);
         return;
       }
       setShowTaskDialog(false);
+      setEditingTaskId(null);
       setTaskForm({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] });
       fetchTasks();
-      toast.success('Task created');
+      toast.success(editingTaskId ? 'Task saved' : 'Task created');
     } catch {
-      toast.error('Failed to create task');
+      toast.error(`Failed to ${editingTaskId ? 'save' : 'create'} task`);
     } finally {
       setIsCreatingTask(false);
     }
@@ -542,7 +579,7 @@ export default function ProjectDetailPage() {
               <h2 className="text-sm font-medium text-muted-foreground">
                 {taskCount} task{taskCount !== 1 ? 's' : ''}
               </h2>
-              <Button size="sm" onClick={() => setShowTaskDialog(true)}>
+              <Button size="sm" onClick={openTaskCreate}>
                 <Plus className="h-4 w-4 mr-1" /> Add Task
               </Button>
             </div>
@@ -553,7 +590,7 @@ export default function ProjectDetailPage() {
             ) : tasks.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
                 <p>No tasks yet.</p>
-                <Button variant="outline" size="sm" onClick={() => setShowTaskDialog(true)}>
+                <Button variant="outline" size="sm" onClick={openTaskCreate}>
                   <Plus className="h-4 w-4 mr-1" /> Add first task
                 </Button>
               </div>
@@ -585,6 +622,13 @@ export default function ProjectDetailPage() {
                       ))}
                       {task.assigned_to === 'human' && <User className="h-3.5 w-3.5 text-muted-foreground" />}
                       {task.assigned_to === 'agent' && <Bot className="h-3.5 w-3.5 text-muted-foreground" />}
+                      <button
+                        onClick={() => openTaskEdit(task)}
+                        className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors ml-1"
+                        title="Edit task"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <button
                         onClick={() => handleDeleteTask(task.id)}
                         className="text-xs text-muted-foreground hover:text-destructive transition-colors ml-1"
@@ -769,10 +813,10 @@ export default function ProjectDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Add Task Dialog */}
-      <Dialog open={showTaskDialog} onOpenChange={setShowTaskDialog}>
+      {/* Add/Edit Task Dialog */}
+      <Dialog open={showTaskDialog} onOpenChange={open => { setShowTaskDialog(open); if (!open) setEditingTaskId(null); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>New Task</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{editingTaskId ? 'Edit Task' : 'New Task'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div>
               <Label>Title</Label>
@@ -780,7 +824,7 @@ export default function ProjectDetailPage() {
                 value={taskForm.title}
                 onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))}
                 placeholder="Task title"
-                onKeyDown={e => e.key === 'Enter' && handleCreateTask()}
+                onKeyDown={e => e.key === 'Enter' && handleSaveTask()}
               />
             </div>
             <div>
@@ -830,10 +874,10 @@ export default function ProjectDetailPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowTaskDialog(false)}>Cancel</Button>
-            <Button onClick={handleCreateTask} disabled={isCreatingTask}>
+            <Button variant="outline" onClick={() => { setShowTaskDialog(false); setEditingTaskId(null); }}>Cancel</Button>
+            <Button onClick={handleSaveTask} disabled={isCreatingTask}>
               {isCreatingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
-              Create
+              {editingTaskId ? 'Save' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
