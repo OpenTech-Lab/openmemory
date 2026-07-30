@@ -191,6 +191,58 @@ struct UpdateTaskPayload {
     due_date: Option<Option<chrono::NaiveDate>>,
 }
 
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct ProjectLesson {
+    id: Uuid,
+    project_id: Uuid,
+    title: String,
+    context: Option<String>,
+    rule: String,
+    category: String,
+    severity: String,
+    status: String,
+    tags: Vec<String>,
+    occurrences: i32,
+    created_by: String,
+    last_seen_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateLessonPayload {
+    title: String,
+    rule: String,
+    context: Option<String>,
+    category: Option<String>,
+    severity: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateLessonPayload {
+    title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    context: Option<Option<String>>,
+    rule: Option<String>,
+    category: Option<String>,
+    severity: Option<String>,
+    status: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListLessonsParams {
+    query: Option<String>,
+    category: Option<String>,
+    tags: Option<String>,
+    status: Option<String>,
+    #[serde(default = "default_task_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
 /// Trim/lowercase/dedupe task labels — built-ins and free-text custom labels alike.
 fn normalize_labels(labels: &[String]) -> Vec<String> {
     let mut out: Vec<String> = labels.iter()
@@ -1250,6 +1302,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/routines", get(list_project_routines).post(create_project_routine))
         .route("/projects/:id/routines/check", post(check_project_routines))
         .route("/projects/:id/routines/:routine_id", axum::routing::put(update_project_routine).delete(delete_project_routine))
+        .route("/projects/:id/lessons", get(list_project_lessons).post(create_project_lesson))
+        .route("/projects/:id/lessons/:lesson_id", axum::routing::put(update_project_lesson).delete(delete_project_lesson))
+        .route("/lessons", get(search_lessons))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
@@ -1473,6 +1528,41 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0")
         .execute(db).await.ok();
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_parent_id ON project_tasks(parent_id)")
+        .execute(db).await.ok();
+
+    // Lessons learned (structured equivalent of tasks/lessons.md)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_lessons (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id   UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            title        TEXT        NOT NULL,
+            context      TEXT,
+            rule         TEXT        NOT NULL,
+            category     TEXT        NOT NULL DEFAULT 'correction',
+            severity     TEXT        NOT NULL DEFAULT 'medium',
+            status       TEXT        NOT NULL DEFAULT 'active',
+            tags         TEXT[]      NOT NULL DEFAULT '{}',
+            occurrences  INTEGER     NOT NULL DEFAULT 1,
+            created_by   TEXT        NOT NULL DEFAULT 'agent',
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_lessons table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_lessons_project_id ON project_lessons(project_id)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_lessons_tags ON project_lessons USING gin(tags)")
+        .execute(db).await.ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_lessons_fts ON project_lessons \
+         USING gin(to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule))"
+    )
         .execute(db).await.ok();
 
     info!("PostgreSQL migrations complete");
@@ -4632,6 +4722,279 @@ async fn delete_project_task(
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "task not found"}))).into_response(),
         Err(e) => {
             error!("delete_project_task error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lessons-learned handlers
+// ---------------------------------------------------------------------------
+
+const PROJECT_LESSON_COLUMNS: &str = "id, project_id, title, context, rule, category, severity, status, tags, occurrences, created_by, last_seen_at, created_at, updated_at";
+
+async fn list_project_lessons(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(params): Query<ListLessonsParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.max(0);
+    let status = params.status.as_deref().unwrap_or("active");
+    let tag_filter: Vec<String> = normalize_labels(
+        &params.tags.as_deref().unwrap_or("").split(',').map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+
+    let rows = if let Some(query) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
+        sqlx::query_as::<_, ProjectLesson>(&format!(
+            "SELECT {cols} FROM project_lessons \
+             WHERE project_id = $1 AND status = $2 \
+               AND ($3::text IS NULL OR category = $3) \
+               AND ($4::text[] IS NULL OR cardinality($4::text[]) = 0 OR tags && $4) \
+               AND to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule) @@ plainto_tsquery('english', $5) \
+             ORDER BY ts_rank(to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule), plainto_tsquery('english', $5)) DESC \
+             LIMIT $6 OFFSET $7",
+            cols = PROJECT_LESSON_COLUMNS
+        ))
+        .bind(project_id)
+        .bind(status)
+        .bind(&params.category)
+        .bind(&tag_filter)
+        .bind(query)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db).await
+    } else {
+        sqlx::query_as::<_, ProjectLesson>(&format!(
+            "SELECT {cols} FROM project_lessons \
+             WHERE project_id = $1 AND status = $2 \
+               AND ($3::text IS NULL OR category = $3) \
+               AND ($4::text[] IS NULL OR cardinality($4::text[]) = 0 OR tags && $4) \
+             ORDER BY severity DESC, last_seen_at DESC \
+             LIMIT $5 OFFSET $6",
+            cols = PROJECT_LESSON_COLUMNS
+        ))
+        .bind(project_id)
+        .bind(status)
+        .bind(&params.category)
+        .bind(&tag_filter)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db).await
+    };
+
+    match rows {
+        Ok(lessons) => Json(serde_json::json!({"lessons": lessons, "total": lessons.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_lessons error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_lesson(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateLessonPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if payload.title.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "title must be non-empty"}))).into_response();
+    }
+    if payload.rule.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "rule must be non-empty"}))).into_response();
+    }
+
+    let category = payload.category.as_deref().unwrap_or("correction");
+    let severity = payload.severity.as_deref().unwrap_or("medium");
+    let tags = normalize_labels(&payload.tags.clone().unwrap_or_default());
+
+    // Dedupe: same project + case-insensitive title match among active lessons bumps
+    // occurrences/last_seen_at instead of inserting a duplicate row.
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM project_lessons WHERE project_id = $1 AND status = 'active' AND lower(trim(title)) = lower(trim($2))"
+    )
+    .bind(project_id)
+    .bind(&payload.title)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
+
+    let row = if let Some(lesson_id) = existing {
+        sqlx::query_as::<_, ProjectLesson>(&format!(
+            "UPDATE project_lessons SET occurrences = occurrences + 1, last_seen_at = NOW(), updated_at = NOW() \
+             WHERE id = $1 RETURNING {cols}",
+            cols = PROJECT_LESSON_COLUMNS
+        ))
+        .bind(lesson_id)
+        .fetch_one(&state.db)
+        .await
+    } else {
+        sqlx::query_as::<_, ProjectLesson>(&format!(
+            "INSERT INTO project_lessons (project_id, title, context, rule, category, severity, tags) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             RETURNING {cols}",
+            cols = PROJECT_LESSON_COLUMNS
+        ))
+        .bind(project_id)
+        .bind(&payload.title)
+        .bind(&payload.context)
+        .bind(&payload.rule)
+        .bind(category)
+        .bind(severity)
+        .bind(&tags)
+        .fetch_one(&state.db)
+        .await
+    };
+
+    match row {
+        Ok(lesson) => (StatusCode::CREATED, Json(serde_json::json!(lesson))).into_response(),
+        Err(e) => {
+            error!("create_project_lesson error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_lesson(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, lesson_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateLessonPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let tags = payload.tags.as_ref().map(|t| normalize_labels(t));
+
+    let row = sqlx::query_as::<_, ProjectLesson>(&format!(
+        "UPDATE project_lessons SET \
+         title = COALESCE($1, title), \
+         context = CASE WHEN $2 THEN $3 ELSE context END, \
+         rule = COALESCE($4, rule), \
+         category = COALESCE($5, category), \
+         severity = COALESCE($6, severity), \
+         status = COALESCE($7, status), \
+         tags = COALESCE($8, tags), \
+         updated_at = NOW() \
+         WHERE id = $9 AND project_id = $10 \
+         RETURNING {cols}",
+        cols = PROJECT_LESSON_COLUMNS
+    ))
+    .bind(&payload.title)
+    .bind(payload.context.is_some())
+    .bind(payload.context.clone().flatten())
+    .bind(&payload.rule)
+    .bind(&payload.category)
+    .bind(&payload.severity)
+    .bind(&payload.status)
+    .bind(&tags)
+    .bind(lesson_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(lesson)) => Json(serde_json::json!(lesson)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "lesson not found"}))).into_response(),
+        Err(e) => {
+            error!("update_project_lesson error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_project_lesson(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, lesson_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let result = sqlx::query("DELETE FROM project_lessons WHERE id = $1 AND project_id = $2 RETURNING id")
+        .bind(lesson_id)
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await;
+
+    match result {
+        Ok(Some(_)) => Json(serde_json::json!({"deleted": lesson_id})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "lesson not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_lesson error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn search_lessons(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ListLessonsParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.max(0);
+    let status = params.status.as_deref().unwrap_or("active");
+    let tag_filter: Vec<String> = normalize_labels(
+        &params.tags.as_deref().unwrap_or("").split(',').map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+
+    let rows = if let Some(query) = params.query.as_ref().filter(|q| !q.trim().is_empty()) {
+        sqlx::query_as::<_, ProjectLesson>(&format!(
+            "SELECT {cols} FROM project_lessons \
+             WHERE status = $1 \
+               AND ($2::text IS NULL OR category = $2) \
+               AND ($3::text[] IS NULL OR cardinality($3::text[]) = 0 OR tags && $3) \
+               AND to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule) @@ plainto_tsquery('english', $4) \
+             ORDER BY ts_rank(to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule), plainto_tsquery('english', $4)) DESC \
+             LIMIT $5 OFFSET $6",
+            cols = PROJECT_LESSON_COLUMNS
+        ))
+        .bind(status)
+        .bind(&params.category)
+        .bind(&tag_filter)
+        .bind(query)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db).await
+    } else {
+        sqlx::query_as::<_, ProjectLesson>(&format!(
+            "SELECT {cols} FROM project_lessons \
+             WHERE status = $1 \
+               AND ($2::text IS NULL OR category = $2) \
+               AND ($3::text[] IS NULL OR cardinality($3::text[]) = 0 OR tags && $3) \
+             ORDER BY severity DESC, last_seen_at DESC \
+             LIMIT $4 OFFSET $5",
+            cols = PROJECT_LESSON_COLUMNS
+        ))
+        .bind(status)
+        .bind(&params.category)
+        .bind(&tag_filter)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db).await
+    };
+
+    match rows {
+        Ok(lessons) => Json(serde_json::json!({"lessons": lessons, "total": lessons.len()})).into_response(),
+        Err(e) => {
+            error!("search_lessons error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }

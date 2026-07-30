@@ -29,6 +29,7 @@ import { ProjectFilesBrowser } from '@/components/project-files-browser';
 import { ProjectCommitGraph } from '@/components/project-commit-graph';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
+import { LessonsPanel } from '@/components/lessons-panel';
 
 const ProjectGraph2D = dynamic(
   () => import('@/components/project-graph-2d').then(m => m.ProjectGraph2D),
@@ -116,7 +117,7 @@ export default function ProjectDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
-  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'files' | 'history'>('graph');
+  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'files' | 'history'>('graph');
 
   // Graph query
   const [queryInput, setQueryInput] = useState('');
@@ -500,6 +501,12 @@ export default function ProjectDetailPage() {
         >
           Routines {routines.length > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{routines.length}</span>}
         </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'lessons' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('lessons')}
+        >
+          Lessons
+        </button>
         {hasGraph && (
           <button
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'files' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
@@ -783,6 +790,13 @@ export default function ProjectDetailPage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Lessons tab */}
+        {activeTab === 'lessons' && (
+          <div className="flex flex-col h-full p-6 overflow-auto">
+            <LessonsPanel projectId={id} />
           </div>
         )}
 

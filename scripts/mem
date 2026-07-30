@@ -105,6 +105,9 @@ Resource catalog commands (local paths + website URLs):
   #   mem env-set RESOURCE_URL.<slug> https://... --description "..."
   #   mem env-set RESOURCE_AUTH.<slug> CREDENTIAL_KEY_NAME   # links env_param_key
 
+Lessons-learned commands (read-only; writes go through the agent via MCP):
+  lessons [--project <uuid>] [--query TEXT] [--limit N]
+
 Session watcher commands (Mode 3):
   sessions [--limit 50]                list recorded sessions
   sessions <uuid>                      show session details
@@ -368,6 +371,37 @@ case "$CMD" in
     ID="${1:?error: uuid required — usage: mem resource-delete <uuid>}"
     PAYLOAD=$(jq -n --arg id "$ID" '{type:"resource.delete",id:$id}')
     _post "$PAYLOAD"
+    ;;
+
+  lessons)
+    _require_jq
+    shift
+    PROJECT=""
+    QUERY=""
+    LIMIT=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --project) PROJECT="$2"; shift 2 ;;
+            --query) QUERY="$2"; shift 2 ;;
+            --limit) LIMIT="$2"; shift 2 ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PARAMS=""
+    _add_param() {
+        local key="$1" value="$2"
+        [ -z "$value" ] && return
+        local enc
+        enc=$(jq -rn --arg v "$value" '$v|@uri')
+        PARAMS="${PARAMS}${PARAMS:+&}${key}=${enc}"
+    }
+    _add_param "query" "$QUERY"
+    _add_param "limit" "$LIMIT"
+    if [ -n "$PROJECT" ]; then
+        _get "/projects/${PROJECT}/lessons${PARAMS:+?$PARAMS}"
+    else
+        _get "/lessons${PARAMS:+?$PARAMS}"
+    fi
     ;;
 
   help|--help|-h|"")

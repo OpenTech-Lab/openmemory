@@ -166,38 +166,42 @@ mem env-delete <key>
 
 Track work items alongside memories. Projects can be pure task-management containers (no folder path required) or linked to a code knowledge graph.
 
-### MCP tools (via `mcp` request type)
+### Tools
+
+Projects, tasks, routines, and lessons are **not** on the legacy `/mcp` request
+enum (that endpoint only understands `memory.*`, `graph.*`, `env.*`, and
+`resource.*`). They're exposed two ways instead: as MCP tools
+(`project_list`, `project_task_list`, `project_task_create`,
+`project_task_update`, `project_task_delete`, ...) callable from an agent
+session, and as plain REST routes on the server for scripting/curl:
 
 ```bash
+TOKEN=$(tr -d '[:space:]' < ~/.openmemory/api_token)
+BASE="${OPENMEMORY_URL:-http://localhost:8080}"
+
 # List all projects with task counts
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"project_list"}'
+curl -s "$BASE/projects" -H "Authorization: Bearer $TOKEN"
 
 # Create a project (path optional)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+curl -s -X POST "$BASE/projects" -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"type":"project_create","name":"my-project","description":"optional"}'
+  -d '{"name":"my-project","description":"optional"}'
 
-# List tasks for a project (use project_id from project_list)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"project_task_list","project_id":"<uuid>","status":"todo"}'
+# List tasks for a project (use project_id from the projects list)
+curl -s "$BASE/projects/<uuid>/tasks?status=todo" -H "Authorization: Bearer $TOKEN"
 
-# Create a task (created_by is set to 'agent' automatically via MCP)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+# Create a task
+curl -s -X POST "$BASE/projects/<uuid>/tasks" -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"type":"project_task_create","project_id":"<uuid>","title":"Fix the auth bug","priority":"high","assigned_to":"agent"}'
+  -d '{"title":"Fix the auth bug","priority":"high","assigned_to":"agent"}'
 
 # Update a task (only provided fields change)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+curl -s -X PUT "$BASE/projects/<uuid>/tasks/<task_id>" -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"type":"project_task_update","project_id":"<uuid>","task_id":"<uuid>","status":"in_progress"}'
+  -d '{"status":"in_progress"}'
 
 # Delete a task
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"project_task_delete","project_id":"<uuid>","task_id":"<uuid>"}'
+curl -s -X DELETE "$BASE/projects/<uuid>/tasks/<task_id>" -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Task fields
@@ -225,31 +229,23 @@ Routines are repeating task templates. They do **not** run on a timer — they g
 3. If the routine is due (hasn't run today), a task is created: `"Research top news — 2026-06-03"`
 4. Agent handles the task, moves it `in_progress` → `done`
 
+Use the `routine_check`, `routine_list`, and `routine_create` MCP tools from an
+agent session. Over REST (same auth as above):
+
 ```bash
 # Check which routines are due and create tasks for them
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"routine_check"}'                       # all projects
-
-# Scope to one project
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"routine_check","project_id":"<uuid>"}'
+curl -s -X POST "$BASE/projects/<uuid>/routines/check" -H "Authorization: Bearer $TOKEN"
 
 # Preview without creating (dry run)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"routine_check","dry_run":true}'
+curl -s -X POST "$BASE/projects/<uuid>/routines/check?dry_run=true" -H "Authorization: Bearer $TOKEN"
 
 # List routines for a project
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"routine_list","project_id":"<uuid>"}'
+curl -s "$BASE/projects/<uuid>/routines" -H "Authorization: Bearer $TOKEN"
 
 # Create a routine
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
+curl -s -X POST "$BASE/projects/<uuid>/routines" -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"type":"routine_create","project_id":"<uuid>","title":"Research top news","frequency":"daily","assigned_to":"agent"}'
+  -d '{"title":"Research top news","frequency":"daily","assigned_to":"agent"}'
 ```
 
 ### Routine fields
@@ -266,6 +262,50 @@ curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
 - **monthly**: no task created this calendar month
 
 Tasks generated from routines have `created_by = 'agent'` and include the date in the title. Humans manage routines at `/projects/[id]` → Routines tab.
+
+## Lessons Learned
+
+A structured, per-project store for corrections and conventions — the same shape as
+per-project `tasks/lessons.md` files (`## title`, context, rule), but queryable
+instead of scattered markdown. Use the `lesson_create`, `lesson_list`,
+`lesson_update`, and `lesson_delete` MCP tools from an agent session.
+
+- Call `lesson_list` (with `project_id`) at the **start of a session** to load
+  accumulated lessons before doing any work — this is the direct replacement for
+  reading `tasks/lessons.md` by hand.
+- Call `lesson_create` after any correction from the user: give it a short `title`,
+  the `rule` to follow going forward, and optionally `context` (what happened),
+  `category`, `severity`, and `tags`. Recording the same `title` again in the same
+  project bumps an `occurrences` counter instead of creating a duplicate.
+- Set `status` to `archived` via `lesson_update` when a lesson is superseded,
+  rather than deleting it.
+
+| Field | Values | Default |
+|-------|--------|---------|
+| `category` | `correction` \| `discovery` \| `convention` \| `pitfall` | `correction` |
+| `severity` | `low` \| `medium` \| `high` | `medium` |
+| `status` | `active` \| `archived` | `active` |
+
+Over REST (same auth as above):
+
+```bash
+# List/search lessons for a project (query does full-text search over title+context+rule)
+curl -s "$BASE/projects/<uuid>/lessons?query=scroll" -H "Authorization: Bearer $TOKEN"
+
+# Cross-project search
+curl -s "$BASE/lessons?query=shadcn" -H "Authorization: Bearer $TOKEN"
+
+# Create a lesson (re-posting the same title bumps occurrences instead of duplicating)
+curl -s -X POST "$BASE/projects/<uuid>/lessons" -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"title":"Don'"'"'t restart the stdio MCP server mid-session","rule":"Compile-verify instead and hand the restart back to the user.","category":"pitfall","severity":"high"}'
+```
+
+Or from the CLI (read-only — writes go through the agent via MCP):
+
+```bash
+mem lessons --project <uuid> [--query TEXT] [--limit N]
+```
 
 ## Security Note
 

@@ -217,6 +217,17 @@ struct McpServer {
     encryption_key: [u8; 32],
 }
 
+/// Trim/lowercase/dedupe lesson tags — mirrors main.rs's normalize_labels for the REST path.
+fn normalize_lesson_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = tags.iter()
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn is_routine_due_mcp(frequency: &str, last_task_date: Option<chrono::NaiveDate>) -> bool {
     use chrono::{Datelike, Utc};
     let today = Utc::now().date_naive();
@@ -1198,6 +1209,70 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "lesson_create",
+                    "description": "Record a lesson learned in a project's lessons store. If an active lesson with the same title already exists in this project, its occurrence count is bumped instead of creating a duplicate.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "title": {"type": "string", "description": "Short lesson title"},
+                            "rule": {"type": "string", "description": "The rule to follow going forward"},
+                            "context": {"type": "string", "description": "What happened that produced this lesson"},
+                            "category": {"type": "string", "description": "correction | discovery | convention | pitfall (default: correction)"},
+                            "severity": {"type": "string", "description": "low | medium | high (default: medium)"},
+                            "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional free-text tags"}
+                        },
+                        "required": ["project_id", "title", "rule"]
+                    }
+                },
+                {
+                    "name": "lesson_list",
+                    "description": "Call this at the start of a session to load the project's accumulated lessons. project_id is optional — omit it to search across all projects. Pass query to full-text search; otherwise lessons are ranked by severity then recency.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project. Omit for a cross-project search."},
+                            "query": {"type": "string", "description": "Full-text search across title, context, and rule"},
+                            "category": {"type": "string", "description": "Filter by category: correction | discovery | convention | pitfall"},
+                            "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter to lessons matching any of these tags"},
+                            "status": {"type": "string", "description": "active | archived (default: active)"},
+                            "limit": {"type": "integer", "description": "Max results (default 50)"},
+                            "offset": {"type": "integer", "description": "Pagination offset (default 0)"}
+                        }
+                    }
+                },
+                {
+                    "name": "lesson_update",
+                    "description": "Update a lesson's title, context, rule, category, severity, status, or tags. Only provided fields are changed; pass null for context to clear it. Set status to 'archived' when a lesson is superseded rather than deleting it.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string"},
+                            "lesson_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "context": {"type": ["string", "null"], "description": "New context, or null to clear"},
+                            "rule": {"type": "string"},
+                            "category": {"type": "string", "description": "correction | discovery | convention | pitfall"},
+                            "severity": {"type": "string", "description": "low | medium | high"},
+                            "status": {"type": "string", "description": "active | archived"},
+                            "tags": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["project_id", "lesson_id"]
+                    }
+                },
+                {
+                    "name": "lesson_delete",
+                    "description": "Delete a lesson permanently.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string"},
+                            "lesson_id": {"type": "string"}
+                        },
+                        "required": ["project_id", "lesson_id"]
+                    }
+                },
+                {
                     "name": "routine_check",
                     "description": "Check for due routine tasks and create them as new todo items. Call this at the start of a work session to materialise any daily/weekly/monthly tasks that haven't been created yet today. Returns the list of tasks just created. Use dry_run=true to preview without creating.",
                     "inputSchema": {
@@ -1288,6 +1363,10 @@ impl McpServer {
             "project_task_create" => self.project_task_create(arguments).await,
             "project_task_update" => self.project_task_update(arguments).await,
             "project_task_delete" => self.project_task_delete(arguments).await,
+            "lesson_create" => self.lesson_create(arguments).await,
+            "lesson_list" => self.lesson_list(arguments).await,
+            "lesson_update" => self.lesson_update(arguments).await,
+            "lesson_delete" => self.lesson_delete(arguments).await,
             "routine_check" => self.routine_check(arguments).await,
             "routine_list" => self.routine_list(arguments).await,
             "routine_create" => self.routine_create(arguments).await,
@@ -3357,6 +3436,196 @@ impl McpServer {
             return Ok(json!({"content": [{"type": "text", "text": "Task not found."}]}));
         }
         Ok(json!({"content": [{"type": "text", "text": format!("Deleted task {}.", task_id)}]}))
+    }
+
+    async fn lesson_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let title = args["title"].as_str().context("missing title")?.to_string();
+        let rule = args["rule"].as_str().context("missing rule")?.to_string();
+        let context_val = args["context"].as_str().map(|s| s.to_string());
+        let category = args["category"].as_str().unwrap_or("correction");
+        let severity = args["severity"].as_str().unwrap_or("medium");
+        let tags: Vec<String> = normalize_lesson_tags(&(args["tags"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>())
+            .unwrap_or_default()));
+
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM project_lessons WHERE project_id = $1 AND status = 'active' AND lower(trim(title)) = lower(trim($2))"
+        )
+        .bind(project_id).bind(&title)
+        .fetch_optional(&self.db).await.unwrap_or(None);
+
+        if let Some(lesson_id) = existing {
+            let row = sqlx::query(
+                "UPDATE project_lessons SET occurrences = occurrences + 1, last_seen_at = NOW(), updated_at = NOW() \
+                 WHERE id = $1 RETURNING occurrences"
+            )
+            .bind(lesson_id)
+            .fetch_one(&self.db).await.context("failed to bump lesson occurrences")?;
+            let occurrences: i32 = row.try_get("occurrences").unwrap_or(1);
+            return Ok(json!({"content": [{"type": "text", "text": format!(
+                "Lesson '{}' already recorded — bumped occurrences to {}. id: {}", title, occurrences, lesson_id
+            )}]}));
+        }
+
+        let row = sqlx::query(
+            "INSERT INTO project_lessons (project_id, title, context, rule, category, severity, tags) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id"
+        )
+        .bind(project_id).bind(&title).bind(&context_val).bind(&rule)
+        .bind(category).bind(severity).bind(&tags)
+        .fetch_one(&self.db).await.context("failed to create lesson")?;
+
+        let id: Uuid = row.try_get("id").unwrap_or(Uuid::nil());
+        Ok(json!({"content": [{"type": "text", "text": format!("Created lesson '{}' [{}] id: {}", title, category, id)}]}))
+    }
+
+    async fn lesson_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Option<Uuid> = args["project_id"].as_str()
+            .map(|s| s.parse::<Uuid>()).transpose().context("invalid project_id UUID")?;
+        let query = args["query"].as_str();
+        let category = args["category"].as_str();
+        let tags: Vec<String> = normalize_lesson_tags(&(args["tags"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>())
+            .unwrap_or_default()));
+        let status = args["status"].as_str().unwrap_or("active");
+        let limit: i64 = args["limit"].as_i64().unwrap_or(50).min(200);
+        let offset: i64 = args["offset"].as_i64().unwrap_or(0).max(0);
+
+        let cols = "id, project_id, title, context, rule, category, severity, status, tags, occurrences, last_seen_at";
+
+        let rows = match (project_id, query) {
+            (Some(pid), Some(q)) => sqlx::query(&format!(
+                "SELECT {cols} FROM project_lessons \
+                 WHERE project_id = $1 AND status = $2 \
+                   AND ($3::text IS NULL OR category = $3) \
+                   AND (cardinality($4::text[]) = 0 OR tags && $4) \
+                   AND to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule) @@ plainto_tsquery('english', $5) \
+                 ORDER BY ts_rank(to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule), plainto_tsquery('english', $5)) DESC \
+                 LIMIT $6 OFFSET $7"
+            ))
+            .bind(pid).bind(status).bind(category).bind(&tags).bind(q).bind(limit).bind(offset)
+            .fetch_all(&self.db).await,
+            (Some(pid), None) => sqlx::query(&format!(
+                "SELECT {cols} FROM project_lessons \
+                 WHERE project_id = $1 AND status = $2 \
+                   AND ($3::text IS NULL OR category = $3) \
+                   AND (cardinality($4::text[]) = 0 OR tags && $4) \
+                 ORDER BY severity DESC, last_seen_at DESC \
+                 LIMIT $5 OFFSET $6"
+            ))
+            .bind(pid).bind(status).bind(category).bind(&tags).bind(limit).bind(offset)
+            .fetch_all(&self.db).await,
+            (None, Some(q)) => sqlx::query(&format!(
+                "SELECT {cols} FROM project_lessons \
+                 WHERE status = $1 \
+                   AND ($2::text IS NULL OR category = $2) \
+                   AND (cardinality($3::text[]) = 0 OR tags && $3) \
+                   AND to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule) @@ plainto_tsquery('english', $4) \
+                 ORDER BY ts_rank(to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule), plainto_tsquery('english', $4)) DESC \
+                 LIMIT $5 OFFSET $6"
+            ))
+            .bind(status).bind(category).bind(&tags).bind(q).bind(limit).bind(offset)
+            .fetch_all(&self.db).await,
+            (None, None) => sqlx::query(&format!(
+                "SELECT {cols} FROM project_lessons \
+                 WHERE status = $1 \
+                   AND ($2::text IS NULL OR category = $2) \
+                   AND (cardinality($3::text[]) = 0 OR tags && $3) \
+                 ORDER BY severity DESC, last_seen_at DESC \
+                 LIMIT $4 OFFSET $5"
+            ))
+            .bind(status).bind(category).bind(&tags).bind(limit).bind(offset)
+            .fetch_all(&self.db).await,
+        }.context("failed to list lessons")?;
+
+        if rows.is_empty() {
+            return Ok(json!({"content": [{"type": "text", "text": "No lessons found."}]}));
+        }
+
+        let mut text = format!("Lessons ({}):\n\n", rows.len());
+        for r in &rows {
+            let id: Uuid = r.try_get("id").unwrap_or(Uuid::nil());
+            let title: String = r.try_get("title").unwrap_or_default();
+            let rule: String = r.try_get("rule").unwrap_or_default();
+            let context_val: Option<String> = r.try_get("context").unwrap_or(None);
+            let category: String = r.try_get("category").unwrap_or_default();
+            let severity: String = r.try_get("severity").unwrap_or_default();
+            let occurrences: i32 = r.try_get("occurrences").unwrap_or(1);
+            text.push_str(&format!(
+                "• [{}/{}] {} (x{})\n  rule: {}{}\n  id: {}\n",
+                category, severity, title, occurrences, rule,
+                context_val.map(|c| format!("\n  context: {}", c)).unwrap_or_default(),
+                id
+            ));
+        }
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn lesson_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let lesson_id: Uuid = args["lesson_id"].as_str()
+            .context("missing lesson_id")?
+            .parse().context("invalid lesson_id UUID")?;
+
+        let title = args["title"].as_str().map(|s| s.to_string());
+        let context_set = args.get("context").is_some();
+        let context_value = args["context"].as_str().map(|s| s.to_string());
+        let rule = args["rule"].as_str().map(|s| s.to_string());
+        let category = args["category"].as_str().map(|s| s.to_string());
+        let severity = args["severity"].as_str().map(|s| s.to_string());
+        let status = args["status"].as_str().map(|s| s.to_string());
+        let tags: Option<Vec<String>> = args["tags"].as_array().map(|arr| {
+            normalize_lesson_tags(&arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>())
+        });
+
+        let result = sqlx::query(
+            "UPDATE project_lessons SET \
+             title = COALESCE($1, title), \
+             context = CASE WHEN $2 THEN $3 ELSE context END, \
+             rule = COALESCE($4, rule), \
+             category = COALESCE($5, category), \
+             severity = COALESCE($6, severity), \
+             status = COALESCE($7, status), \
+             tags = COALESCE($8, tags), \
+             updated_at = NOW() \
+             WHERE id = $9 AND project_id = $10 RETURNING id"
+        )
+        .bind(&title).bind(context_set).bind(&context_value)
+        .bind(&rule).bind(&category).bind(&severity).bind(&status).bind(&tags)
+        .bind(lesson_id).bind(project_id)
+        .fetch_optional(&self.db).await.context("failed to update lesson")?;
+
+        if result.is_none() {
+            return Ok(json!({"content": [{"type": "text", "text": "Lesson not found."}]}));
+        }
+        Ok(json!({"content": [{"type": "text", "text": format!("Updated lesson {}.", lesson_id)}]}))
+    }
+
+    async fn lesson_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"].as_str()
+            .context("missing project_id")?
+            .parse().context("invalid project_id UUID")?;
+        let lesson_id: Uuid = args["lesson_id"].as_str()
+            .context("missing lesson_id")?
+            .parse().context("invalid lesson_id UUID")?;
+
+        let result = sqlx::query(
+            "DELETE FROM project_lessons WHERE id = $1 AND project_id = $2 RETURNING id"
+        )
+        .bind(lesson_id).bind(project_id)
+        .fetch_optional(&self.db).await.context("failed to delete lesson")?;
+
+        if result.is_none() {
+            return Ok(json!({"content": [{"type": "text", "text": "Lesson not found."}]}));
+        }
+        Ok(json!({"content": [{"type": "text", "text": format!("Deleted lesson {}.", lesson_id)}]}))
     }
 
     async fn routine_check(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {

@@ -68,6 +68,15 @@ mem sessions --limit 10              # List recent sessions
 mem sessions messages <uuid>         # View conversation history
 ```
 
+### 5. 📚 Lessons Learned
+Structured, per-project store for corrections and conventions — queryable instead of scattered `tasks/lessons.md` files. Agents record a lesson (title, context, rule) after a correction, load them all back at session start, and re-recording the same title bumps an occurrence count instead of duplicating.
+
+```bash
+mem lessons --project <uuid> --query "shadcn"   # read-only CLI; writes go through the agent via MCP
+```
+
+Browsable, editable web UI at `/lessons` in the web app (also as a tab on each project's detail page).
+
 ---
 
 ## 🎯 Why OpenMemory?
