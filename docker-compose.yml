@@ -121,7 +121,7 @@ services:
       OPENSEARCH_URL: http://opensearch:9200
       REDIS_URL: redis://redis:6379
       FALKORDB_URL: redis://falkordb:6379
-      OPENMEMORY_SECRET_KEY: ${OPENMEMORY_SECRET_KEY:-dev-secret-key-change-me}
+      OPENMEMORY_SECRET_KEY: ${OPENMEMORY_SECRET_KEY:?OPENMEMORY_SECRET_KEY must be set (see .env)}
       OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
     depends_on:
       postgres:

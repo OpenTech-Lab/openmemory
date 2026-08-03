@@ -162,7 +162,10 @@ sequenceDiagram
 
 ## 7. Env Param Storage (secrets)
 
-Encrypted parameter store for API keys and secrets.
+Encrypted parameter store for API keys and secrets. `OPENMEMORY_SECRET_KEY` is
+required (server refuses to start without it); rotate it with
+`openmemory-server rotate-secret-key [--dry-run]`, which re-encrypts every row
+from `OPENMEMORY_OLD_SECRET_KEY` to `OPENMEMORY_NEW_SECRET_KEY` in one transaction.
 
 ```mermaid
 flowchart LR

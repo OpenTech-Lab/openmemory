@@ -58,3 +58,16 @@ pub fn decrypt_value(key: &[u8; 32], data: &[u8]) -> anyhow::Result<String> {
         .map_err(|_| anyhow::anyhow!("decryption failed"))?;
     String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("invalid UTF-8 in decrypted value: {e}"))
 }
+
+/// Compute a short, non-reversible fingerprint of a plaintext value, salted with a
+/// per-run random value so digests are not brute-forceable offline and are only
+/// comparable within a single run (used by `rotate-secret-key` to prove a rewrap
+/// preserved the plaintext without ever printing it).
+pub fn fingerprint(run_salt: &[u8; 32], plaintext: &str) -> String {
+    use sha2::Digest;
+    let mut hasher = Sha256::new();
+    hasher.update(run_salt);
+    hasher.update(plaintext.as_bytes());
+    let digest = hasher.finalize();
+    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}

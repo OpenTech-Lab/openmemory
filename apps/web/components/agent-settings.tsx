@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -213,7 +214,9 @@ export function AgentSettings() {
                   <TableRow key={agent.id}>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <span className="font-medium">{agent.name}</span>
+                        <Link href={`/agents/${agent.id}`} className="font-medium hover:underline">
+                          {agent.name}
+                        </Link>
                         {agent.is_builtin && (
                           <Badge variant="secondary" className="text-xs">built-in</Badge>
                         )}

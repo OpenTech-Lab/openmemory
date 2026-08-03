@@ -20,7 +20,7 @@ use axum::{
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crypto::{decrypt_value, derive_key, encrypt_value, EnvParamRow};
+use crypto::{decrypt_value, derive_key, encrypt_value, fingerprint, EnvParamRow};
 use chrono::{DateTime, Utc};
 use falkordb::FalkorDbClient;
 use redis::AsyncCommands;
@@ -1139,6 +1139,17 @@ struct FullMemory {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("rotate-secret-key") {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "openmemory=info,sqlx=warn".into()),
+            )
+            .init();
+        let dry_run = std::env::args().any(|a| a == "--dry-run");
+        return rotate_secret_key(dry_run).await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1229,23 +1240,21 @@ async fn main() -> anyhow::Result<()> {
 
     let api_token = resolve_api_token();
 
-    let secret_key = std::env::var("OPENMEMORY_SECRET_KEY")
-        .unwrap_or_else(|_| {
-            warn!(
-                "\n\n\
-                 ╔══════════════════════════════════════════════════════════╗\n\
-                 ║  OpenMemory: OPENMEMORY_SECRET_KEY is NOT set             ║\n\
-                 ║                                                          ║\n\
-                 ║  All env-param secrets (API keys, etc.) are being        ║\n\
-                 ║  encrypted with a well-known, hard-coded dev key.        ║\n\
-                 ║  Anyone with DB access can decrypt them.                 ║\n\
-                 ║                                                          ║\n\
-                 ║  Set OPENMEMORY_SECRET_KEY to a random secret before     ║\n\
-                 ║  storing anything sensitive.                             ║\n\
-                 ╚══════════════════════════════════════════════════════════╝\n"
-            );
+    let secret_key = match std::env::var("OPENMEMORY_SECRET_KEY") {
+        Ok(key) => key,
+        Err(_) if std::env::var("OPENMEMORY_ALLOW_INSECURE_DEV_KEY").as_deref() == Ok("1") => {
+            warn!("OPENMEMORY_ALLOW_INSECURE_DEV_KEY=1 set: using the well-known dev secret key. CI/tests only.");
             "dev-secret-key-change-me".to_string()
-        });
+        }
+        Err(_) => {
+            eprintln!(
+                "OPENMEMORY_SECRET_KEY is not set. Generate one with:  openssl rand -base64 48\n\
+                 and set it in .env / your MCP server env. Refusing to start.\n\
+                 (Set OPENMEMORY_ALLOW_INSECURE_DEV_KEY=1 to use the well-known dev key — CI/tests only.)"
+            );
+            std::process::exit(1);
+        }
+    };
     let encryption_key = derive_key(&secret_key);
 
     let state = AppState {
@@ -1291,6 +1300,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/:id/messages", get(get_session_messages))
         .route("/agents", get(list_agents).post(create_agent))
         .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
+        .route("/agents/:id/stats", get(get_agent_stats))
         .route("/projects", get(list_project_graphs).post(create_project_graph))
         .route("/projects/:id", get(get_project_graph).put(update_project_graph).delete(delete_project_graph))
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
@@ -1340,6 +1350,146 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server error")?;
+
+    Ok(())
+}
+
+/// Re-wraps every `env_params.value_encrypted` row from `OPENMEMORY_OLD_SECRET_KEY`
+/// to `OPENMEMORY_NEW_SECRET_KEY`, in a single transaction with `SELECT ... FOR UPDATE`.
+///
+/// Trial-decrypts with the new key first (a row that already verifies under the new
+/// key is left alone and counted as `skipped`), then falls back to the old key and
+/// re-encrypts. Any row that decrypts under neither key aborts the whole transaction
+/// (nothing is written). `dry_run` performs identical work but issues `ROLLBACK`
+/// instead of `COMMIT`, so it's safe to run against a live database.
+async fn rotate_secret_key(dry_run: bool) -> anyhow::Result<()> {
+    use rand::{rngs::OsRng, RngCore};
+
+    let old_secret = std::env::var("OPENMEMORY_OLD_SECRET_KEY")
+        .context("OPENMEMORY_OLD_SECRET_KEY must be set (never pass keys as argv)")?;
+    let new_secret = std::env::var("OPENMEMORY_NEW_SECRET_KEY")
+        .context("OPENMEMORY_NEW_SECRET_KEY must be set (never pass keys as argv)")?;
+    if old_secret == new_secret {
+        anyhow::bail!("OPENMEMORY_OLD_SECRET_KEY and OPENMEMORY_NEW_SECRET_KEY are identical; nothing to rotate");
+    }
+    let old_key = derive_key(&old_secret);
+    let new_key = derive_key(&new_secret);
+
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://openmemory:openmemory@localhost:5432/openmemory".to_string());
+    let db = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .context("failed to connect to PostgreSQL")?;
+
+    // Per-run salt: fingerprints are only comparable within this run and are never
+    // printed, so they can't be brute-forced offline.
+    let mut run_salt = [0u8; 32];
+    OsRng.fill_bytes(&mut run_salt);
+
+    let mut tx = db.begin().await.context("failed to start transaction")?;
+
+    #[derive(FromRow)]
+    struct Row {
+        id: Uuid,
+        key: String,
+        value_encrypted: Vec<u8>,
+        is_secret: bool,
+    }
+
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, key, value_encrypted, is_secret FROM env_params ORDER BY key FOR UPDATE",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .context("failed to select env_params FOR UPDATE")?;
+
+    let total = rows.len();
+    let mut rewrapped = 0usize;
+    let mut skipped = 0usize;
+    let mut report: Vec<(String, bool, String, String, bool)> = Vec::with_capacity(total);
+
+    for row in &rows {
+        if let Ok(plaintext) = decrypt_value(&new_key, &row.value_encrypted) {
+            // Already rotated in a previous (partial) run — leave it alone.
+            let fp = fingerprint(&run_salt, &plaintext);
+            skipped += 1;
+            report.push((row.key.clone(), row.is_secret, fp.clone(), fp, true));
+            continue;
+        }
+
+        let plaintext_old = match decrypt_value(&old_key, &row.value_encrypted) {
+            Ok(p) => p,
+            Err(e) => {
+                tx.rollback().await.ok();
+                anyhow::bail!(
+                    "row '{}' decrypts under neither OPENMEMORY_OLD_SECRET_KEY nor \
+                     OPENMEMORY_NEW_SECRET_KEY ({e}); aborting, nothing written",
+                    row.key
+                );
+            }
+        };
+        let fp_before = fingerprint(&run_salt, &plaintext_old);
+
+        let new_blob = encrypt_value(&new_key, &plaintext_old);
+        sqlx::query("UPDATE env_params SET value_encrypted = $1 WHERE id = $2")
+            .bind(&new_blob)
+            .bind(row.id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to write re-encrypted value")?;
+
+        let plaintext_after = match decrypt_value(&new_key, &new_blob) {
+            Ok(p) => p,
+            Err(e) => {
+                tx.rollback().await.ok();
+                anyhow::bail!(
+                    "row '{}' failed to re-decrypt immediately after rewrap ({e}); aborting",
+                    row.key
+                );
+            }
+        };
+        let fp_after = fingerprint(&run_salt, &plaintext_after);
+        let matched = fp_before == fp_after && plaintext_old == plaintext_after;
+        if !matched {
+            tx.rollback().await.ok();
+            anyhow::bail!(
+                "row '{}' fingerprint mismatch after rewrap; aborting, nothing written",
+                row.key
+            );
+        }
+
+        rewrapped += 1;
+        report.push((row.key.clone(), row.is_secret, fp_before, fp_after, matched));
+    }
+
+    println!(
+        "{:<40} {:<9} {:<14} {:<14} {}",
+        "key", "is_secret", "fp(before)", "fp(after)", "match"
+    );
+    for (key, is_secret, fp_before, fp_after, matched) in &report {
+        println!(
+            "{:<40} {:<9} {:<14} {:<14} {}",
+            key,
+            is_secret,
+            fp_before,
+            fp_after,
+            if *matched { "OK" } else { "MISMATCH" }
+        );
+    }
+
+    println!(
+        "{total} rows: {rewrapped} rewrapped, {skipped} already-new, 0 undecryptable"
+    );
+
+    if dry_run {
+        tx.rollback().await.context("failed to roll back dry-run transaction")?;
+        println!("ROLLED BACK (--dry-run: no changes were persisted)");
+    } else {
+        tx.commit().await.context("failed to commit rotation transaction")?;
+        println!("COMMITTED");
+    }
 
     Ok(())
 }
@@ -1695,6 +1845,104 @@ async fn get_agent(
         Ok(Some(agent)) => Json(agent).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_agent_stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let agent = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let agent = match agent {
+        Ok(Some(a)) => a,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let session_count: Result<(i64,), _> = sqlx::query_as(
+        "SELECT COUNT(*) FROM sessions WHERE agent_name = $1"
+    )
+    .bind(&agent.name)
+    .fetch_one(&state.db)
+    .await;
+
+    let message_count: Result<(i64,), _> = sqlx::query_as(
+        "SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE agent_name = $1"
+    )
+    .bind(&agent.name)
+    .fetch_one(&state.db)
+    .await;
+
+    // Aggregate Task (subagent) and Skill tool invocations from assistant
+    // messages belonging to this agent's recorded sessions.
+    let tool_rows: Result<Vec<(String, Option<String>, i64)>, _> = sqlx::query_as(
+        r#"
+        SELECT
+            elem->>'name' AS tool_name,
+            COALESCE(elem->'input'->>'subagent_type', elem->'input'->>'skill') AS detail,
+            COUNT(*) AS uses
+        FROM session_messages sm
+        JOIN sessions s ON s.id = sm.session_id
+        CROSS JOIN LATERAL jsonb_array_elements(
+            CASE jsonb_typeof(sm.raw_event->'message'->'content')
+                WHEN 'array' THEN sm.raw_event->'message'->'content'
+                ELSE '[]'::jsonb
+            END
+        ) elem
+        WHERE s.agent_name = $1
+          AND sm.event_type = 'assistant'
+          AND elem->>'type' = 'tool_use'
+          AND elem->>'name' IN ('Task', 'Skill')
+        GROUP BY tool_name, detail
+        ORDER BY uses DESC
+        "#,
+    )
+    .bind(&agent.name)
+    .fetch_all(&state.db)
+    .await;
+
+    match (session_count, message_count, tool_rows) {
+        (Ok((sessions,)), Ok((messages,)), Ok(rows)) => {
+            let subagents: Vec<_> = rows.iter()
+                .filter(|(tool, _, _)| tool == "Task")
+                .map(|(_, detail, uses)| serde_json::json!({
+                    "name": detail.clone().unwrap_or_else(|| "unknown".to_string()),
+                    "uses": uses,
+                }))
+                .collect();
+            let skills: Vec<_> = rows.iter()
+                .filter(|(tool, _, _)| tool == "Skill")
+                .map(|(_, detail, uses)| serde_json::json!({
+                    "name": detail.clone().unwrap_or_else(|| "unknown".to_string()),
+                    "uses": uses,
+                }))
+                .collect();
+
+            Json(serde_json::json!({
+                "agent_id": agent.id,
+                "agent_name": agent.name,
+                "session_count": sessions,
+                "message_count": messages,
+                "subagent_usage": subagents,
+                "skill_usage": skills,
+            })).into_response()
+        }
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            error!("get_agent_stats error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
     }
 }
 

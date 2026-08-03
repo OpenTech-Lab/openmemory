@@ -739,11 +739,35 @@ resolved. Unset by default (any host allowed) for backward compatibility.
 
 ### Encryption Key
 
-Env-param secret values are encrypted at rest with a key derived from
-`OPENMEMORY_SECRET_KEY`. If unset, the server falls back to a well-known dev key —
-fine for local experimentation, but anyone with DB access can decrypt secrets in
-that mode. Set `OPENMEMORY_SECRET_KEY` to a random value before storing anything
-sensitive.
+Env-param values are encrypted at rest with a key derived from
+`OPENMEMORY_SECRET_KEY`. **This is required** — both the HTTP server and the
+stdio MCP binary refuse to start without it. Generate one with:
+
+```bash
+openssl rand -base64 48
+```
+
+...and set it in `.env` (for `docker compose`) and in
+`mcpServers.openmemory.env.OPENMEMORY_SECRET_KEY` in `~/.claude.json` (for the
+stdio MCP binary) — both processes must use the same key. Set
+`OPENMEMORY_ALLOW_INSECURE_DEV_KEY=1` only to opt into the well-known dev key for
+CI/tests.
+
+To rotate an existing key without losing access to already-encrypted values, quiesce
+all writers (stop the server, the web UI, and any stdio MCP sessions), then run:
+
+```bash
+export DATABASE_URL='postgres://openmemory:openmemory@localhost:5432/openmemory'
+export OPENMEMORY_OLD_SECRET_KEY='<current key>'
+export OPENMEMORY_NEW_SECRET_KEY='<new key>'
+./target/release/openmemory-server rotate-secret-key --dry-run   # verify first
+./target/release/openmemory-server rotate-secret-key             # then commit
+```
+
+This re-encrypts every `env_params` row from the old key to the new key inside a
+single transaction; `--dry-run` does identical work but rolls back instead of
+committing, so it's safe to run against a live database. After it commits, update
+`OPENMEMORY_SECRET_KEY` everywhere and restart the quiesced processes.
 
 ---
 

@@ -423,8 +423,20 @@ impl McpServer {
             }
         }
 
-        let secret_key = std::env::var("OPENMEMORY_SECRET_KEY")
-            .unwrap_or_else(|_| "dev-secret-key-change-me".to_string());
+        let secret_key = match std::env::var("OPENMEMORY_SECRET_KEY") {
+            Ok(key) => key,
+            Err(_) if std::env::var("OPENMEMORY_ALLOW_INSECURE_DEV_KEY").as_deref() == Ok("1") => {
+                warn!("OPENMEMORY_ALLOW_INSECURE_DEV_KEY=1 set: using the well-known dev secret key. CI/tests only.");
+                "dev-secret-key-change-me".to_string()
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "OPENMEMORY_SECRET_KEY is not set. Generate one with:  openssl rand -base64 48\n\
+                     and set it in .env / your MCP server env. Refusing to start.\n\
+                     (Set OPENMEMORY_ALLOW_INSECURE_DEV_KEY=1 to use the well-known dev key — CI/tests only.)"
+                );
+            }
+        };
         let encryption_key = derive_key(&secret_key);
 
         Ok(Self { db, opensearch, falkordb, encryption_key })

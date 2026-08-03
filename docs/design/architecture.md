@@ -124,6 +124,12 @@ graph TD
 
 - All services bind to `localhost` by default; Docker internal networking used between containers
 - `OPENMEMORY_API_TOKEN` gates secret `env.get` operations (Bearer auth)
-- Env params stored AES-GCM encrypted (key derived from `OPENMEMORY_SECRET_KEY` via HKDF)
+- Env params stored AES-GCM encrypted (key derived from `OPENMEMORY_SECRET_KEY` via HKDF).
+  `OPENMEMORY_SECRET_KEY` is required — both the HTTP server and stdio MCP binary
+  refuse to start without it (`OPENMEMORY_ALLOW_INSECURE_DEV_KEY=1` opts into the
+  well-known dev key for CI/tests only). Rotate it with
+  `openmemory-server rotate-secret-key [--dry-run]`, which re-encrypts every
+  `env_params` row from `OPENMEMORY_OLD_SECRET_KEY` to `OPENMEMORY_NEW_SECRET_KEY`
+  in one transaction.
 - FalkorDB and Redis have no auth — localhost-only exposure
 - CORS restricted to `localhost` origins unless `OPENMEMORY_CORS_ORIGINS` is set

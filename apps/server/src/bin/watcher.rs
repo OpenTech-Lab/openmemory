@@ -179,6 +179,7 @@ async fn process_file(
     start_offset: i64,
     start_line: i32,
     projects_root: &Path,
+    agent_name: &str,
     memory: Option<(&HttpClient, &str, &PendingUserText)>,
 ) -> anyhow::Result<(i64, i32)> {
     let file_path_str = path
@@ -312,12 +313,13 @@ async fn process_file(
 
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, file_path, project_name, git_branch, cwd, started_at, last_event_at)
-            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+            INSERT INTO sessions (id, file_path, project_name, git_branch, cwd, agent_name, started_at, last_event_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 last_event_at = EXCLUDED.last_event_at,
                 git_branch    = COALESCE(EXCLUDED.git_branch, sessions.git_branch),
-                cwd           = COALESCE(EXCLUDED.cwd, sessions.cwd)
+                cwd           = COALESCE(EXCLUDED.cwd, sessions.cwd),
+                agent_name    = COALESCE(sessions.agent_name, EXCLUDED.agent_name)
             "#,
         )
         .bind(&eff_session_id)
@@ -325,6 +327,7 @@ async fn process_file(
         .bind(project_name.as_deref())
         .bind(event.git_branch.as_deref())
         .bind(event.cwd.as_deref())
+        .bind(agent_name)
         .execute(&mut *tx)
         .await
         .context("upsert session in tx")?;
@@ -423,7 +426,7 @@ async fn process_file(
 // Startup catchup
 // ---------------------------------------------------------------------------
 
-async fn startup_catchup(db: &PgPool, projects_root: &Path) -> anyhow::Result<()> {
+async fn startup_catchup(db: &PgPool, projects_root: &Path, agent_name: &str) -> anyhow::Result<()> {
     info!("startup catchup: scanning {:?}", projects_root);
     let mut count = 0usize;
 
@@ -450,7 +453,7 @@ async fn startup_catchup(db: &PgPool, projects_root: &Path) -> anyhow::Result<()
 
             let (offset, line_count) = get_cursor(db, &file_path_str).await;
             let (new_offset, new_line_count) =
-                process_file(db, &path, offset, line_count, projects_root, None)
+                process_file(db, &path, offset, line_count, projects_root, agent_name, None)
                     .await
                     .unwrap_or_else(|e| {
                         warn!("process_file error for {:?}: {e:#}", path);
@@ -565,9 +568,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Shared set of currently watched roots (shared with poll task).
-    let watched_roots: Arc<Mutex<HashSet<PathBuf>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    // Shared map of currently watched roots -> agent name (shared with poll task).
+    let watched_roots: Arc<Mutex<HashMap<PathBuf, String>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     // Register inotify BEFORE startup catchup to avoid race condition.
     {
@@ -580,7 +583,7 @@ async fn main() -> anyhow::Result<()> {
             match watcher.watch(root, RecursiveMode::Recursive) {
                 Ok(()) => {
                     info!("watching {:?} ({})", root, name);
-                    roots.insert(root.clone());
+                    roots.insert(root.clone(), name.clone());
                 }
                 Err(e) => warn!("failed to watch {:?}: {e}", root),
             }
@@ -590,8 +593,8 @@ async fn main() -> anyhow::Result<()> {
     // Startup catchup for each watched root.
     {
         let roots = watched_roots.lock().await;
-        for root in roots.iter() {
-            startup_catchup(&db, root).await.unwrap_or_else(|e| {
+        for (root, name) in roots.iter() {
+            startup_catchup(&db, root, name).await.unwrap_or_else(|e| {
                 warn!("startup catchup error for {:?}: {e}", root);
             });
         }
@@ -607,10 +610,15 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 sleep(interval).await;
-                let roots = roots2.lock().await.iter().cloned().collect::<Vec<_>>();
-                for root in &roots {
+                let roots = roots2
+                    .lock()
+                    .await
+                    .iter()
+                    .map(|(r, n)| (r.clone(), n.clone()))
+                    .collect::<Vec<_>>();
+                for (root, name) in &roots {
                     info!("poll: rescanning {:?}", root);
-                    startup_catchup(&db2, root).await.unwrap_or_else(|e| {
+                    startup_catchup(&db2, root, name).await.unwrap_or_else(|e| {
                         warn!("poll error: {e}");
                     });
                 }
@@ -633,10 +641,15 @@ async fn main() -> anyhow::Result<()> {
                         if dirty.swap(false, Ordering::Relaxed) {
                             warn!("event channel was full; running full rescan");
                             let db2 = db.clone();
-                            let roots = watched_roots.lock().await.iter().cloned().collect::<Vec<_>>();
+                            let roots = watched_roots
+                                .lock()
+                                .await
+                                .iter()
+                                .map(|(r, n)| (r.clone(), n.clone()))
+                                .collect::<Vec<_>>();
                             tokio::spawn(async move {
-                                for root in &roots {
-                                    startup_catchup(&db2, root).await.unwrap_or_else(|e| {
+                                for (root, name) in &roots {
+                                    startup_catchup(&db2, root, name).await.unwrap_or_else(|e| {
                                         warn!("dirty-flag rescan error: {e}");
                                     });
                                 }
@@ -654,13 +667,16 @@ async fn main() -> anyhow::Result<()> {
                             }
 
                             // Find which watched root this file belongs to.
-                            let root = {
+                            let root_and_name = {
                                 let roots = watched_roots.lock().await;
-                                roots.iter().find(|r| path.starts_with(r)).cloned()
+                                roots
+                                    .iter()
+                                    .find(|(r, _)| path.starts_with(r))
+                                    .map(|(r, n)| (r.clone(), n.clone()))
                             };
-                            let root = match root {
-                                Some(r) => r,
-                                None => path.parent().unwrap_or(&path).to_owned(),
+                            let (root, agent_name) = match root_and_name {
+                                Some((r, n)) => (r, n),
+                                None => (path.parent().unwrap_or(&path).to_owned(), "Unknown".to_string()),
                             };
 
                             let db2 = db.clone();
@@ -685,7 +701,7 @@ async fn main() -> anyhow::Result<()> {
                                     .into_owned();
 
                                 let (offset, line_count) = get_cursor(&db2, &file_path_str).await;
-                                match process_file(&db2, &path, offset, line_count, &root, Some((&http2, &server_url2, &pending2))).await {
+                                match process_file(&db2, &path, offset, line_count, &root, &agent_name, Some((&http2, &server_url2, &pending2))).await {
                                     Ok((new_offset, new_lines)) if new_offset > offset => {
                                         info!(
                                             "ingested {:?}: +{} bytes, +{} lines",
@@ -709,29 +725,32 @@ async fn main() -> anyhow::Result<()> {
             _ = reload_ticker.tick() => {
                 match load_enabled_agents(&db).await {
                     Ok(agents) => {
-                        let new_roots: HashSet<PathBuf> = agents.iter()
+                        let new_roots: HashMap<PathBuf, String> = agents.into_iter()
                             .filter(|(_, p)| p.exists())
-                            .map(|(_, p)| p.clone())
+                            .map(|(name, p)| (p, name))
                             .collect();
 
                         let mut current = watched_roots.lock().await;
+                        let current_keys: HashSet<PathBuf> = current.keys().cloned().collect();
+                        let new_keys: HashSet<PathBuf> = new_roots.keys().cloned().collect();
 
                         // Add newly enabled paths.
-                        for root in new_roots.difference(&*current).cloned().collect::<Vec<_>>() {
+                        for root in new_keys.difference(&current_keys).cloned().collect::<Vec<_>>() {
                             match watcher.watch(&root, RecursiveMode::Recursive) {
                                 Ok(()) => {
-                                    info!("hot-reload: now watching {:?}", root);
-                                    startup_catchup(&db, &root).await.unwrap_or_else(|e| {
+                                    let name = new_roots.get(&root).cloned().unwrap_or_else(|| "Unknown".to_string());
+                                    info!("hot-reload: now watching {:?} ({name})", root);
+                                    startup_catchup(&db, &root, &name).await.unwrap_or_else(|e| {
                                         warn!("hot-reload catchup error: {e}");
                                     });
-                                    current.insert(root);
+                                    current.insert(root, name);
                                 }
                                 Err(e) => warn!("hot-reload: failed to watch {:?}: {e}", root),
                             }
                         }
 
                         // Remove disabled/deleted paths.
-                        for root in current.difference(&new_roots).cloned().collect::<Vec<_>>() {
+                        for root in current_keys.difference(&new_keys).cloned().collect::<Vec<_>>() {
                             let _ = watcher.unwatch(&root);
                             info!("hot-reload: stopped watching {:?}", root);
                             current.remove(&root);

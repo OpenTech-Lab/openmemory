@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History, Sparkles } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History, Sparkles, CornerDownRight } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -731,6 +731,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   ];
 
   const filteredTasks = boardFilter === 'all' ? tasks : tasks.filter(t => t.project_id === boardFilter);
+  const taskTitleById = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
   const filteredRoutines = boardFilter === 'all' ? routines : routines.filter(r => r.project_id === boardFilter);
   const boardColumns = [
     { key: 'scheduled', label: 'Scheduled' },
@@ -874,6 +875,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                           key={task.id}
                           item={{ kind: 'task', data: task }}
                           showProject={boardFilter === 'all'}
+                          parentTitle={task.parent_id ? taskTitleById.get(task.parent_id) : undefined}
                           onOpen={() => openTaskSheet(task)}
                           onEdit={() => openTaskSheet(task, 'edit')}
                         />
@@ -1607,9 +1609,10 @@ type BoardCardItem =
 /// Renders a task or a routine as a board card. The two entities are structurally
 /// near-identical (title, priority, labels, assignee) — the only real differences are
 /// the primary badge (task status vs. routine frequency) and the drag handle (tasks only).
-function BoardCard({ item, showProject, onOpen, onEdit }: {
+function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
   item: BoardCardItem;
   showProject: boolean;
+  parentTitle?: string;
   onOpen: () => void;
   onEdit: () => void;
 }) {
@@ -1649,6 +1652,11 @@ function BoardCard({ item, showProject, onOpen, onEdit }: {
 
       {/* Card body — click to open sheet */}
       <div className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer" onClick={onOpen}>
+        {isTask && parentTitle && (
+          <p className="text-[11px] text-muted-foreground truncate mb-0.5 flex items-center gap-1">
+            <CornerDownRight className="h-2.5 w-2.5 shrink-0" />{parentTitle}
+          </p>
+        )}
         <p className={`text-sm font-medium leading-snug mb-1.5 ${isCancelled ? 'line-through text-muted-foreground' : ''}`}>
           {title}
         </p>

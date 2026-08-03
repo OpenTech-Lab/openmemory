@@ -15,6 +15,7 @@ pub async fn run_session_migrations(db: &PgPool) -> anyhow::Result<()> {
             project_name  TEXT,
             git_branch    TEXT,
             cwd           TEXT,
+            agent_name    TEXT,
             started_at    TIMESTAMPTZ,
             last_event_at TIMESTAMPTZ,
             message_count INTEGER NOT NULL DEFAULT 0,
@@ -25,6 +26,12 @@ pub async fn run_session_migrations(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .context("failed to create sessions table")?;
+
+    // Migration: existing installs predate the agent_name column.
+    sqlx::query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_name TEXT")
+        .execute(db)
+        .await
+        .context("failed to add agent_name column")?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_sessions_last_event ON sessions(last_event_at DESC NULLS LAST)"
@@ -39,6 +46,23 @@ pub async fn run_session_migrations(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .ok();
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_agent_name ON sessions(agent_name)"
+    )
+    .execute(db)
+    .await
+    .ok();
+
+    // Backfill: every session recorded before agent_name existed was parsed
+    // by the Claude Code JSONL schema (the only one this watcher understands
+    // today), so it's safe to attribute pre-migration NULLs to it. Sessions
+    // recorded from here on always get agent_name set by the watcher, so
+    // this UPDATE becomes a no-op once the backfill has run.
+    sqlx::query("UPDATE sessions SET agent_name = 'Claude Code' WHERE agent_name IS NULL")
+        .execute(db)
+        .await
+        .ok();
 
     // session_messages — one row per parsed JSONL line
     //
