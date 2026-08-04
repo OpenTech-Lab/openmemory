@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap } from 'lucide-react';
+import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -55,6 +55,7 @@ const NAV_GROUPS = [
       { href: '/settings', label: 'LLM', icon: SlidersHorizontal },
       { href: '/settings/environment', label: 'Environment', icon: Settings2 },
       { href: '/settings/resources', label: 'Resources', icon: Boxes },
+      { href: '/settings/workflows', label: 'Workflows', icon: Workflow },
     ],
   },
 ] as const;

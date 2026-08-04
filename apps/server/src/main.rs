@@ -2,6 +2,7 @@ mod crypto;
 mod falkordb;
 mod llm;
 mod resources;
+mod workflows;
 
 use openmemory_server::run_session_migrations;
 use openmemory_server::project_graphs;
@@ -230,6 +231,31 @@ struct UpdateLessonPayload {
     status: Option<String>,
     tags: Option<Vec<String>>,
 }
+
+#[derive(Debug, Deserialize)]
+struct WorkflowPayload {
+    name: String,
+    description: Option<String>,
+    #[serde(default = "empty_json_object")]
+    input_schema: serde_json::Value,
+    steps: serde_json::Value,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunPayload {
+    #[serde(default = "empty_json_object")]
+    input: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowContinuePayload {
+    result: serde_json::Value,
+}
+
+fn empty_json_object() -> serde_json::Value { serde_json::json!({}) }
+fn default_true() -> bool { true }
 
 #[derive(Debug, Deserialize)]
 struct ListLessonsParams {
@@ -1315,6 +1341,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/lessons", get(list_project_lessons).post(create_project_lesson))
         .route("/projects/:id/lessons/:lesson_id", axum::routing::put(update_project_lesson).delete(delete_project_lesson))
         .route("/lessons", get(search_lessons))
+        .route("/workflows", get(list_workflows).post(create_workflow))
+        .route("/workflows/:id", get(get_workflow).put(update_workflow).delete(delete_workflow))
+        .route("/workflows/:id/run", post(run_workflow))
+        .route("/workflow-runs/:id/continue", post(continue_workflow_run))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
@@ -1714,6 +1744,8 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
          USING gin(to_tsvector('english', title || ' ' || coalesce(context,'') || ' ' || rule))"
     )
         .execute(db).await.ok();
+
+    workflows::ensure_table(db).await?;
 
     info!("PostgreSQL migrations complete");
     run_session_migrations(db).await?;
@@ -5539,6 +5571,103 @@ async fn check_project_routines(
             "created": created_tasks,
         })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn list_workflows(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::list(&state.db).await {
+        Ok(items) => Json(serde_json::json!({"workflows": items, "total": items.len()})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::get(&state.db, &id).await {
+        Ok(item) => Json(serde_json::json!(item)).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn create_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<WorkflowPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::create(&state.db, &payload.name, payload.description.as_deref(), &payload.input_schema, &payload.steps, payload.enabled).await {
+        Ok(item) => (StatusCode::CREATED, Json(serde_json::json!(item))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<WorkflowPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::update(&state.db, id, &payload.name, payload.description.as_deref(), &payload.input_schema, &payload.steps, payload.enabled).await {
+        Ok(item) => Json(serde_json::json!(item)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::delete(&state.db, id).await {
+        Ok(()) => Json(serde_json::json!({"deleted": id})).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn run_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<WorkflowRunPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::run(&state.db, &state.encryption_key, &id, payload.input).await {
+        Ok(result) => Json(serde_json::json!(result)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn continue_workflow_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<WorkflowContinuePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match workflows::continue_run(&state.db, &state.encryption_key, id, payload.result).await {
+        Ok(result) => Json(serde_json::json!(result)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }
 

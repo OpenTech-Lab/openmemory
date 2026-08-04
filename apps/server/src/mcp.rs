@@ -5,6 +5,7 @@ mod falkordb;
 mod project_graphs;
 mod indexer;
 mod resources;
+mod workflows;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -307,6 +308,7 @@ impl McpServer {
         .context("failed to create env_params table")?;
 
         resources::ensure_resources_table(&db).await?;
+        workflows::ensure_table(&db).await?;
 
         sqlx::query(
             r#"
@@ -1138,6 +1140,44 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "workflow_list",
+                    "description": "List reusable deterministic workflows configured in OpenMemory. Use this to discover fixed processes before manually reproducing a recurring integration sequence.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "workflow_get",
+                    "description": "Get a workflow definition and its expected input schema by UUID or name.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"id_or_name": {"type": "string"}},
+                        "required": ["id_or_name"]
+                    }
+                },
+                {
+                    "name": "workflow_run",
+                    "description": "Start a configured workflow. HTTP nodes execute server-side. For an agent node, perform the returned action_required exactly, then call workflow_continue with its result. Repeat until status is completed.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id_or_name": {"type": "string", "description": "Workflow UUID or unique name"},
+                            "input": {"type": "object", "description": "Inputs described by workflow_get.input_schema"}
+                        },
+                        "required": ["id_or_name"]
+                    }
+                },
+                {
+                    "name": "workflow_continue",
+                    "description": "Resume a workflow paused on an agent action. Pass the run_id returned by workflow_run or the prior workflow_continue call and the completed action's structured result.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {"type": "string", "description": "Workflow run UUID"},
+                            "result": {"description": "Structured result matching action_required.expected_output"}
+                        },
+                        "required": ["run_id", "result"]
+                    }
+                },
+                {
                     "name": "project_list",
                     "description": "List all projects with their task counts. Use this to find project_id for task operations.",
                     "inputSchema": {"type": "object", "properties": {}}
@@ -1356,6 +1396,10 @@ impl McpServer {
             "resource_add" => self.resource_add(arguments).await,
             "resource_update" => self.resource_update(arguments).await,
             "resource_delete" => self.resource_delete(arguments).await,
+            "workflow_list" => self.workflow_list(arguments).await,
+            "workflow_get" => self.workflow_get(arguments).await,
+            "workflow_run" => self.workflow_run(arguments).await,
+            "workflow_continue" => self.workflow_continue(arguments).await,
             "env_http_request" => self.env_http_request(arguments).await,
             "env_sign_jwt" => self.env_sign_jwt(arguments).await,
             "env_http_request_jwt" => self.env_http_request_jwt(arguments).await,
@@ -2132,6 +2176,46 @@ impl McpServer {
                 "type": "text",
                 "text": format!("Deleted resource {}", id)
             }]
+        }))
+    }
+
+    async fn workflow_list(&mut self, _args: &serde_json::Value) -> Result<serde_json::Value> {
+        let items = workflows::list(&self.db).await?;
+        let summaries: Vec<serde_json::Value> = items.into_iter().map(|workflow| json!({
+            "id": workflow.id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "input_schema": workflow.input_schema,
+            "enabled": workflow.enabled,
+            "step_count": workflow.steps.as_array().map(|steps| steps.len()).unwrap_or(0),
+            "updated_at": workflow.updated_at,
+        })).collect();
+        Ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&summaries)?}]}))
+    }
+
+    async fn workflow_get(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let id_or_name = args["id_or_name"].as_str().context("missing id_or_name")?;
+        let workflow = workflows::get(&self.db, id_or_name).await?;
+        Ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&workflow)?}]}))
+    }
+
+    async fn workflow_run(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let id_or_name = args["id_or_name"].as_str().context("missing id_or_name")?;
+        let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
+        let result = workflows::run(&self.db, &self.encryption_key, id_or_name, input).await?;
+        Ok(json!({
+            "content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}],
+            "isError": result.status == "failed",
+        }))
+    }
+
+    async fn workflow_continue(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let run_id = Uuid::parse_str(args["run_id"].as_str().context("missing run_id")?)?;
+        let action_result = args.get("result").cloned().context("missing result")?;
+        let result = workflows::continue_run(&self.db, &self.encryption_key, run_id, action_result).await?;
+        Ok(json!({
+            "content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}],
+            "isError": result.status == "failed",
         }))
     }
 

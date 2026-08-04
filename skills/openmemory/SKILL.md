@@ -307,6 +307,34 @@ Or from the CLI (read-only — writes go through the agent via MCP):
 mem lessons --project <uuid> [--query TEXT] [--limit N]
 ```
 
+## Reusable Workflows
+
+Workflows are ordered HTTP and agent-assisted processes configured by a human
+on the drag-and-drop node canvas at `/settings/workflows`. They are the preferred path when an integration sequence
+has already been defined: do not reconstruct the same calls manually in every
+session.
+
+1. Call `workflow_list` to discover available processes.
+2. Call `workflow_get` when you need its documented `input_schema`.
+3. Call `workflow_run` with the workflow UUID/name and an `input` object.
+4. If the status is `action_required`, perform the returned capability exactly
+   and call `workflow_continue` with `run_id` and the structured result. Repeat
+   until status is `completed`.
+5. Treat status `failed` as a failed run; later steps are not executed after a
+   failed HTTP response.
+
+Workflow credentials are Environment parameter references. Their values remain
+inside OpenMemory during execution. Templates may reference inputs such as
+`{{input.issue_id}}` and earlier responses such as
+`{{steps.lookup.body.id}}`.
+Agent nodes may also require input/artifact files. OpenMemory verifies those
+paths exist before releasing the action to the host agent. Commands are never
+executed by the OpenMemory server itself.
+
+Workflow input definitions support `text`, `json`, `image`, `pdf`, `file`, and
+`any`. Pass file-like inputs as an absolute host-visible path or an object with
+a `path` property. Image and PDF inputs must use a matching file extension.
+
 ## Security Note
 
 `OPENMEMORY_PORT` (default 8080) must not be exposed publicly — it is localhost-only by default. Memory read/write operations have no authentication.

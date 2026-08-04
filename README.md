@@ -77,6 +77,25 @@ mem lessons --project <uuid> --query "shadcn"   # read-only CLI; writes go throu
 
 Browsable, editable web UI at `/lessons` in the web app (also as a tab on each project's detail page).
 
+### 6. 🔁 Reusable Workflows
+Build an ordered process on the drag-and-drop node canvas under
+**Settings → Workflows**, then run it by name from any MCP-connected agent.
+Nodes can make server-side HTTP calls or request a Codex-hosted image, skill,
+or inspected command action. Workflow inputs and earlier step results can be
+templated into later nodes. Credentials are referenced by Environment key and
+remain server-side.
+
+Inputs are configured as text, JSON, image, PDF, generic file, or unrestricted
+values. File inputs are passed as host-visible paths (or objects with a `path`)
+and must exist before execution; image and PDF inputs also validate their file
+type.
+
+Agents discover and execute workflows with `workflow_list`, `workflow_get`, and
+`workflow_run`. Agent-assisted runs return `action_required`; after performing
+that action, call `workflow_continue` with its structured result until the run
+completes. Execution is fail-fast, limited to 20 steps, and HTTP nodes use a
+30-second timeout and honor `OPENMEMORY_HTTP_ALLOWED_HOSTS` when configured.
+
 ---
 
 ## 🎯 Why OpenMemory?
@@ -93,6 +112,7 @@ Most AI tools either **forget everything** between sessions or require **expensi
 | **Configuration** | Manual env vars | Secure parameter store |
 | **Knowledge** | Flat documents | Temporal graph |
 | **Sessions** | Manual logging | Automatic recording |
+| **Workflows** | Agent re-plans repeated processes | Stored HTTP + resumable agent execution |
 
 ### Real-World Benefits
 
