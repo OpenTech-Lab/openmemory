@@ -1,6 +1,6 @@
 {
   "name": "web",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.1.0",
+    "@dagrejs/dagre": "^2.0.4",
     "@hookform/resolvers": "^5.2.2",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
@@ -26,6 +27,7 @@
     "embla-carousel-react": "^8.6.0",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "html-to-image": "^1.11.13",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.563.0",
     "mermaid": "^11.16.1",

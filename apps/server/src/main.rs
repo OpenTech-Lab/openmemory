@@ -289,6 +289,7 @@ struct ProjectDesign {
 struct CreateDesignPayload {
     title: String,
     kind: Option<String>,
+    diagram_type: Option<String>,
     source: Option<String>,
     notes: Option<String>,
     tags: Option<Vec<String>>,
@@ -299,6 +300,7 @@ struct CreateDesignPayload {
 struct UpdateDesignPayload {
     title: Option<String>,
     kind: Option<String>,
+    diagram_type: Option<String>,
     source: Option<String>,
     #[serde(default, deserialize_with = "deserialize_some")]
     notes: Option<Option<String>>,
@@ -306,6 +308,8 @@ struct UpdateDesignPayload {
     sort_order: Option<i32>,
     status: Option<String>,
 }
+
+const VALID_DIAGRAM_TYPES: &[&str] = &["mermaid", "reactflow"];
 
 #[derive(Debug, Deserialize)]
 struct ListDesignsParams {
@@ -888,6 +892,8 @@ enum McpRequest {
         prompt: String,
         #[serde(default)]
         kind: Option<String>,
+        #[serde(default)]
+        format: Option<String>,
     },
 
     #[serde(rename = "graph.get_llm_config")]
@@ -4332,7 +4338,7 @@ async fn mcp(
             }
         }
 
-        McpRequest::AiDesignDiagram { prompt, kind: _kind } => {
+        McpRequest::AiDesignDiagram { prompt, kind, format } => {
             if !is_authenticated(&headers, &state.api_token) {
                 return Err((
                     StatusCode::UNAUTHORIZED,
@@ -4357,7 +4363,13 @@ async fn mcp(
                 }
             };
 
-            match design_ai::generate(&prompt, &cfg).await {
+            let result = if format.as_deref() == Some("reactflow") {
+                design_ai::generate_graph(&prompt, kind.as_deref(), &cfg).await
+            } else {
+                design_ai::generate(&prompt, &cfg).await
+            };
+
+            match result {
                 Ok(source) => Ok((
                     StatusCode::OK,
                     Json(McpResponse::AiDesignDiagramResult { source, model: cfg.model }),
@@ -5986,20 +5998,28 @@ async fn create_project_design(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "title must be non-empty"}))).into_response();
     }
 
+    if let Some(dt) = payload.diagram_type.as_deref() {
+        if !VALID_DIAGRAM_TYPES.contains(&dt) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: mermaid, reactflow"}))).into_response();
+        }
+    }
+
     let kind = payload.kind.as_deref().unwrap_or("other");
+    let diagram_type = payload.diagram_type.as_deref().unwrap_or("mermaid");
     let source = payload.source.clone().unwrap_or_default();
     let tags = normalize_labels(&payload.tags.clone().unwrap_or_default());
     let sort_order = payload.sort_order.unwrap_or(0);
 
     let row = sqlx::query_as::<_, ProjectDesign>(&format!(
-        "INSERT INTO project_designs (project_id, title, kind, source, notes, tags, sort_order) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+        "INSERT INTO project_designs (project_id, title, kind, diagram_type, source, notes, tags, sort_order) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
          RETURNING {cols}",
         cols = PROJECT_DESIGN_COLUMNS
     ))
     .bind(project_id)
     .bind(&payload.title)
     .bind(kind)
+    .bind(diagram_type)
     .bind(&source)
     .bind(&payload.notes)
     .bind(&tags)
@@ -6026,6 +6046,12 @@ async fn update_project_design(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
+    if let Some(dt) = payload.diagram_type.as_deref() {
+        if !VALID_DIAGRAM_TYPES.contains(&dt) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: mermaid, reactflow"}))).into_response();
+        }
+    }
+
     let tags = payload.tags.as_ref().map(|t| normalize_labels(t));
 
     let row = sqlx::query_as::<_, ProjectDesign>(&format!(
@@ -6037,6 +6063,7 @@ async fn update_project_design(
          tags = COALESCE($6, tags), \
          sort_order = COALESCE($7, sort_order), \
          status = COALESCE($8, status), \
+         diagram_type = COALESCE($11, diagram_type), \
          updated_at = NOW() \
          WHERE id = $9 AND project_id = $10 \
          RETURNING {cols}",
@@ -6052,6 +6079,7 @@ async fn update_project_design(
     .bind(&payload.status)
     .bind(design_id)
     .bind(project_id)
+    .bind(&payload.diagram_type)
     .fetch_optional(&state.db)
     .await;
 
