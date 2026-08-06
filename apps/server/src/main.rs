@@ -1,4 +1,7 @@
+mod autofill;
+mod claude_usage;
 mod crypto;
+mod design_ai;
 mod falkordb;
 mod llm;
 mod resources;
@@ -8,6 +11,7 @@ use openmemory_server::run_session_migrations;
 use openmemory_server::project_graphs;
 use openmemory_server::indexer;
 use openmemory_server::git_browser;
+use openmemory_server::design_assets;
 
 use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
@@ -69,6 +73,7 @@ struct AppState {
     api_token: String,
     encryption_key: [u8; 32],
     pg_cache: Arc<Mutex<HashMap<uuid::Uuid, (String, serde_json::Value)>>>,
+    claude_usage_cache: Arc<Mutex<Option<(std::time::Instant, serde_json::Value)>>>,
 }
 
 // Session query response types
@@ -107,6 +112,12 @@ struct MessagesParams {
     #[serde(default = "default_messages_limit")]
     limit: i64,
     after: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct TimeseriesParams {
+    bucket: Option<String>,
+    periods: Option<i64>,
 }
 
 fn default_limit() -> i64 { 50 }
@@ -256,6 +267,52 @@ struct WorkflowContinuePayload {
 
 fn empty_json_object() -> serde_json::Value { serde_json::json!({}) }
 fn default_true() -> bool { true }
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct ProjectDesign {
+    id: Uuid,
+    project_id: Uuid,
+    title: String,
+    kind: String,
+    diagram_type: String,
+    source: String,
+    notes: Option<String>,
+    tags: Vec<String>,
+    sort_order: i32,
+    status: String,
+    created_by: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateDesignPayload {
+    title: String,
+    kind: Option<String>,
+    source: Option<String>,
+    notes: Option<String>,
+    tags: Option<Vec<String>>,
+    sort_order: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateDesignPayload {
+    title: Option<String>,
+    kind: Option<String>,
+    source: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    notes: Option<Option<String>>,
+    tags: Option<Vec<String>>,
+    sort_order: Option<i32>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListDesignsParams {
+    status: Option<String>,
+}
+
+const PROJECT_DESIGN_COLUMNS: &str = "id, project_id, title, kind, diagram_type, source, notes, tags, sort_order, status, created_by, created_at, updated_at";
 
 #[derive(Debug, Deserialize)]
 struct ListLessonsParams {
@@ -818,6 +875,21 @@ enum McpRequest {
         limit: Option<usize>,
     },
 
+    #[serde(rename = "ai.autofill")]
+    AiAutofill {
+        kind: String,
+        content: String,
+        #[serde(default)]
+        existing_tags: Option<Vec<String>>,
+    },
+
+    #[serde(rename = "ai.design_diagram")]
+    AiDesignDiagram {
+        prompt: String,
+        #[serde(default)]
+        kind: Option<String>,
+    },
+
     #[serde(rename = "graph.get_llm_config")]
     GraphGetLlmConfig {},
 
@@ -1050,6 +1122,18 @@ enum McpResponse {
         entities_created: usize,
         facts_created: usize,
         errors: usize,
+    },
+
+    #[serde(rename = "ai.autofill.result")]
+    AiAutofillResult {
+        suggestion: autofill::AutofillSuggestion,
+        model: String,
+    },
+
+    #[serde(rename = "ai.design_diagram.result")]
+    AiDesignDiagramResult {
+        source: String,
+        model: String,
     },
 
     #[serde(rename = "graph.get_llm_config.result")]
@@ -1291,6 +1375,7 @@ async fn main() -> anyhow::Result<()> {
         api_token,
         encryption_key,
         pg_cache: Arc::new(Mutex::new(HashMap::new())),
+        claude_usage_cache: Arc::new(Mutex::new(None)),
     };
 
     // Background scheduler: periodically check every project's routines for due
@@ -1325,8 +1410,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/sessions/:id", get(get_session))
         .route("/sessions/:id/messages", get(get_session_messages))
         .route("/agents", get(list_agents).post(create_agent))
+        .route("/agents/usage-summary", get(get_agents_usage_summary))
         .route("/agents/:id", get(get_agent).put(update_agent).delete(delete_agent))
         .route("/agents/:id/stats", get(get_agent_stats))
+        .route("/agents/:id/stats/timeseries", get(get_agent_stats_timeseries))
+        .route("/agents/:id/claude-usage", get(get_agent_claude_usage))
         .route("/projects", get(list_project_graphs).post(create_project_graph))
         .route("/projects/:id", get(get_project_graph).put(update_project_graph).delete(delete_project_graph))
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
@@ -1341,6 +1429,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/lessons", get(list_project_lessons).post(create_project_lesson))
         .route("/projects/:id/lessons/:lesson_id", axum::routing::put(update_project_lesson).delete(delete_project_lesson))
         .route("/lessons", get(search_lessons))
+        .route("/projects/:id/designs", get(list_project_designs).post(create_project_design))
+        .route("/projects/:id/designs/:design_id", axum::routing::put(update_project_design).delete(delete_project_design))
+        .route("/projects/:id/design-assets", get(list_project_design_assets))
         .route("/workflows", get(list_workflows).post(create_workflow))
         .route("/workflows/:id", get(get_workflow).put(update_workflow).delete(delete_workflow))
         .route("/workflows/:id/run", post(run_workflow))
@@ -1745,6 +1836,37 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     )
         .execute(db).await.ok();
 
+    // Design docs (mermaid diagrams: UI/structure/workflow/DB-schema for code projects,
+    // characters/plot/timeline/world for narrative projects). Source lives in the DB, not on
+    // disk, so it works for projects with no filesystem path at all.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_designs (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id   UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            title        TEXT        NOT NULL,
+            kind         TEXT        NOT NULL DEFAULT 'other',
+            diagram_type TEXT        NOT NULL DEFAULT 'mermaid',
+            source       TEXT        NOT NULL DEFAULT '',
+            notes        TEXT,
+            tags         TEXT[]      NOT NULL DEFAULT '{}',
+            sort_order   INTEGER     NOT NULL DEFAULT 0,
+            status       TEXT        NOT NULL DEFAULT 'active',
+            created_by   TEXT        NOT NULL DEFAULT 'user',
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_designs table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_designs_project_id ON project_designs(project_id)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_designs_tags ON project_designs USING gin(tags)")
+        .execute(db).await.ok();
+
     workflows::ensure_table(db).await?;
 
     info!("PostgreSQL migrations complete");
@@ -1978,6 +2100,368 @@ async fn get_agent_stats(
     }
 }
 
+async fn get_agent_stats_timeseries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(params): Query<TimeseriesParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let agent = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let agent = match agent {
+        Ok(Some(a)) => a,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Security: `bucket` is never interpolated as raw user input. date_trunc's
+    // first argument cannot be a bind parameter, so we sanitize to one of two
+    // Rust-side literals before it ever touches the query string. Any value
+    // other than "week" falls back to "day".
+    let is_week = params.bucket.as_deref() == Some("week");
+    let bucket = if is_week { "week" } else { "day" };
+    let periods = params.periods.unwrap_or(30).clamp(1, 180);
+
+    // Known simplification: buckets use the Postgres server's timezone (UTC
+    // in this deployment). A session spanning midnight attributes all of its
+    // messages to the bucket containing its started_at.
+    let query = if is_week {
+        r#"
+        WITH buckets AS (
+            SELECT generate_series(
+                date_trunc('week', now()) - ($2::int - 1) * interval '1 week',
+                date_trunc('week', now()), interval '1 week') AS bucket_start
+        )
+        SELECT b.bucket_start,
+               COUNT(s.id)                       AS sessions,
+               COALESCE(SUM(s.message_count), 0) AS messages
+        FROM buckets b
+        LEFT JOIN sessions s
+          ON s.agent_name = $1
+         AND date_trunc('week', s.started_at) = b.bucket_start
+        GROUP BY b.bucket_start ORDER BY b.bucket_start
+        "#
+    } else {
+        r#"
+        WITH buckets AS (
+            SELECT generate_series(
+                date_trunc('day', now()) - ($2::int - 1) * interval '1 day',
+                date_trunc('day', now()), interval '1 day') AS bucket_start
+        )
+        SELECT b.bucket_start,
+               COUNT(s.id)                       AS sessions,
+               COALESCE(SUM(s.message_count), 0) AS messages
+        FROM buckets b
+        LEFT JOIN sessions s
+          ON s.agent_name = $1
+         AND date_trunc('day', s.started_at) = b.bucket_start
+        GROUP BY b.bucket_start ORDER BY b.bucket_start
+        "#
+    };
+
+    let rows: Result<Vec<(DateTime<Utc>, i64, i64)>, _> = sqlx::query_as(query)
+        .bind(&agent.name)
+        .bind(periods)
+        .fetch_all(&state.db)
+        .await;
+
+    match rows {
+        Ok(rows) => {
+            let points: Vec<_> = rows.into_iter()
+                .map(|(bucket_start, sessions, messages)| serde_json::json!({
+                    "bucket_start": bucket_start,
+                    "sessions": sessions,
+                    "messages": messages,
+                }))
+                .collect();
+
+            Json(serde_json::json!({
+                "agent_id": agent.id,
+                "agent_name": agent.name,
+                "bucket": bucket,
+                "periods": periods,
+                "points": points,
+            })).into_response()
+        }
+        Err(e) => {
+            error!("get_agent_stats_timeseries error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// Number of daily buckets returned in each agent's `sparkline`.
+const AGENTS_USAGE_SPARKLINE_DAYS: i32 = 30;
+
+/// Cross-agent usage summary for the `/agents/usage` dashboard. Unlike
+/// `get_agent_stats`, every `watcher_agents` row is included via a LEFT JOIN
+/// (not just agents with recorded sessions) so agents with zero sessions
+/// still appear, with zero-filled counts and a null `last_active_at`.
+async fn get_agents_usage_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let counts: Result<Vec<(Uuid, String, String, bool, bool, i64, i64, Option<DateTime<Utc>>)>, _> = sqlx::query_as(
+        r#"
+        SELECT a.id, a.name, a.path, a.enabled, a.is_builtin,
+               COUNT(s.id) AS session_count,
+               COALESCE(SUM(s.message_count), 0) AS message_count,
+               MAX(s.last_event_at) AS last_active_at
+        FROM watcher_agents a
+        LEFT JOIN sessions s ON s.agent_name = a.name
+        GROUP BY a.id, a.name, a.path, a.enabled, a.is_builtin
+        ORDER BY a.is_builtin DESC, a.name ASC
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    let counts = match counts {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!("get_agents_usage_summary counts error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    // Dense, zero-filled 30-day sparkline per agent: same generate_series +
+    // date_trunc + LEFT JOIN zero-fill pattern as get_agent_stats_timeseries,
+    // generalized here from one agent to a CROSS JOIN over all of them.
+    let spark_rows: Result<Vec<(Uuid, DateTime<Utc>, i64)>, _> = sqlx::query_as(
+        r#"
+        WITH buckets AS (
+            SELECT generate_series(
+                date_trunc('day', now()) - ($1::int - 1) * interval '1 day',
+                date_trunc('day', now()), interval '1 day') AS bucket_start
+        )
+        SELECT a.id, b.bucket_start, COUNT(s.id) AS sessions
+        FROM watcher_agents a
+        CROSS JOIN buckets b
+        LEFT JOIN sessions s
+          ON s.agent_name = a.name
+         AND date_trunc('day', s.started_at) = b.bucket_start
+        GROUP BY a.id, b.bucket_start
+        ORDER BY a.id, b.bucket_start ASC
+        "#,
+    )
+    .bind(AGENTS_USAGE_SPARKLINE_DAYS)
+    .fetch_all(&state.db)
+    .await;
+
+    let spark_rows = match spark_rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            error!("get_agents_usage_summary sparkline error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let mut sparklines: HashMap<Uuid, Vec<i64>> = HashMap::new();
+    for (agent_id, _bucket_start, sessions) in spark_rows {
+        sparklines.entry(agent_id).or_default().push(sessions);
+    }
+
+    let mut agent_count = 0i64;
+    let mut total_sessions = 0i64;
+    let mut total_messages = 0i64;
+
+    let agents: Vec<_> = counts.into_iter().map(|(id, name, path, enabled, is_builtin, session_count, message_count, last_active_at)| {
+        agent_count += 1;
+        total_sessions += session_count;
+        total_messages += message_count;
+
+        let claude_usage_supported = claude_usage::credentials_path_for(&path, resolve_user_path).is_some();
+        let sparkline = sparklines.get(&id).cloned().unwrap_or_default();
+
+        serde_json::json!({
+            "agent_id": id,
+            "agent_name": name,
+            "path": path,
+            "enabled": enabled,
+            "is_builtin": is_builtin,
+            "session_count": session_count,
+            "message_count": message_count,
+            "last_active_at": last_active_at,
+            "claude_usage_supported": claude_usage_supported,
+            "sparkline": sparkline,
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "generated_at": Utc::now(),
+        "bucket": "day",
+        "periods": AGENTS_USAGE_SPARKLINE_DAYS,
+        "totals": {
+            "agent_count": agent_count,
+            "session_count": total_sessions,
+            "message_count": total_messages,
+        },
+        "agents": agents,
+    })).into_response()
+}
+
+/// How long a successful claude-usage read stays cached before we re-hit
+/// Anthropic. Kept short since utilization changes with live usage.
+const CLAUDE_USAGE_CACHE_TTL_OK: std::time::Duration = std::time::Duration::from_secs(90);
+/// Negative TTL for transient failures (`network_error`/`upstream_error`)
+/// only — `token_expired`/`no_credentials` are pure local reads and are
+/// never cached, so re-authenticating is reflected immediately.
+const CLAUDE_USAGE_CACHE_TTL_ERR: std::time::Duration = std::time::Duration::from_secs(15);
+
+async fn get_agent_claude_usage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let agent = sqlx::query_as::<_, WatcherAgentRow>(
+        "SELECT id, name, path, enabled, is_builtin, description, created_at, updated_at \
+         FROM watcher_agents WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let agent = match agent {
+        Ok(Some(a)) => a,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "agent not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let Some(creds_path) = claude_usage::credentials_path_for(&agent.path, resolve_user_path) else {
+        // Not a Claude Code-shaped agent path (Codex/Gemini/etc). No file
+        // read, no network call.
+        return Json(serde_json::json!({"supported": false})).into_response();
+    };
+
+    // Check cache first (never hold the lock across an .await — clone the
+    // value out inside this short scope, same pattern as pg_cache above).
+    let cached = {
+        if let Ok(cache) = state.claude_usage_cache.lock() {
+            cache.clone()
+        } else {
+            None
+        }
+    };
+
+    if let Some((cached_at, cached_value)) = cached {
+        let cached_state = cached_value.get("state").and_then(|v| v.as_str()).unwrap_or("");
+        let ttl = if cached_state == "ok" { CLAUDE_USAGE_CACHE_TTL_OK } else { CLAUDE_USAGE_CACHE_TTL_ERR };
+        let is_cacheable_state = matches!(cached_state, "ok" | "network_error" | "upstream_error");
+        if is_cacheable_state && cached_at.elapsed() < ttl {
+            let mut value = cached_value;
+            value["cached"] = serde_json::json!(true);
+            return Json(value).into_response();
+        }
+    }
+
+    // Read the credentials file. Any failure — missing file, bad
+    // permissions, malformed JSON, missing keys — becomes `no_credentials`.
+    // Only the io::Error *kind* is logged, never the path or file contents.
+    let oauth = match claude_usage::read_oauth(&creds_path) {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("claude_usage: credentials read failed ({})", io_error_kind_of(&e));
+            return Json(serde_json::json!({
+                "supported": true,
+                "state": "no_credentials",
+                "message": "No Claude Code credentials found on this host — run `claude login` on the machine running OpenMemory.",
+                "plan": null,
+                "rate_limit_tier": null,
+                "five_hour": null,
+                "seven_day": null,
+                "extra_usage": null,
+                "fetched_at": Utc::now(),
+                "cached": false,
+            })).into_response();
+        }
+    };
+
+    let now_ms = Utc::now().timestamp_millis();
+    if oauth.expires_at <= now_ms {
+        return Json(serde_json::json!({
+            "supported": true,
+            "state": "token_expired",
+            "message": "Access token expired — re-authenticate with `claude login`.",
+            "plan": oauth.subscription_type,
+            "rate_limit_tier": oauth.rate_limit_tier,
+            "five_hour": null,
+            "seven_day": null,
+            "extra_usage": null,
+            "fetched_at": Utc::now(),
+            "cached": false,
+        })).into_response();
+    }
+
+    let raw = match claude_usage::fetch_usage(&oauth.access_token, Duration::from_secs(10)).await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            let (state_name, message) = if msg.contains("returned") {
+                ("upstream_error", format!("Anthropic returned an error: {}", msg))
+            } else {
+                ("network_error", "Couldn't reach api.anthropic.com.".to_string())
+            };
+            warn!("claude_usage: fetch_usage failed: {state_name}");
+            let value = serde_json::json!({
+                "supported": true,
+                "state": state_name,
+                "message": message,
+                "plan": oauth.subscription_type,
+                "rate_limit_tier": oauth.rate_limit_tier,
+                "five_hour": null,
+                "seven_day": null,
+                "extra_usage": null,
+                "fetched_at": Utc::now(),
+                "cached": false,
+            });
+            if let Ok(mut cache) = state.claude_usage_cache.lock() {
+                *cache = Some((std::time::Instant::now(), value.clone()));
+            }
+            return Json(value).into_response();
+        }
+    };
+
+    let mut summary = claude_usage::summarize(&oauth, &raw);
+    summary["fetched_at"] = serde_json::json!(Utc::now());
+    summary["cached"] = serde_json::json!(false);
+
+    if let Ok(mut cache) = state.claude_usage_cache.lock() {
+        *cache = Some((std::time::Instant::now(), summary.clone()));
+    }
+
+    Json(summary).into_response()
+}
+
+/// Extracts just the io::Error kind (e.g. "NotFound", "PermissionDenied")
+/// from an anyhow chain, for safe logging that never includes paths or file
+/// contents.
+fn io_error_kind_of(e: &anyhow::Error) -> String {
+    for cause in e.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            return format!("{:?}", io_err.kind());
+        }
+    }
+    "unknown".to_string()
+}
+
 async fn create_agent(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2102,6 +2586,32 @@ async fn delete_agent(
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     warn!("shutdown signal received");
+}
+
+/// Expand a leading `~` in a user-supplied path (e.g. an agent's recorded
+/// watch path) using `OPENMEMORY_HOME_DIR`, falling back to `HOME` only if
+/// that's unset. `OPENMEMORY_HOME_DIR` exists because inside this
+/// container `HOME` resolves to `/` (see docker-compose.yml — the image's
+/// `useradd --no-create-home` combined with the `user:` override leaves
+/// `HOME` unset/root), while the real host home directory is still mounted
+/// read-only at its original absolute path. This is a distinct concern from
+/// `token_file_path()`/`resolve_api_token()` below, which intentionally keep
+/// using `HOME` for the writable `.openmemory/api_token` file and must not
+/// be changed by this helper.
+fn resolve_user_path(p: &str) -> std::path::PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        let home = std::env::var("OPENMEMORY_HOME_DIR")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| "/".to_string());
+        std::path::PathBuf::from(home).join(rest)
+    } else if p == "~" {
+        let home = std::env::var("OPENMEMORY_HOME_DIR")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| "/".to_string());
+        std::path::PathBuf::from(home)
+    } else {
+        std::path::PathBuf::from(p)
+    }
 }
 
 fn token_file_path() -> std::path::PathBuf {
@@ -3754,6 +4264,113 @@ async fn mcp(
                 }),
             ))
         }
+
+        McpRequest::AiAutofill { kind, content, existing_tags } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            let autofill_kind = match autofill::AutofillKind::parse(&kind) {
+                Some(k) => k,
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": format!("unknown autofill kind: {kind}")})),
+                    ));
+                }
+            };
+
+            let cfg = match load_llm_config(&state.db, &state.encryption_key).await {
+                Some(c) => c,
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                    ));
+                }
+            };
+
+            let vocabulary = match autofill_kind {
+                autofill::AutofillKind::Memory => top_tags(&state.db, 20).await,
+                autofill::AutofillKind::Resource => resources::list_distinct_tags(&state.db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(tag, _)| tag)
+                    .collect(),
+                autofill::AutofillKind::Task => autofill::BUILTIN_TASK_LABELS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            };
+
+            // existing_tags, when the caller supplies it, extends the server-derived
+            // vocabulary hint (e.g. a client that already has locally-known custom
+            // labels not yet reflected in any task in the DB).
+            let mut vocabulary = vocabulary;
+            if let Some(extra) = existing_tags {
+                vocabulary.extend(extra);
+            }
+
+            let input = autofill::AutofillInput { kind: autofill_kind, content, vocabulary };
+
+            match autofill::suggest(&input, &cfg).await {
+                Ok(suggestion) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::AiAutofillResult { suggestion, model: cfg.model }),
+                )),
+                Err(e) => {
+                    warn!("ai.autofill failed (provider={}): {e}", cfg.provider);
+                    Err((
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({"error": format!("LLM request failed: {e}")})),
+                    ))
+                }
+            }
+        }
+
+        McpRequest::AiDesignDiagram { prompt, kind: _kind } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            if prompt.trim().is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "prompt is required"})),
+                ));
+            }
+
+            let cfg = match load_llm_config(&state.db, &state.encryption_key).await {
+                Some(c) => c,
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                    ));
+                }
+            };
+
+            match design_ai::generate(&prompt, &cfg).await {
+                Ok(source) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::AiDesignDiagramResult { source, model: cfg.model }),
+                )),
+                Err(e) => {
+                    warn!("ai.design_diagram failed (provider={}): {e}", cfg.provider);
+                    Err((
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({"error": format!("LLM request failed: {e}")})),
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -4041,6 +4658,20 @@ async fn frequent_tags(db: &PgPool, candidate_tags: Option<&[String]>, min_fract
         .await
         .unwrap_or_default(),
     };
+    rows.into_iter().map(|(t,)| t).collect()
+}
+
+/// Most-used memory tags, most frequent first — used as a soft "prefer these
+/// if they fit" vocabulary hint for ai.autofill. Never a hard constraint.
+async fn top_tags(db: &PgPool, limit: i64) -> Vec<String> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT tag FROM (SELECT unnest(tags) AS tag FROM memory_index) t \
+         GROUP BY tag ORDER BY count(*) DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
     rows.into_iter().map(|(t,)| t).collect()
 }
 
@@ -4614,6 +5245,35 @@ async fn resolve_git_project_root(
         return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not_a_git_repo"}))).into_response());
     }
     Ok(root)
+}
+
+/// Like `resolve_git_project_root`, but does not require a `.git` folder — used for design-asset
+/// scanning, which should work for any project with a registered filesystem path (e.g.
+/// `/home/toyofumi/projects/test` or `/home/toyofumi/agent`, neither of which is a git repo).
+/// Returns `Ok(None)` (not an error) when the project simply has no filesystem path — callers
+/// that treat "no path" as a valid, empty result (e.g. design-assets scanning) can match on that
+/// directly instead of parsing an error response.
+async fn resolve_project_root(
+    state: &AppState,
+    id: Uuid,
+) -> Result<Option<std::path::PathBuf>, axum::response::Response> {
+    let row = sqlx::query("SELECT canonical_path FROM project_graphs WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await;
+
+    let canonical_path: Option<String> = match row {
+        Ok(Some(r)) => r.try_get("canonical_path").unwrap_or(None),
+        Ok(None) => {
+            return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project graph not found"}))).into_response());
+        }
+        Err(e) => {
+            error!("resolve_project_root fetch error: {e}");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response());
+        }
+    };
+
+    Ok(canonical_path.filter(|p| !p.is_empty()).map(std::path::PathBuf::from))
 }
 
 async fn list_project_files(
@@ -5276,6 +5936,184 @@ async fn search_lessons(
         Err(e) => {
             error!("search_lessons error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_project_designs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(params): Query<ListDesignsParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let status = params.status.as_deref().unwrap_or("active");
+
+    let rows = sqlx::query_as::<_, ProjectDesign>(&format!(
+        "SELECT {cols} FROM project_designs \
+         WHERE project_id = $1 AND status = $2 \
+         ORDER BY sort_order ASC, created_at ASC",
+        cols = PROJECT_DESIGN_COLUMNS
+    ))
+    .bind(project_id)
+    .bind(status)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(designs) => Json(serde_json::json!({"designs": designs, "total": designs.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_designs error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_design(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateDesignPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if payload.title.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "title must be non-empty"}))).into_response();
+    }
+
+    let kind = payload.kind.as_deref().unwrap_or("other");
+    let source = payload.source.clone().unwrap_or_default();
+    let tags = normalize_labels(&payload.tags.clone().unwrap_or_default());
+    let sort_order = payload.sort_order.unwrap_or(0);
+
+    let row = sqlx::query_as::<_, ProjectDesign>(&format!(
+        "INSERT INTO project_designs (project_id, title, kind, source, notes, tags, sort_order) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         RETURNING {cols}",
+        cols = PROJECT_DESIGN_COLUMNS
+    ))
+    .bind(project_id)
+    .bind(&payload.title)
+    .bind(kind)
+    .bind(&source)
+    .bind(&payload.notes)
+    .bind(&tags)
+    .bind(sort_order)
+    .fetch_one(&state.db)
+    .await;
+
+    match row {
+        Ok(design) => (StatusCode::CREATED, Json(serde_json::json!(design))).into_response(),
+        Err(e) => {
+            error!("create_project_design error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_design(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, design_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateDesignPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let tags = payload.tags.as_ref().map(|t| normalize_labels(t));
+
+    let row = sqlx::query_as::<_, ProjectDesign>(&format!(
+        "UPDATE project_designs SET \
+         title = COALESCE($1, title), \
+         kind = COALESCE($2, kind), \
+         source = COALESCE($3, source), \
+         notes = CASE WHEN $4 THEN $5 ELSE notes END, \
+         tags = COALESCE($6, tags), \
+         sort_order = COALESCE($7, sort_order), \
+         status = COALESCE($8, status), \
+         updated_at = NOW() \
+         WHERE id = $9 AND project_id = $10 \
+         RETURNING {cols}",
+        cols = PROJECT_DESIGN_COLUMNS
+    ))
+    .bind(&payload.title)
+    .bind(&payload.kind)
+    .bind(&payload.source)
+    .bind(payload.notes.is_some())
+    .bind(payload.notes.clone().flatten())
+    .bind(&tags)
+    .bind(payload.sort_order)
+    .bind(&payload.status)
+    .bind(design_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(design)) => Json(serde_json::json!(design)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => {
+            error!("update_project_design error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_project_design(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, design_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let result = sqlx::query("DELETE FROM project_designs WHERE id = $1 AND project_id = $2 RETURNING id")
+        .bind(design_id)
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await;
+
+    match result {
+        Ok(Some(_)) => Json(serde_json::json!({"deleted": design_id})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_design error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_project_design_assets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let root = match resolve_project_root(&state, id).await {
+        Ok(Some(root)) => root,
+        Ok(None) => {
+            // No filesystem path registered for this project — a valid, empty result, not an error.
+            return Json(serde_json::json!({"docs_dir_exists": false, "docs_dir": "", "entries": []})).into_response();
+        }
+        Err(resp) => return resp,
+    };
+
+    let assets = tokio::task::spawn_blocking(move || design_assets::scan(&root)).await;
+    match assets {
+        Ok(assets) => Json(serde_json::json!(assets)).into_response(),
+        Err(e) => {
+            error!("list_project_design_assets task panicked: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
         }
     }
 }

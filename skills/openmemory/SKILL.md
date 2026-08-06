@@ -71,6 +71,15 @@ mem search "<topic>" [--limit 5]
 # Save
 mem save "<content>" [--importance 0.8] [--tags tag1,tag2] [--summary "brief label"]
 
+# Save with an LLM-suggested importance/tags/summary for whatever you didn't
+# pass explicitly (agents should normally decide these themselves — --auto is
+# mainly for humans/scripts; requires an LLM key configured via LLM Settings
+# in the web UI, the same key that also powers Knowledge Graph extraction)
+mem save "<content>" --auto
+
+# Preview a suggestion without saving
+mem autofill memory "<content>"
+
 # List recent memories
 mem list [--limit 20]
 

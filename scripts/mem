@@ -50,6 +50,33 @@ _post() {
     printf '%s' "$body" | jq . 2>/dev/null || printf '%s\n' "$body"
 }
 
+# Like _post, but for suggestion-only calls that must never block or fail the
+# caller's actual create: on any error (including LLM not configured) it
+# prints a warning to stderr and returns success with empty stdout, instead
+# of exiting the script.
+_post_optional() {
+    local payload="$1"
+    local http_code body response
+    local auth_args=()
+    [ -n "$API_TOKEN" ] && auth_args=(-H "Authorization: Bearer $API_TOKEN")
+    response=$(curl -s -w "\n__STATUS__%{http_code}" \
+        -X POST "$BASE_URL/mcp" \
+        -H 'content-type: application/json' \
+        "${auth_args[@]}" \
+        -d "$payload") || { echo "warning: autofill request failed (network error)" >&2; return 0; }
+    http_code=$(printf '%s' "$response" | tail -1 | sed 's/__STATUS__//')
+    body=$(printf '%s' "$response" | sed '$d' | sed 's/__STATUS__[0-9]*//')
+
+    if [ "${http_code:-0}" -ge 400 ] 2>/dev/null; then
+        local err
+        err=$(printf '%s' "$body" | jq -r '.error // empty' 2>/dev/null)
+        echo "warning: autofill suggestion unavailable${err:+ ($err)}" >&2
+        return 0
+    fi
+
+    printf '%s' "$body"
+}
+
 _get() {
     local path="$1"
     local http_code body response
@@ -81,11 +108,19 @@ _usage() {
 usage: mem <command> [args]
 
 Memory commands:
-  save <content> [--importance 0.5] [--tags tag1,tag2] [--summary TEXT]
+  save <content> [--importance 0.5] [--tags tag1,tag2] [--summary TEXT] [--auto]
   search <query> [--limit 5]
   list [--limit 20]
   get <uuid>
   delete <uuid>
+
+AI autofill (suggestion-only; shares the LLM key configured for graph
+extraction — set it via LLM Settings in the web UI):
+  autofill memory <content>    suggest summary/tags/importance, don't save
+  autofill task <content>      suggest description/labels/priority, don't save
+  autofill resource <content>  suggest description/tags, don't save
+  save ... --auto              fill only the fields you didn't pass explicitly
+  resource-add ... --auto      same, for resource-add
 
 Environment parameter commands:
   env-set <key> <value> [--secret] [--description TEXT]
@@ -97,7 +132,7 @@ Resource catalog commands (local paths + website URLs):
   resource-list [--kind path|url] [--query TEXT] [--tags a,b]
   resource-tags
   resource-get <id-or-name>
-  resource-add <name> --kind path|url --location <loc> [--description TEXT] [--tags a,b] [--env-keys a,b]
+  resource-add <name> --kind path|url --location <loc> [--description TEXT] [--tags a,b] [--env-keys a,b] [--auto]
   resource-update <uuid> [--name N] [--kind path|url] [--location L] [--description TEXT] [--tags a,b] [--env-keys a,b] [--clear-env-keys] [--clear-description]
   resource-delete <uuid>
   # Env-declared roots (also appear in resource-list):
@@ -124,29 +159,58 @@ case "$CMD" in
   save)
     _require_jq
     shift
-    CONTENT="${1:?error: content required — usage: mem save <content> [--importance N] [--tags t1,t2] [--summary TEXT]}"
+    CONTENT="${1:?error: content required — usage: mem save <content> [--importance N] [--tags t1,t2] [--summary TEXT] [--auto]}"
     shift
-    IMPORTANCE="0.5"
+    # Sentinels: only a field the user explicitly passed (or --auto fills)
+    # gets serialized into the payload below. Anything left unset is omitted
+    # entirely so the server's own defaults (importance 0.5, tags []) apply —
+    # this is what lets --auto tell "omitted" apart from "explicitly 0.5".
+    HAVE_IMPORTANCE=false
+    HAVE_TAGS=false
+    HAVE_SUMMARY=false
+    AUTO=false
+    IMPORTANCE=""
     TAGS="[]"
-    SUMMARY="null"
+    SUMMARY=""
     while [ $# -gt 0 ]; do
         case "$1" in
-            --importance) IMPORTANCE="$2"; shift 2 ;;
+            --importance) IMPORTANCE="$2"; HAVE_IMPORTANCE=true; shift 2 ;;
             --tags)
                 TAGS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                HAVE_TAGS=true
                 shift 2 ;;
             --summary)
-                SUMMARY=$(jq -n --arg v "$2" '$v')
+                SUMMARY="$2"
+                HAVE_SUMMARY=true
                 shift 2 ;;
+            --auto) AUTO=true; shift ;;
             *) echo "error: unknown flag $1" >&2; exit 1 ;;
         esac
     done
-    PAYLOAD=$(jq -n \
-        --arg content "$CONTENT" \
-        --argjson importance "$IMPORTANCE" \
-        --argjson tags "$TAGS" \
-        --argjson summary "$SUMMARY" \
-        '{type:"memory.save",content:$content,importance:$importance,tags:$tags,summary:$summary}')
+
+    if [ "$AUTO" = "true" ] && { [ "$HAVE_IMPORTANCE" = "false" ] || [ "$HAVE_TAGS" = "false" ] || [ "$HAVE_SUMMARY" = "false" ]; }; then
+        AUTOFILL_PAYLOAD=$(jq -n --arg content "$CONTENT" '{type:"ai.autofill",kind:"memory",content:$content}')
+        SUGGESTION=$(_post_optional "$AUTOFILL_PAYLOAD" | jq -c '.suggestion // empty' 2>/dev/null || true)
+        if [ -n "${SUGGESTION:-}" ] && [ "$SUGGESTION" != "null" ]; then
+            if [ "$HAVE_IMPORTANCE" = "false" ]; then
+                V=$(printf '%s' "$SUGGESTION" | jq -r '.importance // empty')
+                [ -n "$V" ] && { IMPORTANCE="$V"; HAVE_IMPORTANCE=true; }
+            fi
+            if [ "$HAVE_TAGS" = "false" ]; then
+                V=$(printf '%s' "$SUGGESTION" | jq -c '.tags // empty')
+                [ -n "$V" ] && [ "$V" != "[]" ] && { TAGS="$V"; HAVE_TAGS=true; }
+            fi
+            if [ "$HAVE_SUMMARY" = "false" ]; then
+                V=$(printf '%s' "$SUGGESTION" | jq -r '.summary // empty')
+                [ -n "$V" ] && { SUMMARY="$V"; HAVE_SUMMARY=true; }
+            fi
+        fi
+    fi
+
+    PAYLOAD=$(jq -n --arg content "$CONTENT" '{type:"memory.save",content:$content}')
+    [ "$HAVE_IMPORTANCE" = "true" ] && PAYLOAD=$(printf '%s' "$PAYLOAD" | jq --argjson v "$IMPORTANCE" '. + {importance:$v}')
+    [ "$HAVE_TAGS" = "true" ] && PAYLOAD=$(printf '%s' "$PAYLOAD" | jq --argjson v "$TAGS" '. + {tags:$v}')
+    [ "$HAVE_SUMMARY" = "true" ] && PAYLOAD=$(printf '%s' "$PAYLOAD" | jq --arg v "$SUMMARY" '. + {summary:$v}')
     _post "$PAYLOAD"
     ;;
 
@@ -292,20 +356,25 @@ case "$CMD" in
     shift
     KIND=""
     LOCATION=""
-    DESC="null"
+    HAVE_DESC=false
+    DESC=""
+    HAVE_TAGS=false
     TAGS="[]"
     ENV_KEYS="[]"
+    AUTO=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --kind) KIND="$2"; shift 2 ;;
             --location) LOCATION="$2"; shift 2 ;;
-            --description) DESC=$(jq -n --arg v "$2" '$v'); shift 2 ;;
+            --description) DESC="$2"; HAVE_DESC=true; shift 2 ;;
             --tags)
                 TAGS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
+                HAVE_TAGS=true
                 shift 2 ;;
             --env-keys)
                 ENV_KEYS=$(printf '%s' "$2" | tr ',' '\n' | jq -R . | jq -sc .)
                 shift 2 ;;
+            --auto) AUTO=true; shift ;;
             *) echo "error: unknown flag $1" >&2; exit 1 ;;
         esac
     done
@@ -313,11 +382,31 @@ case "$CMD" in
         echo "error: --kind and --location are required" >&2
         exit 1
     fi
+
+    if [ "$AUTO" = "true" ] && { [ "$HAVE_DESC" = "false" ] || [ "$HAVE_TAGS" = "false" ]; }; then
+        AF_CONTENT="name: ${NAME}, location: ${LOCATION}"
+        [ "$HAVE_DESC" = "true" ] && AF_CONTENT="${AF_CONTENT}, description: ${DESC}"
+        AUTOFILL_PAYLOAD=$(jq -n --arg content "$AF_CONTENT" '{type:"ai.autofill",kind:"resource",content:$content}')
+        SUGGESTION=$(_post_optional "$AUTOFILL_PAYLOAD" | jq -c '.suggestion // empty' 2>/dev/null || true)
+        if [ -n "${SUGGESTION:-}" ] && [ "$SUGGESTION" != "null" ]; then
+            if [ "$HAVE_DESC" = "false" ]; then
+                V=$(printf '%s' "$SUGGESTION" | jq -r '.description // empty')
+                [ -n "$V" ] && { DESC="$V"; HAVE_DESC=true; }
+            fi
+            if [ "$HAVE_TAGS" = "false" ]; then
+                V=$(printf '%s' "$SUGGESTION" | jq -c '.tags // empty')
+                [ -n "$V" ] && [ "$V" != "[]" ] && { TAGS="$V"; HAVE_TAGS=true; }
+            fi
+        fi
+    fi
+
+    DESC_JSON="null"
+    [ "$HAVE_DESC" = "true" ] && DESC_JSON=$(jq -n --arg v "$DESC" '$v')
     PAYLOAD=$(jq -n \
         --arg name "$NAME" \
         --arg kind "$KIND" \
         --arg location "$LOCATION" \
-        --argjson description "$DESC" \
+        --argjson description "$DESC_JSON" \
         --argjson tags "$TAGS" \
         --argjson env_param_keys "$ENV_KEYS" \
         '{type:"resource.add",name:$name,kind:$kind,location:$location,description:$description,tags:$tags,env_param_keys:$env_param_keys}')
@@ -370,6 +459,20 @@ case "$CMD" in
     shift
     ID="${1:?error: uuid required — usage: mem resource-delete <uuid>}"
     PAYLOAD=$(jq -n --arg id "$ID" '{type:"resource.delete",id:$id}')
+    _post "$PAYLOAD"
+    ;;
+
+  autofill)
+    _require_jq
+    shift
+    KIND="${1:?error: kind required — usage: mem autofill <memory|task|resource> <content>}"
+    shift
+    case "$KIND" in
+        memory|task|resource) ;;
+        *) echo "error: kind must be one of: memory, task, resource" >&2; exit 1 ;;
+    esac
+    CONTENT="${1:?error: content required — usage: mem autofill <memory|task|resource> <content>}"
+    PAYLOAD=$(jq -n --arg kind "$KIND" --arg content "$CONTENT" '{type:"ai.autofill",kind:$kind,content:$content}')
     _post "$PAYLOAD"
     ;;
 

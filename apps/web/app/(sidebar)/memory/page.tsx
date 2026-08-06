@@ -35,7 +35,9 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { createMemoryColumns, type Memory } from '@/components/memory-columns';
-import { Database, HardDrive, Cloud, RefreshCw, Plus, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, HardDrive, Cloud, RefreshCw, Plus, AlertCircle, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
+import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
 
 const PAGE_SIZE = 20;
 
@@ -57,6 +59,15 @@ export default function MemoryBrowsePage() {
   const [formSummary, setFormSummary] = useState('');
   const [formTags, setFormTags] = useState('');
   const [formImportance, setFormImportance] = useState(0.5);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  // Tracks fields the user has edited by hand in the Add dialog since it was
+  // last reset — "Suggest with AI" only fills fields the user hasn't touched,
+  // and re-clicking Suggest must never clobber an edit made after a first
+  // suggestion. Not used by the Edit dialog (existing values there are
+  // already meaningful, so autofill isn't wired in for it).
+  const [touchedSummary, setTouchedSummary] = useState(false);
+  const [touchedTags, setTouchedTags] = useState(false);
+  const [touchedImportance, setTouchedImportance] = useState(false);
 
   const columns = useMemo(
     () =>
@@ -113,6 +124,38 @@ export default function MemoryBrowsePage() {
     setFormSummary('');
     setFormTags('');
     setFormImportance(0.5);
+    setTouchedSummary(false);
+    setTouchedTags(false);
+    setTouchedImportance(false);
+  };
+
+  const handleSuggest = async () => {
+    if (!formContent.trim()) return;
+    setIsSuggesting(true);
+    try {
+      const response = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'ai.autofill', kind: 'memory', content: formContent }),
+      });
+      const data = await response.json();
+      if (data.error) {
+        toast.error(data.error);
+        return;
+      }
+      const suggestion = data.suggestion || {};
+      setFormSummary(mergeAutofillField(touchedSummary, formSummary, suggestion.summary));
+      if (!touchedTags && isNonEmptyArray(suggestion.tags)) {
+        setFormTags((suggestion.tags as string[]).join(', '));
+      }
+      setFormImportance(
+        mergeAutofillField(touchedImportance, formImportance, suggestion.importance, (v) => typeof v === 'number')
+      );
+    } catch {
+      toast.error('Failed to get AI suggestion.');
+    } finally {
+      setIsSuggesting(false);
+    }
   };
 
   const handleAdd = async () => {
@@ -386,20 +429,33 @@ export default function MemoryBrowsePage() {
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="content">Content *</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="content">Content *</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 text-xs"
+                  onClick={handleSuggest}
+                  disabled={!formContent.trim() || isSuggesting}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {isSuggesting ? 'Suggesting...' : 'Suggest with AI'}
+                </Button>
+              </div>
               <Textarea id="content" placeholder="Enter the memory content..." value={formContent} onChange={(e) => setFormContent(e.target.value)} rows={4} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="summary">Summary</Label>
-              <Input id="summary" placeholder="Brief summary (optional)" value={formSummary} onChange={(e) => setFormSummary(e.target.value)} />
+              <Input id="summary" placeholder="Brief summary (optional)" value={formSummary} onChange={(e) => { setFormSummary(e.target.value); setTouchedSummary(true); }} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="tags">Tags</Label>
-              <Input id="tags" placeholder="Comma-separated tags (e.g., preference, coding)" value={formTags} onChange={(e) => setFormTags(e.target.value)} />
+              <Input id="tags" placeholder="Comma-separated tags (e.g., preference, coding)" value={formTags} onChange={(e) => { setFormTags(e.target.value); setTouchedTags(true); }} />
             </div>
             <div className="grid gap-2">
               <Label>Importance: {formImportance.toFixed(1)}</Label>
-              <Slider value={[formImportance]} onValueChange={([v]) => setFormImportance(v)} min={0} max={1} step={0.1} />
+              <Slider value={[formImportance]} onValueChange={([v]) => { setFormImportance(v); setTouchedImportance(true); }} min={0} max={1} step={0.1} />
             </div>
           </div>
           <DialogFooter>

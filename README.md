@@ -336,6 +336,15 @@ Or use it directly:
 
 # Get memory details
 ./scripts/mem get <memory-id>
+
+# Save without specifying tags/importance yourself — let an LLM suggest them
+# for whatever you didn't pass explicitly. Requires an LLM key configured via
+# "LLM Settings" in the web UI — the same key that powers Knowledge Graph
+# extraction also powers this.
+./scripts/mem save "User prefers dark mode" --auto
+
+# Preview a suggestion without saving anything
+./scripts/mem autofill memory "User prefers dark mode"
 ```
 
 #### Step 3: Enable AI Agent Integration (Optional)

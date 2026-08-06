@@ -19,9 +19,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, RefreshCw, Bot, Sparkles, BookOpen } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Bot, Sparkles, BookOpen, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { SUBAGENT_REFERENCE } from '@/lib/subagent-reference';
+import { AgentUsageTrend } from '@/components/agent-usage-trend';
+import { ClaudePlanUsage } from '@/components/claude-plan-usage';
 
 interface WatcherAgent {
   id: string;
@@ -130,6 +132,23 @@ export default function AgentDetailPage() {
                 <p className="text-muted-foreground text-xs">Messages recorded</p>
                 <p>{stats?.message_count ?? '—'}</p>
               </div>
+            </CardContent>
+          </Card>
+
+          <ClaudePlanUsage agentId={id} />
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4" />
+                Usage Trend
+              </CardTitle>
+              <CardDescription>
+                Sessions and messages bucketed over time, with a linear projection of the next few buckets.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <AgentUsageTrend agentId={id} />
             </CardContent>
           </Card>
 

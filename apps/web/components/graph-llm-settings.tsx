@@ -141,7 +141,8 @@ export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
         {isSaving ? 'Saving…' : 'Save'}
       </Button>
       <p className="text-xs text-muted-foreground">
-        Extracts entities and facts from your memories automatically. OpenRouter, Anthropic, and OpenAI are supported.
+        Extracts entities and facts from your memories automatically, and powers the &quot;Suggest with AI&quot;
+        button on memory, task, and resource create forms. OpenRouter, Anthropic, and OpenAI are supported.
       </p>
     </div>
   );

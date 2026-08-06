@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow } from 'lucide-react';
+import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow, Gauge } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -47,6 +47,7 @@ const NAV_GROUPS = [
     items: [
       { href: '/agents', label: 'Agents', icon: Bot },
       { href: '/agents/sessions', label: 'Sessions', icon: History },
+      { href: '/agents/usage', label: 'Usage', icon: Gauge },
     ],
   },
   {
@@ -87,8 +88,13 @@ export function AppSidebar() {
                 {group.items.map((item) => {
                   // '/projects' also covers /projects/[id] detail pages, but not the
                   // separate /projects/board route (which has its own sidebar entry).
+                  // '/agents' likewise covers /agents/[id] detail pages, but not the
+                  // separate /agents/sessions or /agents/usage routes (which have
+                  // their own sidebar entries).
                   const isActive = item.href === '/projects'
                     ? pathname === '/projects' || (pathname.startsWith('/projects/') && !pathname.startsWith('/projects/board'))
+                    : item.href === '/agents'
+                    ? pathname === '/agents' || (pathname.startsWith('/agents/') && !pathname.startsWith('/agents/sessions') && !pathname.startsWith('/agents/usage'))
                     : pathname === item.href || pathname.startsWith(`${item.href}/`);
                   return (
                     <SidebarMenuItem key={item.href}>

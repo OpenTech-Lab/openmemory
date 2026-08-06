@@ -44,6 +44,7 @@ import {
   SheetFooter,
 } from '@/components/ui/sheet';
 import { toast } from 'sonner';
+import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 
@@ -223,6 +224,20 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     labels: [] as string[],
   });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+  const [isSuggestingTask, setIsSuggestingTask] = useState(false);
+  // Only fields the user hasn't hand-edited get overwritten by a suggestion —
+  // see the equivalent tracking on the memory Add dialog.
+  const [taskDescriptionTouched, setTaskDescriptionTouched] = useState(false);
+  const [taskPriorityTouched, setTaskPriorityTouched] = useState(false);
+  const [taskLabelsTouched, setTaskLabelsTouched] = useState(false);
+  // Title has its own dedicated "regenerate" button, so it always overwrites
+  // on click rather than being gated by a touched flag.
+  const [isSuggestingTaskTitle, setIsSuggestingTaskTitle] = useState(false);
+  const [isSuggestingEditTask, setIsSuggestingEditTask] = useState(false);
+  const [editDescriptionTouched, setEditDescriptionTouched] = useState(false);
+  const [editPriorityTouched, setEditPriorityTouched] = useState(false);
+  const [editLabelsTouched, setEditLabelsTouched] = useState(false);
+  const [isSuggestingEditTaskTitle, setIsSuggestingEditTaskTitle] = useState(false);
 
   const fetchProjects = useCallback(async () => {
     setIsLoading(true);
@@ -453,6 +468,112 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     }
   };
 
+  const handleSuggestTask = async () => {
+    if (!taskForm.title.trim()) return;
+    setIsSuggestingTask(true);
+    try {
+      const content = taskForm.description.trim()
+        ? `${taskForm.title}\n\n${taskForm.description}`
+        : taskForm.title;
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
+      });
+      const data = await res.json();
+      if (data.error) { toast.error(data.error); return; }
+      const suggestion = data.suggestion ?? {};
+      setTaskForm(f => ({
+        ...f,
+        description: mergeAutofillField(taskDescriptionTouched, f.description, suggestion.description),
+        priority: mergeAutofillField(taskPriorityTouched, f.priority, suggestion.priority),
+        labels: !taskLabelsTouched && isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
+      }));
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setIsSuggestingTask(false);
+    }
+  };
+
+  const handleSuggestEditTask = async () => {
+    if (!editForm.title.trim()) return;
+    setIsSuggestingEditTask(true);
+    try {
+      const content = editForm.description.trim()
+        ? `${editForm.title}\n\n${editForm.description}`
+        : editForm.title;
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
+      });
+      const data = await res.json();
+      if (data.error) { toast.error(data.error); return; }
+      const suggestion = data.suggestion ?? {};
+      setEditForm(f => ({
+        ...f,
+        description: mergeAutofillField(editDescriptionTouched, f.description, suggestion.description),
+        priority: mergeAutofillField(editPriorityTouched, f.priority, suggestion.priority),
+        labels: !editLabelsTouched && isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
+      }));
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setIsSuggestingEditTask(false);
+    }
+  };
+
+  const handleSuggestTaskTitle = async () => {
+    if (!taskForm.title.trim() && !taskForm.description.trim()) return;
+    setIsSuggestingTaskTitle(true);
+    try {
+      const content = taskForm.description.trim()
+        ? `${taskForm.title}\n\n${taskForm.description}`
+        : taskForm.title;
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
+      });
+      const data = await res.json();
+      if (data.error) { toast.error(data.error); return; }
+      const suggestion = data.suggestion ?? {};
+      if (suggestion.title) {
+        setTaskForm(f => ({ ...f, title: suggestion.title }));
+      }
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setIsSuggestingTaskTitle(false);
+    }
+  };
+
+  const handleSuggestEditTaskTitle = async () => {
+    if (!editForm.title.trim() && !editForm.description.trim()) return;
+    setIsSuggestingEditTaskTitle(true);
+    try {
+      const content = editForm.description.trim()
+        ? `${editForm.title}\n\n${editForm.description}`
+        : editForm.title;
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
+      });
+      const data = await res.json();
+      if (data.error) { toast.error(data.error); return; }
+      const suggestion = data.suggestion ?? {};
+      if (suggestion.title) {
+        setEditForm(f => ({ ...f, title: suggestion.title }));
+      }
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setIsSuggestingEditTaskTitle(false);
+    }
+  };
+
   const handleDropToStatus = async (taskId: string, newStatus: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task || task.status === newStatus) return;
@@ -484,6 +605,10 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       assigned_to: task.assigned_to ?? '',
       labels: task.labels ?? [],
     });
+    setEditDescriptionTouched(false);
+    setEditPriorityTouched(false);
+    setEditLabelsTouched(false);
+    setIsSuggestingEditTask(false);
   };
 
   const handleSaveTask = async () => {
@@ -827,7 +952,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </Select>
               {isLoadingTasks && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
               <div className="ml-auto">
-                <Button size="sm" onClick={() => setShowTaskDialog(true)}>
+                <Button size="sm" onClick={() => { setTaskDescriptionTouched(false); setTaskPriorityTouched(false); setTaskLabelsTouched(false); setShowTaskDialog(true); }}>
                   <Plus className="h-4 w-4 mr-1" /> Task
                 </Button>
               </div>
@@ -1063,7 +1188,22 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </Select>
             </div>
             <div>
-              <Label>Title</Label>
+              <div className="flex items-center justify-between">
+                <Label>Title</Label>
+                {taskForm.task_type === 'regular' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestTaskTitle}
+                    disabled={(!taskForm.title.trim() && !taskForm.description.trim()) || isSuggestingTaskTitle}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingTaskTitle ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                )}
+              </div>
               <Input
                 value={taskForm.title}
                 onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))}
@@ -1071,10 +1211,25 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               />
             </div>
             <div>
-              <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <div className="flex items-center justify-between">
+                <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                {taskForm.task_type === 'regular' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestTask}
+                    disabled={!taskForm.title.trim() || isSuggestingTask}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingTask ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                )}
+              </div>
               <Textarea
                 value={taskForm.description}
-                onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))}
+                onChange={e => { setTaskForm(f => ({ ...f, description: e.target.value })); setTaskDescriptionTouched(true); }}
                 placeholder={taskForm.task_type === 'scheduled' ? 'Instructions for the agent...' : ''}
                 rows={2}
               />
@@ -1125,7 +1280,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Priority</Label>
-                <Select value={taskForm.priority} onValueChange={v => setTaskForm(f => ({ ...f, priority: v }))}>
+                <Select value={taskForm.priority} onValueChange={v => { setTaskForm(f => ({ ...f, priority: v })); setTaskPriorityTouched(true); }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="low">Low</SelectItem>
@@ -1149,7 +1304,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
 
             <div>
               <Label>Labels</Label>
-              <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
+              <LabelChipInput value={taskForm.labels} onChange={labels => { setTaskForm(f => ({ ...f, labels })); setTaskLabelsTouched(true); }} />
             </div>
           </div>
           <DialogFooter>
@@ -1248,17 +1403,43 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
           ) : (
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <div>
-                <Label>Title</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Title</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestEditTaskTitle}
+                    disabled={(!editForm.title.trim() && !editForm.description.trim()) || isSuggestingEditTaskTitle}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingEditTaskTitle ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                </div>
                 <Input
                   value={editForm.title}
                   onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))}
                 />
               </div>
               <div>
-                <Label>Description</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Description</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestEditTask}
+                    disabled={!editForm.title.trim() || isSuggestingEditTask}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingEditTask ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                </div>
                 <Textarea
                   value={editForm.description}
-                  onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
+                  onChange={e => { setEditForm(f => ({ ...f, description: e.target.value })); setEditDescriptionTouched(true); }}
                   placeholder="Add details..."
                   rows={4}
                 />
@@ -1279,7 +1460,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                 </div>
                 <div>
                   <Label>Priority</Label>
-                  <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v }))}>
+                  <Select value={editForm.priority} onValueChange={v => { setEditForm(f => ({ ...f, priority: v })); setEditPriorityTouched(true); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="low">Low</SelectItem>
@@ -1302,7 +1483,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </div>
               <div>
                 <Label>Labels</Label>
-                <LabelChipInput value={editForm.labels} onChange={labels => setEditForm(f => ({ ...f, labels }))} />
+                <LabelChipInput value={editForm.labels} onChange={labels => { setEditForm(f => ({ ...f, labels })); setEditLabelsTouched(true); }} />
               </div>
               {selectedTask && (
                 <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">

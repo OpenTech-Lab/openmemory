@@ -55,8 +55,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Plus, RefreshCw, Pencil, Trash2, FolderOpen, Link2, Boxes, Lock, ChevronDown, X } from 'lucide-react';
+import { Plus, RefreshCw, Pencil, Trash2, FolderOpen, Link2, Boxes, Lock, ChevronDown, X, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
+import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
 
 interface Resource {
   id: string | null;
@@ -214,6 +215,11 @@ export function ResourcesPanel() {
   const [addDescription, setAddDescription] = useState('');
   const [addTags, setAddTags] = useState('');
   const [addEnvKeys, setAddEnvKeys] = useState<string[]>([]);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  // Only fields the user hasn't hand-edited get overwritten by a suggestion —
+  // see the equivalent tracking on the memory Add dialog.
+  const [addDescriptionTouched, setAddDescriptionTouched] = useState(false);
+  const [addTagsTouched, setAddTagsTouched] = useState(false);
 
   // Edit dialog
   const [editResource, setEditResource] = useState<Resource | null>(null);
@@ -331,11 +337,37 @@ export function ResourcesPanel() {
       setIsAddOpen(false);
       setAddName(''); setAddKind('path'); setAddLocation('');
       setAddDescription(''); setAddTags(''); setAddEnvKeys([]);
+      setAddDescriptionTouched(false); setAddTagsTouched(false);
       fetchResources();
     } catch {
       toast.error('Failed to add resource');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSuggest = async () => {
+    const content = [addName.trim(), addLocation.trim(), addDescription.trim()]
+      .filter(Boolean)
+      .join(' — ');
+    if (!content) return;
+    setIsSuggesting(true);
+    try {
+      const res = await callApi({ type: 'ai.autofill', kind: 'resource', content });
+      const data = await res.json();
+      if (data.error) {
+        toast.error(data.error);
+        return;
+      }
+      const suggestion = data.suggestion ?? {};
+      setAddDescription(mergeAutofillField(addDescriptionTouched, addDescription, suggestion.description));
+      if (!addTagsTouched && isNonEmptyArray(suggestion.tags)) {
+        setAddTags((suggestion.tags as string[]).join(', '));
+      }
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setIsSuggesting(false);
     }
   };
 
@@ -641,12 +673,25 @@ export function ResourcesPanel() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="add-desc">Description</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="add-desc">Description</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 text-xs"
+                  onClick={handleSuggest}
+                  disabled={(!addName.trim() && !addLocation.trim()) || isSuggesting}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {isSuggesting ? 'Suggesting...' : 'Suggest with AI'}
+                </Button>
+              </div>
               <Textarea
                 id="add-desc"
                 placeholder="Optional description"
                 value={addDescription}
-                onChange={(e) => setAddDescription(e.target.value)}
+                onChange={(e) => { setAddDescription(e.target.value); setAddDescriptionTouched(true); }}
                 rows={2}
               />
             </div>
@@ -656,7 +701,7 @@ export function ResourcesPanel() {
                 id="add-tags"
                 placeholder="comma, separated, tags"
                 value={addTags}
-                onChange={(e) => setAddTags(e.target.value)}
+                onChange={(e) => { setAddTags(e.target.value); setAddTagsTouched(true); }}
                 list="resource-tag-suggestions"
               />
             </div>

@@ -20,6 +20,8 @@ export async function POST(request: Request) {
       'env.delete',
       'graph.set_llm_config',
       'graph.analyze_all',
+      'ai.autofill',
+      'ai.design_diagram',
     ]);
     if (body?.type && AUTH_REQUIRED.has(body.type)) {
       headers['Authorization'] = `Bearer ${API_TOKEN}`;

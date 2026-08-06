@@ -69,7 +69,7 @@ pub fn canonicalize(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
@@ -82,13 +82,13 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn safe_str(opt: Option<String>) -> Option<String> {
+pub(crate) fn safe_str(opt: Option<String>) -> Option<String> {
     opt.map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(|s| truncate(&s, MAX_FIELD_LEN))
 }
 
-const SYSTEM_PROMPT: &str = "\
+const GRAPH_SYSTEM_PROMPT: &str = "\
 You are a knowledge graph extractor. Extract named entities and relationships from the user's memory text.\n\
 \n\
 Return ONLY valid JSON with this exact structure (no markdown, no code fences, no explanation):\n\
@@ -109,24 +109,23 @@ fn build_user_message(content: &str) -> String {
     )
 }
 
-async fn call_openai_compat(
+pub(crate) async fn call_openai_compat(
     base_url: &str,
     api_key: &str,
     model: &str,
-    content: &str,
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
     extra_header: Option<(&str, &str)>,
 ) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = reqwest::Client::builder().timeout(timeout).build()?;
 
     let body = serde_json::json!({
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_message(content)}
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
         ],
-        "response_format": {"type": "json_object"},
         "max_tokens": 1024,
         "temperature": 0.0
     });
@@ -156,17 +155,21 @@ async fn call_openai_compat(
     Ok(msg.to_string())
 }
 
-async fn call_anthropic(api_key: &str, model: &str, content: &str) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+pub(crate) async fn call_anthropic(
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let client = reqwest::Client::builder().timeout(timeout).build()?;
 
     let body = serde_json::json!({
         "model": model,
         "max_tokens": 1024,
-        "system": SYSTEM_PROMPT,
+        "system": system,
         "messages": [
-            {"role": "user", "content": build_user_message(content)}
+            {"role": "user", "content": user}
         ]
     });
 
@@ -196,12 +199,7 @@ async fn call_anthropic(api_key: &str, model: &str, content: &str) -> Result<Str
 
 fn parse_extraction_ok(raw_json: &str) -> GraphExtraction {
     // Strip markdown code fences if the model wrapped its output
-    let cleaned = raw_json.trim();
-    let cleaned = cleaned
-        .strip_prefix("```json")
-        .or_else(|| cleaned.strip_prefix("```"))
-        .unwrap_or(cleaned);
-    let cleaned = cleaned.strip_suffix("```").unwrap_or(cleaned).trim();
+    let cleaned = strip_fences(raw_json);
 
     let raw: RawExtraction = match serde_json::from_str(cleaned) {
         Ok(r) => r,
@@ -278,14 +276,38 @@ pub async fn extract_graph(content: &str, cfg: &LlmConfig) -> GraphExtraction {
         return GraphExtraction { ok: true, ..Default::default() };
     }
 
-    let result = match cfg.provider.as_str() {
-        "anthropic" => call_anthropic(&cfg.api_key, &cfg.model, content).await,
+    let user = build_user_message(content);
+    let result = call_llm(GRAPH_SYSTEM_PROMPT, &user, std::time::Duration::from_secs(30), cfg).await;
+
+    match result {
+        Ok(json_str) => parse_extraction_ok(&json_str),
+        Err(e) => {
+            warn!("LLM extraction failed (provider={}): {e}", cfg.provider);
+            GraphExtraction::default() // ok: false — do not mark memory as analyzed
+        }
+    }
+}
+
+/// Dispatch a system+user prompt to the configured provider. Shared by graph
+/// extraction and autofill — the only difference between callers is the
+/// prompt content and the timeout (autofill is interactive and uses a
+/// shorter one than the background graph-extraction job).
+pub(crate) async fn call_llm(
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
+    cfg: &LlmConfig,
+) -> Result<String> {
+    match cfg.provider.as_str() {
+        "anthropic" => call_anthropic(&cfg.api_key, &cfg.model, system, user, timeout).await,
         "openai" => {
             call_openai_compat(
                 "https://api.openai.com/v1",
                 &cfg.api_key,
                 &cfg.model,
-                content,
+                system,
+                user,
+                timeout,
                 None,
             )
             .await
@@ -296,18 +318,24 @@ pub async fn extract_graph(content: &str, cfg: &LlmConfig) -> GraphExtraction {
                 "https://openrouter.ai/api/v1",
                 &cfg.api_key,
                 &cfg.model,
-                content,
+                system,
+                user,
+                timeout,
                 Some(("HTTP-Referer", "https://github.com/openmemory/openmemory")),
             )
             .await
         }
-    };
-
-    match result {
-        Ok(json_str) => parse_extraction_ok(&json_str),
-        Err(e) => {
-            warn!("LLM extraction failed (provider={}): {e}", cfg.provider);
-            GraphExtraction::default() // ok: false — do not mark memory as analyzed
-        }
     }
 }
+
+/// Strip markdown code fences (```json ... ``` or ``` ... ```) some models
+/// wrap their JSON output in. Shared by graph extraction and autofill parsing.
+pub(crate) fn strip_fences(raw: &str) -> &str {
+    let cleaned = raw.trim();
+    let cleaned = cleaned
+        .strip_prefix("```json")
+        .or_else(|| cleaned.strip_prefix("```"))
+        .unwrap_or(cleaned);
+    cleaned.strip_suffix("```").unwrap_or(cleaned).trim()
+}
+

@@ -22,7 +22,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand, Pencil } from 'lucide-react';
+import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand, Pencil, Sparkles } from 'lucide-react';
+import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
 import { toast } from 'sonner';
 import { MAX_NODES_FULL, type GraphifyData, type GraphQueryResult } from '@/components/project-graph-types';
 import { ProjectFilesBrowser } from '@/components/project-files-browser';
@@ -30,6 +31,18 @@ import { ProjectCommitGraph } from '@/components/project-commit-graph';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 import { LessonsPanel } from '@/components/lessons-panel';
+
+const ProjectDesignPanel = dynamic(
+  () => import('@/components/project-design-panel').then(m => m.ProjectDesignPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full h-full flex items-center justify-center">
+        <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    ),
+  }
+);
 
 const ProjectGraph2D = dynamic(
   () => import('@/components/project-graph-2d').then(m => m.ProjectGraph2D),
@@ -117,7 +130,7 @@ export default function ProjectDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
-  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'files' | 'history'>('graph');
+  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'design' | 'files' | 'history'>('graph');
 
   // Graph query
   const [queryInput, setQueryInput] = useState('');
@@ -134,6 +147,12 @@ export default function ProjectDetailPage() {
   const [taskForm, setTaskForm] = useState({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] as string[] });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [isSuggestingTask, setIsSuggestingTask] = useState(false);
+  // Only fields the user hasn't hand-edited get overwritten by a suggestion —
+  // see the equivalent tracking on the memory Add dialog.
+  const [taskDescriptionTouched, setTaskDescriptionTouched] = useState(false);
+  const [taskPriorityTouched, setTaskPriorityTouched] = useState(false);
+  const [taskLabelsTouched, setTaskLabelsTouched] = useState(false);
 
   // Routines
   const [routines, setRoutines] = useState<Routine[]>([]);
@@ -367,7 +386,38 @@ export default function ProjectDetailPage() {
   const openTaskCreate = () => {
     setEditingTaskId(null);
     setTaskForm({ title: '', description: '', status: 'todo', priority: 'medium', assigned_to: '', labels: [] });
+    setTaskDescriptionTouched(false);
+    setTaskPriorityTouched(false);
+    setTaskLabelsTouched(false);
     setShowTaskDialog(true);
+  };
+
+  const handleSuggestTask = async () => {
+    if (!taskForm.title.trim()) return;
+    setIsSuggestingTask(true);
+    try {
+      const content = taskForm.description.trim()
+        ? `${taskForm.title}\n\n${taskForm.description}`
+        : taskForm.title;
+      const res = await fetch('/api/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
+      });
+      const data = await res.json();
+      if (data.error) { toast.error(data.error); return; }
+      const suggestion = data.suggestion ?? {};
+      setTaskForm(f => ({
+        ...f,
+        description: mergeAutofillField(taskDescriptionTouched, f.description, suggestion.description),
+        priority: mergeAutofillField(taskPriorityTouched, f.priority, suggestion.priority),
+        labels: !taskLabelsTouched && isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
+      }));
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setIsSuggestingTask(false);
+    }
   };
 
   const openTaskEdit = (task: Task) => {
@@ -506,6 +556,12 @@ export default function ProjectDetailPage() {
           onClick={() => setActiveTab('lessons')}
         >
           Lessons
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'design' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('design')}
+        >
+          Design
         </button>
         {hasGraph && (
           <button
@@ -800,6 +856,12 @@ export default function ProjectDetailPage() {
           </div>
         )}
 
+        {activeTab === 'design' && (
+          <div className="flex flex-col h-full p-6 overflow-auto">
+            <ProjectDesignPanel projectId={id} projectPath={project.path} />
+          </div>
+        )}
+
         {/* Files tab */}
         {activeTab === 'files' && hasGraph && (
           <ProjectFilesBrowser projectId={project.id} />
@@ -901,8 +963,23 @@ export default function ProjectDetailPage() {
               />
             </div>
             <div>
-              <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
-              <Textarea value={taskForm.description} onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))} rows={2} />
+              <div className="flex items-center justify-between">
+                <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                {!editingTaskId && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestTask}
+                    disabled={!taskForm.title.trim() || isSuggestingTask}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingTask ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                )}
+              </div>
+              <Textarea value={taskForm.description} onChange={e => { setTaskForm(f => ({ ...f, description: e.target.value })); setTaskDescriptionTouched(true); }} rows={2} />
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div>
@@ -920,7 +997,7 @@ export default function ProjectDetailPage() {
               </div>
               <div>
                 <Label>Priority</Label>
-                <Select value={taskForm.priority} onValueChange={v => setTaskForm(f => ({ ...f, priority: v }))}>
+                <Select value={taskForm.priority} onValueChange={v => { setTaskForm(f => ({ ...f, priority: v })); setTaskPriorityTouched(true); }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="low">Low</SelectItem>
@@ -943,7 +1020,7 @@ export default function ProjectDetailPage() {
             </div>
             <div>
               <Label>Labels</Label>
-              <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
+              <LabelChipInput value={taskForm.labels} onChange={labels => { setTaskForm(f => ({ ...f, labels })); setTaskLabelsTouched(true); }} />
             </div>
           </div>
           <DialogFooter>

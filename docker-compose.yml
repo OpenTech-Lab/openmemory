@@ -123,6 +123,7 @@ services:
       FALKORDB_URL: redis://falkordb:6379
       OPENMEMORY_SECRET_KEY: ${OPENMEMORY_SECRET_KEY:?OPENMEMORY_SECRET_KEY must be set (see .env)}
       OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
+      OPENMEMORY_HOME_DIR: ${HOME}
     depends_on:
       postgres:
         condition: service_healthy
