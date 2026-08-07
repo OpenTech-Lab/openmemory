@@ -7,13 +7,15 @@ import dagre from '@dagrejs/dagre';
 import type { Edge } from '@xyflow/react';
 import type { DesignNode } from '@/lib/design-graph';
 
-// Icon-above-label 'design' node footprint (see design-node.tsx: 110px wide, ~48px icon + label).
-const NODE_WIDTH = 110;
-const NODE_HEIGHT = 90;
+// Icon-above-label 'design' node footprint (see design-node.tsx: 96px wide, 40px icon + label).
+// Kept in sync with design-canvas.tsx's DEFAULT_NODE_WIDTH/HEIGHT.
+const NODE_WIDTH = 96;
+const NODE_HEIGHT = 78;
 // 'group' box footprint used only as a dagre placeholder when a group node itself has no
-// explicit width/height yet (freshly created boxes always do, but stay defensive).
-const GROUP_WIDTH = 320;
-const GROUP_HEIGHT = 220;
+// explicit width/height yet (freshly created boxes always do, but stay defensive). Kept in sync
+// with design-canvas.tsx's DEFAULT_GROUP_WIDTH/HEIGHT.
+const GROUP_WIDTH = 260;
+const GROUP_HEIGHT = 160;
 
 /**
  * Lays out `nodes` left-to-right (architecture diagrams read left-to-right, unlike homelable's
@@ -29,7 +31,7 @@ export function applyDagreLayout(nodes: DesignNode[], edges: Edge[]): DesignNode
 
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 100 });
+  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80 });
 
   for (const node of topLevel) {
     const isGroup = node.type === 'group';

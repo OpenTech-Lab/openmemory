@@ -71,10 +71,13 @@ const CANVAS_VARS_DARK = {
   '--xy-node-color': '#e5e5e5',
 } as React.CSSProperties;
 
-const DEFAULT_GROUP_WIDTH = 320;
-const DEFAULT_GROUP_HEIGHT = 220;
-const DEFAULT_NODE_WIDTH = 110;
-const DEFAULT_NODE_HEIGHT = 90;
+// Kept in sync with design-node.tsx's own width and design-layout.ts's NODE_WIDTH/HEIGHT /
+// GROUP_WIDTH/HEIGHT — this is the one spot all four get created from, those are the two spots
+// that need to already agree with these numbers for layout/measurement to line up.
+const DEFAULT_GROUP_WIDTH = 260;
+const DEFAULT_GROUP_HEIGHT = 160;
+const DEFAULT_NODE_WIDTH = 96;
+const DEFAULT_NODE_HEIGHT = 78;
 const GROUP_ICON_DATA_KEY = 'application/openmemory-design-box';
 const ICON_DATA_KEY = 'application/openmemory-design-icon';
 

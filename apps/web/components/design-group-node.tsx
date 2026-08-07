@@ -41,16 +41,19 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
       {/* Labels sit INSIDE the box, leaving the border unbroken — that's how the reference AWS
           diagram reads. Icon present => corner-anchored wrapper ("AWS Cloud"); otherwise a plain
           container with its title centered along the top. */}
+      {/* `right-2`/`max-w-[...]` cap the label's width to the box's own width (minus padding) so a
+          long title wraps onto further lines instead of forcing the box wider or overflowing it —
+          `whitespace-nowrap` used to do exactly that. */}
       {icon ? (
-        <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200">
+        <div className="pointer-events-none absolute left-2 right-2 top-2 flex items-start gap-1.5 text-neutral-800 dark:text-neutral-200">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center">
             <svg viewBox={icon.viewBox} className="h-5 w-5" dangerouslySetInnerHTML={{ __html: icon.body }} />
           </span>
-          <span className="text-[11px] font-semibold leading-none">{label}</span>
+          <span className="break-words text-[11px] font-semibold leading-tight">{label}</span>
         </div>
       ) : (
-        <div className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2">
-          <span className="whitespace-nowrap text-[11px] font-semibold leading-none text-neutral-700 dark:text-neutral-300">{label}</span>
+        <div className="pointer-events-none absolute left-1/2 top-2 max-w-[calc(100%-1.5rem)] -translate-x-1/2 text-center">
+          <span className="break-words text-[11px] font-semibold leading-tight text-neutral-700 dark:text-neutral-300">{label}</span>
         </div>
       )}
     </div>

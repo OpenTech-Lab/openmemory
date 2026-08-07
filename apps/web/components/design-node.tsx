@@ -24,7 +24,9 @@ export function DesignNode({ data, selected }: NodeProps<DesignNodeType>) {
   const FallbackIcon = designKindMeta(data.kind ?? '').icon;
 
   return (
-    <div className="group flex w-[110px] flex-col items-center gap-1 px-1 py-1">
+    // Width kept in sync with design-canvas.tsx's DEFAULT_NODE_WIDTH and design-layout.ts's
+    // NODE_WIDTH — those two need to already agree with this for dagre spacing/measurement.
+    <div className="group flex w-[96px] flex-col items-center gap-1 px-1 py-1">
       {HANDLE_POSITIONS.map((position) => (
         <span key={position}>
           <Handle type="target" position={position} id={`${position}-target`} className={HANDLE_CLASS} />
@@ -32,20 +34,24 @@ export function DesignNode({ data, selected }: NodeProps<DesignNodeType>) {
         </span>
       ))}
       <span
-        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-md transition-all ${
+        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-all ${
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-neutral-950' : ''
         }`}
       >
         {icon ? (
-          <svg viewBox={icon.viewBox} className="h-12 w-12" dangerouslySetInnerHTML={{ __html: icon.body }} />
+          <svg viewBox={icon.viewBox} className="h-10 w-10" dangerouslySetInnerHTML={{ __html: icon.body }} />
         ) : (
           // Iconless nodes sit beside full-bleed AWS tiles, so the fallback gets a tile of its own
           // — a bare glyph at this size reads as a missing icon rather than a generic one.
-          <span className="flex h-12 w-12 items-center justify-center rounded-md border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800">
-            <FallbackIcon className="h-6 w-6 text-neutral-500 dark:text-neutral-400" />
+          <span className="flex h-10 w-10 items-center justify-center rounded-md border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800">
+            <FallbackIcon className="h-5 w-5 text-neutral-500 dark:text-neutral-400" />
           </span>
         )}
       </span>
+      {/* `line-clamp-2` within the 96px-wide parent already wraps the label onto a second line
+          instead of overflowing — this is the "change line" behavior for node labels specifically;
+          design-group-node.tsx's box title needed the same treatment separately (it isn't clamped
+          by a parent flex column the same way). */}
       <span className="line-clamp-2 text-center text-[11px] font-medium leading-tight text-neutral-800 dark:text-neutral-200">
         {data.label || 'Untitled'}
       </span>
