@@ -14,6 +14,9 @@ export type DesignNodeType = (typeof DESIGN_NODE_TYPES)[number];
 export const BORDER_STYLES = ['solid', 'dashed', 'dotted'] as const;
 export type BorderStyle = (typeof BORDER_STYLES)[number];
 
+export const BOX_COLORS = ['none', 'slate', 'purple', 'teal', 'orange', 'green'] as const;
+export type BoxColor = (typeof BOX_COLORS)[number];
+
 export interface DesignNodeData extends Record<string, unknown> {
   label: string;
   icon?: string;
@@ -21,6 +24,8 @@ export interface DesignNodeData extends Record<string, unknown> {
   note?: string;
   /** Group-only: box border style. Ignored by 'design' (service) nodes. */
   borderStyle?: BorderStyle;
+  /** Group-only: box border/label accent color. 'none' (default) keeps the neutral look. */
+  borderColor?: BoxColor;
 }
 
 export type DesignNode = Node<DesignNodeData, DesignNodeType>;
@@ -46,6 +51,9 @@ function toDesignNode(raw: unknown): DesignNode | null {
   const borderStyle = BORDER_STYLES.includes(rawData.borderStyle as BorderStyle)
     ? (rawData.borderStyle as BorderStyle)
     : undefined;
+  const borderColor = BOX_COLORS.includes(rawData.borderColor as BoxColor)
+    ? (rawData.borderColor as BoxColor)
+    : undefined;
 
   const node: DesignNode = {
     id,
@@ -57,6 +65,7 @@ function toDesignNode(raw: unknown): DesignNode | null {
       kind: typeof rawData.kind === 'string' ? rawData.kind : undefined,
       note: typeof rawData.note === 'string' ? rawData.note : undefined,
       borderStyle,
+      borderColor,
     },
   };
 
