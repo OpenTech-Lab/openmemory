@@ -343,58 +343,50 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4 min-h-[400px] items-start">
-        {/* Left: list */}
-        <div className="border rounded-md overflow-hidden">
-          {isLoading && designs.length === 0 ? (
-            <div className="flex items-center justify-center h-[200px]">
-              <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : designs.length === 0 ? (
-            <div className="text-center py-10 px-4 text-muted-foreground">
-              <Palette className="h-8 w-8 mx-auto mb-2 opacity-30" />
-              <p className="text-sm">No diagrams yet.</p>
-            </div>
-          ) : (
-            <ul className="divide-y">
+      <div className="flex flex-col gap-4 min-h-[400px]">
+        {/* Diagram switcher — a dropdown rather than the old fixed-width sidebar list, so the
+            structure/canvas block below gets the full panel width instead of losing 280px to a
+            list that only ever shows one thing at a time anyway. */}
+        {isLoading && designs.length === 0 ? (
+          <div className="flex items-center justify-center h-[80px] border rounded-md">
+            <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : designs.length === 0 ? (
+          <div className="text-center py-10 px-4 border rounded-md text-muted-foreground">
+            <Palette className="h-8 w-8 mx-auto mb-2 opacity-30" />
+            <p className="text-sm">No diagrams yet.</p>
+          </div>
+        ) : (
+          <Select value={selectedId ?? undefined} onValueChange={setSelectedId}>
+            <SelectTrigger className="w-full sm:w-[420px]">
+              <SelectValue placeholder="Select a diagram" />
+            </SelectTrigger>
+            <SelectContent>
               {designs.map((d) => {
                 const meta = designKindMeta(d.kind);
                 const Icon = meta.icon;
                 return (
-                  <li key={d.id}>
-                    <button
-                      className={`w-full text-left px-3 py-2.5 flex items-start gap-2 hover:bg-muted/50 transition-colors ${
-                        selectedId === d.id ? 'bg-muted' : ''
-                      }`}
-                      onClick={() => setSelectedId(d.id)}
-                    >
-                      {/* `mt-0.5` keeps the icon aligned to the title's FIRST line now that the
-                          title wraps and the row is `items-start` rather than vertically centred. */}
-                      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                      {/* Titles wrap in full rather than truncating: diagram names are long and
-                          front-loaded with a shared prefix ("AWS 2 — Payment platform (nested…"),
-                          so an ellipsis cut exactly the part that tells two entries apart. */}
-                      <span className="text-sm break-words flex-1">{d.title}</span>
-                    </button>
-                    <div className="px-3 pb-2">
-                      <Badge variant="outline" className={`text-xs ${meta.color}`}>
-                        {meta.label}
-                      </Badge>
-                    </div>
-                  </li>
+                  <SelectItem key={d.id} value={d.id}>
+                    <span className="flex items-center gap-2">
+                      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      {/* Full titles here too (see design-node.tsx / this file's earlier fix for
+                          the same ellipsis problem) — `break-words` since the dropdown list has
+                          room to wrap, unlike the closed trigger's single-line `SelectValue`. */}
+                      <span className="break-words">{d.title}</span>
+                    </span>
+                  </SelectItem>
                 );
               })}
-            </ul>
-          )}
-        </div>
+            </SelectContent>
+          </Select>
+        )}
 
-        {/* Right: preview */}
-        {/* h-[70vh] (not max-h) is load-bearing: a flex column with only max-height caps its
-            own growth but never becomes a "definite size" for CSS flex-basis resolution, so
-            the flex-1/min-h-0 chain down to the scroll container below silently fails to get
-            a bounded height and the diagram just overflows uncapped. An explicit height fixes
-            this; selectedDesign ? '' handles the empty-state case where a fixed tall box
-            would look odd with no diagram to fill it. */}
+        {/* Preview — now full width. h-[70vh] (not max-h) is load-bearing: a flex column with
+            only max-height caps its own growth but never becomes a "definite size" for CSS
+            flex-basis resolution, so the flex-1/min-h-0 chain down to the scroll container below
+            silently fails to get a bounded height and the diagram just overflows uncapped. An
+            explicit height fixes this; selectedDesign ? '' handles the empty-state case where a
+            fixed tall box would look odd with no diagram to fill it. */}
         <div className={`border rounded-md p-4 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[70vh]' : 'min-h-[300px]'}`}>
           {selectedDesign ? (
             <>
