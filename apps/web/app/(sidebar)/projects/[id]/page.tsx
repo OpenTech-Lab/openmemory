@@ -529,16 +529,23 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
-      {/* Tabs — always visible; Graph tab only for projects with a path */}
+      {/* Tabs — always visible; Graph/Files/History tabs only for projects with a path.
+          Order: Files, Design, Tasks, Routines, Lessons, Graph, History. */}
       <div className="flex border-b shrink-0 px-6">
         {hasGraph && (
           <button
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'graph' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setActiveTab('graph')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'files' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveTab('files')}
           >
-            Graph
+            Files
           </button>
         )}
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'design' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('design')}
+        >
+          Design
+        </button>
         <button
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'tasks' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('tasks')}
@@ -557,18 +564,12 @@ export default function ProjectDetailPage() {
         >
           Lessons
         </button>
-        <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'design' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          onClick={() => setActiveTab('design')}
-        >
-          Design
-        </button>
         {hasGraph && (
           <button
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'files' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setActiveTab('files')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'graph' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveTab('graph')}
           >
-            Files
+            Graph
           </button>
         )}
         {hasGraph && (
