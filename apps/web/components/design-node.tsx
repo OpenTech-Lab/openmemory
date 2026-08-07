@@ -1,37 +1,54 @@
 'use client';
 
-// The 'design' React Flow node type — structurally follows workflows-panel.tsx's HttpStepNode
-// (bordered card, left/right handles, same selected-state ring) so the design canvas visually
-// matches the existing workflow canvas. No inline label editing here — that lives in
-// design-canvas.tsx's inspector panel.
+// The 'design' React Flow node type — AWS Architecture Icons style: a small icon floating over
+// the canvas (no card/border/background) with a centered label below it. Handles sit on all four
+// sides, each doubling as source+target, so edges can enter/exit from whichever side reads best
+// for orthogonal ('step') routing — matching docs/refer/aws_strcuture_sample.png.
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { awsIcon } from '@/lib/aws-icons';
 import { designKindMeta } from '@/lib/design-meta';
 import type { DesignNode as DesignNodeType } from '@/lib/design-graph';
 
+const HANDLE_POSITIONS = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
+
+// The canvas surface follows the app's light/dark theme (see design-canvas.tsx), so node chrome
+// uses fixed neutral colors branched via Tailwind's `dark:` variant rather than theme CSS vars
+// like `text-foreground` — those resolve relative to the *app* theme, not necessarily matching
+// what the canvas itself is doing, and vanished entirely during earlier iterations of this canvas
+// when it was briefly forced fixed-light against a dark app.
+const HANDLE_CLASS = '!h-2.5 !w-2.5 !border-2 !border-white dark:!border-neutral-950 !bg-neutral-500/70 opacity-0 transition-opacity group-hover:opacity-100';
+
 export function DesignNode({ data, selected }: NodeProps<DesignNodeType>) {
   const icon = data.icon ? awsIcon(data.icon) : null;
   const FallbackIcon = designKindMeta(data.kind ?? '').icon;
 
   return (
-    <div
-      className={`group w-[200px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-[0_12px_35px_-18px_rgba(0,0,0,.7)] transition-all ${
-        selected ? 'border-primary ring-2 ring-primary/20' : 'border-border hover:border-foreground/25'
-      }`}
-    >
-      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-background !bg-foreground" />
-      <div className="flex items-center gap-2 px-3 py-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/60">
-          {icon ? (
-            <svg viewBox={icon.viewBox} className="h-5 w-5" dangerouslySetInnerHTML={{ __html: icon.body }} />
-          ) : (
-            <FallbackIcon className="h-4 w-4 text-muted-foreground" />
-          )}
+    <div className="group flex w-[110px] flex-col items-center gap-1 px-1 py-1">
+      {HANDLE_POSITIONS.map((position) => (
+        <span key={position}>
+          <Handle type="target" position={position} id={`${position}-target`} className={HANDLE_CLASS} />
+          <Handle type="source" position={position} id={`${position}-source`} className={HANDLE_CLASS} />
         </span>
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold">{data.label || 'Untitled'}</span>
-      </div>
-      <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-2 !border-background !bg-primary" />
+      ))}
+      <span
+        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-md transition-all ${
+          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-neutral-950' : ''
+        }`}
+      >
+        {icon ? (
+          <svg viewBox={icon.viewBox} className="h-12 w-12" dangerouslySetInnerHTML={{ __html: icon.body }} />
+        ) : (
+          // Iconless nodes sit beside full-bleed AWS tiles, so the fallback gets a tile of its own
+          // — a bare glyph at this size reads as a missing icon rather than a generic one.
+          <span className="flex h-12 w-12 items-center justify-center rounded-md border border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800">
+            <FallbackIcon className="h-6 w-6 text-neutral-500 dark:text-neutral-400" />
+          </span>
+        )}
+      </span>
+      <span className="line-clamp-2 text-center text-[11px] font-medium leading-tight text-neutral-800 dark:text-neutral-200">
+        {data.label || 'Untitled'}
+      </span>
     </div>
   );
 }

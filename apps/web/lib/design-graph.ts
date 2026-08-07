@@ -138,7 +138,7 @@ export function parseDesignGraph(source: string): DesignGraph {
   if (!isRecord(parsed)) return empty;
 
   const nodes = Array.isArray(parsed.nodes)
-    ? parsed.nodes.map(toDesignNode).filter((n): n is DesignNode => n !== null)
+    ? sanitizeNodeHierarchy(parsed.nodes.map(toDesignNode).filter((n): n is DesignNode => n !== null))
     : [];
   const edges = Array.isArray(parsed.edges)
     ? parsed.edges.map(toDesignEdge).filter((e): e is Edge => e !== null)

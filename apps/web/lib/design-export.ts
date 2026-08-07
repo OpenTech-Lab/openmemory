@@ -19,31 +19,18 @@ async function withBackground<T>(element: HTMLElement, color: string, capture: (
   }
 }
 
-// `--background` is defined as a full oklch(...) value (see app/globals.css). Modern Chrome no
-// longer normalizes oklch() through canvas fillStyle (html-to-image ultimately rasterizes via
-// canvas), so resolve it to rgb() through the DOM first rather than handing oklch() text
-// straight to the capture — a probe element's computed `color` is reliably rgb().
-function resolveBackgroundColor(referenceElement: HTMLElement): string {
-  const raw = getComputedStyle(referenceElement).getPropertyValue('--background').trim();
-  if (!raw) return '#ffffff';
-  const probe = document.createElement('div');
-  probe.style.color = raw;
-  probe.style.display = 'none';
-  document.body.appendChild(probe);
-  const resolved = getComputedStyle(probe).color;
-  document.body.removeChild(probe);
-  return resolved || raw;
-}
-
 /**
  * Exports the design canvas as a PNG. `element` must be the `.react-flow__viewport` node (the
  * library's own transformed inner pane containing all nodes/edges) so the export includes
  * nodes currently scrolled off-screen at the current zoom/pan.
+ *
+ * `backgroundColor` should match whatever the canvas is actually showing right now (design-canvas.tsx
+ * tracks this per light/dark mode) — it's passed in rather than assumed here so the export always
+ * matches what's on screen instead of drifting from it.
  */
-export async function exportDesignToPng(element: HTMLElement, filename = 'design-diagram.png'): Promise<void> {
-  const color = resolveBackgroundColor(element);
-  const dataUrl = await withBackground(element, color, () =>
-    toPng(element, { backgroundColor: color, pixelRatio: PIXEL_RATIO })
+export async function exportDesignToPng(element: HTMLElement, backgroundColor: string, filename = 'design-diagram.png'): Promise<void> {
+  const dataUrl = await withBackground(element, backgroundColor, () =>
+    toPng(element, { backgroundColor, pixelRatio: PIXEL_RATIO })
   );
   triggerDownload(dataUrl, filename);
 }
