@@ -44,7 +44,7 @@ import {
   SheetFooter,
 } from '@/components/ui/sheet';
 import { toast } from 'sonner';
-import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
+import { isNonEmptyArray } from '@/lib/autofill-merge';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 
@@ -224,19 +224,13 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     labels: [] as string[],
   });
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+  // Every "Suggest with AI" button on the task dialogs always overwrites its
+  // field(s) on click — an explicit click is unambiguous intent to
+  // (re)generate, so there's no touched-flag gating here (unlike the memory
+  // Add dialog, where suggestions arrive passively alongside typing).
   const [isSuggestingTask, setIsSuggestingTask] = useState(false);
-  // Only fields the user hasn't hand-edited get overwritten by a suggestion —
-  // see the equivalent tracking on the memory Add dialog.
-  const [taskDescriptionTouched, setTaskDescriptionTouched] = useState(false);
-  const [taskPriorityTouched, setTaskPriorityTouched] = useState(false);
-  const [taskLabelsTouched, setTaskLabelsTouched] = useState(false);
-  // Title has its own dedicated "regenerate" button, so it always overwrites
-  // on click rather than being gated by a touched flag.
   const [isSuggestingTaskTitle, setIsSuggestingTaskTitle] = useState(false);
   const [isSuggestingEditTask, setIsSuggestingEditTask] = useState(false);
-  const [editDescriptionTouched, setEditDescriptionTouched] = useState(false);
-  const [editPriorityTouched, setEditPriorityTouched] = useState(false);
-  const [editLabelsTouched, setEditLabelsTouched] = useState(false);
   const [isSuggestingEditTaskTitle, setIsSuggestingEditTaskTitle] = useState(false);
 
   const fetchProjects = useCallback(async () => {
@@ -469,7 +463,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   };
 
   const handleSuggestTask = async () => {
-    if (!taskForm.title.trim()) return;
+    if (!taskForm.title.trim() && !taskForm.description.trim()) return;
     setIsSuggestingTask(true);
     try {
       const content = taskForm.description.trim()
@@ -485,9 +479,9 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       const suggestion = data.suggestion ?? {};
       setTaskForm(f => ({
         ...f,
-        description: mergeAutofillField(taskDescriptionTouched, f.description, suggestion.description),
-        priority: mergeAutofillField(taskPriorityTouched, f.priority, suggestion.priority),
-        labels: !taskLabelsTouched && isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
+        description: suggestion.description ?? f.description,
+        priority: suggestion.priority ?? f.priority,
+        labels: isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
       }));
     } catch {
       toast.error('Failed to get AI suggestion');
@@ -497,7 +491,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   };
 
   const handleSuggestEditTask = async () => {
-    if (!editForm.title.trim()) return;
+    if (!editForm.title.trim() && !editForm.description.trim()) return;
     setIsSuggestingEditTask(true);
     try {
       const content = editForm.description.trim()
@@ -513,9 +507,9 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       const suggestion = data.suggestion ?? {};
       setEditForm(f => ({
         ...f,
-        description: mergeAutofillField(editDescriptionTouched, f.description, suggestion.description),
-        priority: mergeAutofillField(editPriorityTouched, f.priority, suggestion.priority),
-        labels: !editLabelsTouched && isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
+        description: suggestion.description ?? f.description,
+        priority: suggestion.priority ?? f.priority,
+        labels: isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
       }));
     } catch {
       toast.error('Failed to get AI suggestion');
@@ -605,9 +599,6 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       assigned_to: task.assigned_to ?? '',
       labels: task.labels ?? [],
     });
-    setEditDescriptionTouched(false);
-    setEditPriorityTouched(false);
-    setEditLabelsTouched(false);
     setIsSuggestingEditTask(false);
   };
 
@@ -952,7 +943,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </Select>
               {isLoadingTasks && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
               <div className="ml-auto">
-                <Button size="sm" onClick={() => { setTaskDescriptionTouched(false); setTaskPriorityTouched(false); setTaskLabelsTouched(false); setShowTaskDialog(true); }}>
+                <Button size="sm" onClick={() => setShowTaskDialog(true)}>
                   <Plus className="h-4 w-4 mr-1" /> Task
                 </Button>
               </div>
@@ -1220,7 +1211,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                     size="sm"
                     className="h-7 gap-1 text-xs"
                     onClick={handleSuggestTask}
-                    disabled={!taskForm.title.trim() || isSuggestingTask}
+                    disabled={(!taskForm.title.trim() && !taskForm.description.trim()) || isSuggestingTask}
                   >
                     <Sparkles className="h-3.5 w-3.5" />
                     {isSuggestingTask ? 'Suggesting...' : 'Suggest with AI'}
@@ -1229,7 +1220,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </div>
               <Textarea
                 value={taskForm.description}
-                onChange={e => { setTaskForm(f => ({ ...f, description: e.target.value })); setTaskDescriptionTouched(true); }}
+                onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))}
                 placeholder={taskForm.task_type === 'scheduled' ? 'Instructions for the agent...' : ''}
                 rows={2}
               />
@@ -1280,7 +1271,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Priority</Label>
-                <Select value={taskForm.priority} onValueChange={v => { setTaskForm(f => ({ ...f, priority: v })); setTaskPriorityTouched(true); }}>
+                <Select value={taskForm.priority} onValueChange={v => setTaskForm(f => ({ ...f, priority: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="low">Low</SelectItem>
@@ -1304,7 +1295,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
 
             <div>
               <Label>Labels</Label>
-              <LabelChipInput value={taskForm.labels} onChange={labels => { setTaskForm(f => ({ ...f, labels })); setTaskLabelsTouched(true); }} />
+              <LabelChipInput value={taskForm.labels} onChange={labels => setTaskForm(f => ({ ...f, labels }))} />
             </div>
           </div>
           <DialogFooter>
@@ -1431,7 +1422,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                     size="sm"
                     className="h-7 gap-1 text-xs"
                     onClick={handleSuggestEditTask}
-                    disabled={!editForm.title.trim() || isSuggestingEditTask}
+                    disabled={(!editForm.title.trim() && !editForm.description.trim()) || isSuggestingEditTask}
                   >
                     <Sparkles className="h-3.5 w-3.5" />
                     {isSuggestingEditTask ? 'Suggesting...' : 'Suggest with AI'}
@@ -1439,7 +1430,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                 </div>
                 <Textarea
                   value={editForm.description}
-                  onChange={e => { setEditForm(f => ({ ...f, description: e.target.value })); setEditDescriptionTouched(true); }}
+                  onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
                   placeholder="Add details..."
                   rows={4}
                 />
@@ -1460,7 +1451,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                 </div>
                 <div>
                   <Label>Priority</Label>
-                  <Select value={editForm.priority} onValueChange={v => { setEditForm(f => ({ ...f, priority: v })); setEditPriorityTouched(true); }}>
+                  <Select value={editForm.priority} onValueChange={v => setEditForm(f => ({ ...f, priority: v }))}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="low">Low</SelectItem>
@@ -1483,7 +1474,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </div>
               <div>
                 <Label>Labels</Label>
-                <LabelChipInput value={editForm.labels} onChange={labels => { setEditForm(f => ({ ...f, labels })); setEditLabelsTouched(true); }} />
+                <LabelChipInput value={editForm.labels} onChange={labels => setEditForm(f => ({ ...f, labels }))} />
               </div>
               {selectedTask && (
                 <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
