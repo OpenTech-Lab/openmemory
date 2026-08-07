@@ -363,13 +363,18 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                 return (
                   <li key={d.id}>
                     <button
-                      className={`w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-muted/50 transition-colors ${
+                      className={`w-full text-left px-3 py-2.5 flex items-start gap-2 hover:bg-muted/50 transition-colors ${
                         selectedId === d.id ? 'bg-muted' : ''
                       }`}
                       onClick={() => setSelectedId(d.id)}
                     >
-                      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="text-sm truncate flex-1">{d.title}</span>
+                      {/* `mt-0.5` keeps the icon aligned to the title's FIRST line now that the
+                          title wraps and the row is `items-start` rather than vertically centred. */}
+                      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      {/* Titles wrap in full rather than truncating: diagram names are long and
+                          front-loaded with a shared prefix ("AWS 2 — Payment platform (nested…"),
+                          so an ellipsis cut exactly the part that tells two entries apart. */}
+                      <span className="text-sm break-words flex-1">{d.title}</span>
                     </button>
                     <div className="px-3 pb-2">
                       <Badge variant="outline" className={`text-xs ${meta.color}`}>

@@ -86,7 +86,10 @@ const CANVAS_VARS_DARK = {
 const DEFAULT_GROUP_WIDTH = 260;
 const DEFAULT_GROUP_HEIGHT = 160;
 const DEFAULT_NODE_WIDTH = 96;
-const DEFAULT_NODE_HEIGHT = 78;
+// Pre-measurement fallback only, and deliberately the shortest real node — labels wrap freely
+// (design-node.tsx), so heights vary from ~95px at one line to ~125px at three. `groupSelection`
+// prefers `measured.height` and only lands here for a node React Flow hasn't measured yet.
+const DEFAULT_NODE_HEIGHT = 96;
 // Small solid-fill squares for the inspector's <SelectItem> swatches — distinct from the
 // border-only classes in design-group-node.tsx since a filled swatch reads better at that size
 // than an outline would.

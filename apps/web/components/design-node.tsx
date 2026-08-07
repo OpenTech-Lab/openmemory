@@ -48,11 +48,15 @@ export function DesignNode({ data, selected }: NodeProps<DesignNodeType>) {
           </span>
         )}
       </span>
-      {/* `line-clamp-2` within the 96px-wide parent already wraps the label onto a second line
-          instead of overflowing — this is the "change line" behavior for node labels specifically;
-          design-group-node.tsx's box title needed the same treatment separately (it isn't clamped
-          by a parent flex column the same way). */}
-      <span className="line-clamp-2 text-center text-[11px] font-medium leading-tight text-neutral-800 dark:text-neutral-200">
+      {/* Labels wrap onto as many lines as the text needs — service names like
+          "Amazon SQS goal-generator-requests-dlq.fifo" ran past the two lines a `line-clamp-2` here
+          used to allow and got cut off with an ellipsis, hiding which queue a node actually was.
+          `break-words` matters as much as dropping the clamp: these labels are full of long
+          unbroken tokens (dotted queue/bucket names) that have no space to wrap at inside the
+          96px column, and would otherwise overflow the node's width rather than the clamp.
+          Nodes therefore vary in height; that's fine, since they're absolutely positioned and
+          only ever grow downward, away from the icon that anchors them. */}
+      <span className="break-words text-center text-[11px] font-medium leading-tight text-neutral-800 dark:text-neutral-200">
         {data.label || 'Untitled'}
       </span>
     </div>

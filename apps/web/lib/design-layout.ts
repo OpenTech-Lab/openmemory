@@ -9,8 +9,12 @@ import type { DesignNode } from '@/lib/design-graph';
 
 // Icon-above-label 'design' node footprint (see design-node.tsx: 96px wide, 40px icon + label).
 // Kept in sync with design-canvas.tsx's DEFAULT_NODE_WIDTH/HEIGHT.
+// HEIGHT is only a pre-measurement fallback, and is deliberately the *shortest* real node: labels
+// wrap to as many lines as they need (design-node.tsx), so real heights vary — about 95px at one
+// line up to ~125px at three. Callers prefer `measured.height` and reach this only before React
+// Flow has measured a node.
 const NODE_WIDTH = 96;
-const NODE_HEIGHT = 78;
+const NODE_HEIGHT = 96;
 // 'group' box footprint used only as a dagre placeholder when a group node itself has no
 // explicit width/height yet (freshly created boxes always do, but stay defensive). Kept in sync
 // with design-canvas.tsx's DEFAULT_GROUP_WIDTH/HEIGHT.
