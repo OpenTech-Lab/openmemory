@@ -35,31 +35,35 @@ const EDGE_COLOR_DARK = '#94a3b8';
 const CANVAS_BG_LIGHT = '#ffffff';
 const CANVAS_BG_DARK = '#0a0a0a';
 
-// `defaultEdgeOptions` only reaches edges created in this session; already-saved edges carry their
-// own (unstyled) props. Styling the SVG directly via `dark:` variants covers both cases (old
-// diagrams restyle too) and needs no JS, since Tailwind's dark variant just tracks the app's own
-// `.dark` class on <html> (next-themes already maintains that).
-const EDGE_CLASS = [
-  '[&_.react-flow__edge-path]:stroke-[#232f3e]',
-  'dark:[&_.react-flow__edge-path]:stroke-[#94a3b8]',
-  '[&_.react-flow__edge-path]:[stroke-width:1.5]',
-  '[&_.react-flow__edge-textbg]:fill-white',
-  'dark:[&_.react-flow__edge-textbg]:fill-neutral-900',
-  '[&_.react-flow__edge-text]:fill-[#232f3e]',
-  'dark:[&_.react-flow__edge-text]:fill-[#94a3b8]',
-  '[&_.react-flow__edge-text]:text-[10px]',
-].join(' ');
-
-// React Flow's LIGHT theme leaves several colors as `inherit`, assuming the page around the canvas
-// is light too — on a light canvas embedded in this app's dark chrome they'd inherit the app's
-// near-white `--foreground` and vanish (the zoom controls did exactly that). Pinning every color
-// explicitly for BOTH modes — rather than only patching light mode and trusting the library's dark
-// defaults — keeps this canvas' palette independent of upstream default changes.
+// Everything React Flow draws is themed through its own `--xy-*` CSS variables, and those are the
+// ONLY reliable lever here. Tailwind arbitrary variants cannot target these elements: `_` means
+// "space" inside an arbitrary value, so `[&_.react-flow__edge-path]:…` compiles to the selector
+// `.react-flow edge-path` — a descendant *element* named `edge-path`, matching nothing. An earlier
+// EDGE_CLASS in this spot did exactly that and was silently dead; edges were falling through to
+// library defaults the whole time. Set the variables instead of writing selectors.
+//
+// React Flow's LIGHT theme also leaves several colors as `inherit`, assuming the page around the
+// canvas is light too — on a light canvas embedded in this app's dark chrome they'd inherit the
+// app's near-white `--foreground` and vanish (the zoom controls did exactly that). Pinning every
+// color explicitly for BOTH modes — rather than only patching light mode and trusting the
+// library's dark defaults — keeps this canvas' palette independent of upstream default changes.
+//
+// `--xy-node-*` here only reaches 'group' nodes: the library styles just its own built-in node
+// types plus `.react-flow__node-group`, and our other type ('design') is custom, so it renders
+// unstyled. Containers are deliberately unfilled and borderless at the wrapper level — the
+// reference AWS diagrams draw containers as outlines only, a translucent fill compounds with every
+// nesting level (Cloud > VPC > subnet stacking to a muddy grey), and the wrapper's own border would
+// double-draw beneath the colored one design-group-node.tsx paints.
 const CANVAS_VARS_LIGHT = {
   '--xy-controls-button-color': '#232f3e',
   '--xy-controls-button-color-hover': '#000000',
   '--xy-edge-label-color': '#232f3e',
+  '--xy-edge-label-background-color': '#ffffff',
+  '--xy-edge-stroke': '#232f3e',
+  '--xy-edge-stroke-width': '1.5',
   '--xy-node-color': '#232f3e',
+  '--xy-node-group-background-color': 'transparent',
+  '--xy-node-border': 'none',
 } as React.CSSProperties;
 const CANVAS_VARS_DARK = {
   '--xy-controls-button-background-color': '#18181b',
@@ -68,7 +72,12 @@ const CANVAS_VARS_DARK = {
   '--xy-controls-button-color-hover': '#ffffff',
   '--xy-controls-button-border-color': '#3f3f46',
   '--xy-edge-label-color': '#94a3b8',
+  '--xy-edge-label-background-color': '#171717',
+  '--xy-edge-stroke': '#94a3b8',
+  '--xy-edge-stroke-width': '1.5',
   '--xy-node-color': '#e5e5e5',
+  '--xy-node-group-background-color': 'transparent',
+  '--xy-node-border': 'none',
 } as React.CSSProperties;
 
 // Kept in sync with design-node.tsx's own width and design-layout.ts's NODE_WIDTH/HEIGHT /
@@ -406,7 +415,8 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
       >
         <ReactFlow<DesignNodeType, Edge>
           colorMode={isDark ? 'dark' : 'light'}
-          className={EDGE_CLASS}
+          /* Styling lives entirely in `canvasVars` below — see the note there on why Tailwind
+             arbitrary variants can't target React Flow's internals. */
           defaultMarkerColor={edgeColor}
           style={{ backgroundColor: canvasBg, ...canvasVars }}
           nodes={nodes}

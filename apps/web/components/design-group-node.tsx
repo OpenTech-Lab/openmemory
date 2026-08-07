@@ -49,12 +49,15 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
         handleClassName="!h-2.5 !w-2.5 !rounded-sm !border !border-blue-500 dark:!border-blue-400 !bg-white dark:!bg-neutral-900"
       />
 
-      {/* Fill + border layer — pointer-events none so dragged/dropped children underneath (and
-          the pane behind an empty box) stay clickable/draggable through the box's interior.
+      {/* Border layer — pointer-events none so dragged/dropped children underneath (and the pane
+          behind an empty box) stay clickable/draggable through the box's interior.
+          Deliberately unfilled: the reference AWS diagrams draw containers as outlines only, and
+          a translucent fill compounds with every nesting level (Cloud > VPC > subnet stacking to
+          a muddy grey), which also washes out the border colors that mark those levels apart.
           Canvas follows the app theme, so colors here branch via Tailwind's `dark:` variant
           rather than theme CSS vars (see design-node.tsx for why those don't track correctly). */}
       <div
-        className={`pointer-events-none absolute inset-0 rounded-md bg-neutral-900/[0.02] dark:bg-white/[0.04] ${
+        className={`pointer-events-none absolute inset-0 rounded-md ${
           selected ? 'border-blue-500 dark:border-blue-400' : BORDER_COLOR_CLASSES[borderColor]
         }`}
         style={{ borderWidth: BORDER_WIDTH, borderStyle }}
