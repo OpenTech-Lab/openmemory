@@ -133,6 +133,7 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialGraph.edges);
   const [viewport, setViewport] = useState<Viewport | undefined>(initialGraph.viewport);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [flow, setFlow] = useState<ReactFlowInstance<DesignNodeType, Edge> | null>(null);
 
   // Single source of truth for reporting state upward — fires on every nodes/edges/viewport
@@ -144,6 +145,7 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
   }, [nodes, edges, viewport]);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const selectedNodes = nodes.filter((node) => node.selected);
 
   // Deleting a group node must never leave its children with a dangling `parentId` (that crashes
@@ -173,6 +175,19 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
     setNodes((current) => current.map((node) =>
       node.id === selectedNodeId ? { ...node, data: { ...node.data, ...patch } } : node
     ));
+  };
+
+  const patchSelectedEdge = (patch: Partial<Edge>) => {
+    if (!selectedEdgeId) return;
+    setEdges((current) => current.map((edge) =>
+      edge.id === selectedEdgeId ? { ...edge, ...patch } : edge
+    ));
+  };
+
+  const removeSelectedEdge = () => {
+    if (!selectedEdgeId) return;
+    setEdges((current) => current.filter((edge) => edge.id !== selectedEdgeId));
+    setSelectedEdgeId(null);
   };
 
   const removeSelected = () => {
@@ -402,10 +417,12 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
           onConnect={onConnect}
           onInit={setFlow}
           onMoveEnd={(_, nextViewport) => setViewport(nextViewport)}
-          onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+          onNodeClick={(_, node) => { setSelectedNodeId(node.id); setSelectedEdgeId(null); }}
+          onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); setSelectedNodeId(null); }}
           onNodeDragStop={onNodeDragStop}
-          onPaneClick={() => setSelectedNodeId(null)}
+          onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); }}
           onNodesDelete={(deleted) => { if (deleted.some((node) => node.id === selectedNodeId)) setSelectedNodeId(null); }}
+          onEdgesDelete={(deleted) => { if (deleted.some((edge) => edge.id === selectedEdgeId)) setSelectedEdgeId(null); }}
           fitView
           minZoom={0.35}
           maxZoom={1.8}
@@ -541,6 +558,42 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
                   </div>
                 </>
               )}
+            </div>
+          ) : selectedEdge ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold">Edge</p>
+                <Button variant="ghost" size="icon" onClick={removeSelectedEdge}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Label</Label>
+                <Input
+                  value={typeof selectedEdge.label === 'string' ? selectedEdge.label : ''}
+                  onChange={(e) => patchSelectedEdge({ label: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Style</Label>
+                <Select
+                  value={selectedEdge.style?.strokeDasharray ? 'dashed' : 'solid'}
+                  onValueChange={(value) => patchSelectedEdge({
+                    style: {
+                      ...selectedEdge.style,
+                      strokeDasharray: value === 'dashed' ? '6 4' : undefined,
+                    },
+                  })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="solid">Solid</SelectItem>
+                    <SelectItem value="dashed">Dashed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           ) : (
             <div className="flex h-full min-h-40 flex-col items-center justify-center text-center text-muted-foreground">
