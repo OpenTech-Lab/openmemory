@@ -130,7 +130,11 @@ export default function ProjectDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
-  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'design' | 'files' | 'history'>('graph');
+  // Files is the landing tab now (see tab order below). Files/Graph/History all require the
+  // project to have a filesystem path (`hasGraph`, computed once `project` loads below) — for a
+  // path-less project those three panes render nothing, so a separate effect further down falls
+  // back to Design (the next tab that works without a path) once we know which case we're in.
+  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'design' | 'files' | 'history'>('files');
 
   // Graph query
   const [queryInput, setQueryInput] = useState('');
@@ -210,6 +214,15 @@ export default function ProjectDetailPage() {
   useEffect(() => { fetchProject(); }, [fetchProject]);
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
   useEffect(() => { fetchRoutines(); }, [fetchRoutines]);
+
+  // The Files/Graph/History tabs only render content for a project with a filesystem path
+  // (hasGraph below) — a path-less project landing on the Files default would otherwise show a
+  // blank pane. Falls back to Design, the next tab in order that works with no path.
+  useEffect(() => {
+    if (project && !project.path && (activeTab === 'files' || activeTab === 'graph' || activeTab === 'history')) {
+      setActiveTab('design');
+    }
+  }, [project, activeTab]);
 
   const handleRebuild = async () => {
     setIsRebuilding(true);
