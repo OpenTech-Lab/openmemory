@@ -3,7 +3,7 @@
 // Note: this component must be imported with next/dynamic + ssr:false — it renders
 // <MermaidDiagram>, which touches `document` at import time.
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
@@ -34,7 +34,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, RefreshCw, Pencil, Trash2, Palette, Sparkles } from 'lucide-react';
+import { Plus, RefreshCw, Pencil, Trash2, Palette, Sparkles, Expand, Shrink } from 'lucide-react';
 import { toast } from 'sonner';
 import { MermaidDiagram } from '@/components/mermaid-diagram';
 import { DesignCanvas } from '@/components/design-canvas';
@@ -113,6 +113,12 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const [isLoading, setIsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  // Preview fullscreen — same Fullscreen API pattern as mermaid-diagram.tsx's own toggle,
+  // applied here to the whole preview block (title/badge/Edit/Delete row + canvas) rather than
+  // just the canvas, so those controls stay reachable while fullscreen.
+  const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+
   // Create/edit dialog
   const [editDesign, setEditDesign] = useState<Design | null>(null); // null while creating
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -155,6 +161,24 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     fetchDesigns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // Keep isPreviewFullscreen in sync with the browser's actual fullscreen state — the user can
+  // exit via Esc or the browser's own UI, not just our button.
+  useEffect(() => {
+    const handleChange = () => setIsPreviewFullscreen(document.fullscreenElement === previewRef.current);
+    document.addEventListener('fullscreenchange', handleChange);
+    return () => document.removeEventListener('fullscreenchange', handleChange);
+  }, []);
+
+  const togglePreviewFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      // Can reject (e.g. Permissions-Policy denies "fullscreen" in an embedded/iframed context)
+      // — swallow rather than throw, same as mermaid-diagram.tsx's toggle.
+      previewRef.current?.requestFullscreen().catch(() => {});
+    }
+  };
 
   const selectedDesign = useMemo(
     () => designs.find((d) => d.id === selectedId) ?? null,
@@ -386,8 +410,15 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             flex-basis resolution, so the flex-1/min-h-0 chain down to the scroll container below
             silently fails to get a bounded height and the diagram just overflows uncapped. An
             explicit height fixes this; selectedDesign ? '' handles the empty-state case where a
-            fixed tall box would look odd with no diagram to fill it. */}
-        <div className={`rounded-md p-4 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[70vh]' : 'min-h-[300px]'}`}>
+            fixed tall box would look odd with no diagram to fill it.
+            In fullscreen, the browser's UA stylesheet forces this element to fill the viewport
+            regardless of the h-[70vh]/min-h classes below (same as mermaid-diagram.tsx's own
+            fullscreen root), so no separate fullscreen-specific sizing class is needed here —
+            only a background, since fullscreen otherwise renders on a transparent/black canvas. */}
+        <div
+          ref={previewRef}
+          className={`rounded-md p-4 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[70vh]' : 'min-h-[300px]'} ${isPreviewFullscreen ? 'bg-background' : ''}`}
+        >
           {selectedDesign ? (
             <>
               <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -401,6 +432,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   <Button variant="outline" size="sm" onClick={() => openEdit(selectedDesign)}>
                     <Pencil className="h-4 w-4 mr-2" />
                     Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={togglePreviewFullscreen}
+                    title={isPreviewFullscreen ? 'Exit full screen' : 'Full screen'}
+                  >
+                    {isPreviewFullscreen ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => setDeleteDesign(selectedDesign)}>
                     <Trash2 className="h-4 w-4" />
