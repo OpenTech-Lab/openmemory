@@ -8,14 +8,36 @@
 
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { awsIcon } from '@/lib/aws-icons';
-import type { DesignNode as DesignNodeType } from '@/lib/design-graph';
+import type { BoxColor, DesignNode as DesignNodeType } from '@/lib/design-graph';
 
 const BORDER_WIDTH = 1.5;
+
+// AWS diagram convention: color distinguishes nesting level (VPC vs. subnet vs. outer cloud
+// box), not fill — the box interior stays neutral (see the fill layer below) and only the
+// border stroke + label text pick up the accent, matching how the reference AWS diagrams use
+// color purely as an outline/label cue.
+const BORDER_COLOR_CLASSES: Record<BoxColor, string> = {
+  none: 'border-neutral-400 dark:border-neutral-600',
+  slate: 'border-slate-600 dark:border-slate-400',
+  purple: 'border-purple-500 dark:border-purple-400',
+  teal: 'border-teal-500 dark:border-teal-400',
+  orange: 'border-orange-500 dark:border-orange-400',
+  green: 'border-green-600 dark:border-green-400',
+};
+const LABEL_COLOR_CLASSES: Record<BoxColor, string> = {
+  none: 'text-neutral-700 dark:text-neutral-300',
+  slate: 'text-slate-700 dark:text-slate-300',
+  purple: 'text-purple-700 dark:text-purple-300',
+  teal: 'text-teal-700 dark:text-teal-300',
+  orange: 'text-orange-700 dark:text-orange-300',
+  green: 'text-green-700 dark:text-green-300',
+};
 
 export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
   const icon = data.icon ? awsIcon(data.icon) : null;
   const borderStyle = data.borderStyle ?? 'solid';
   const label = data.label || 'Box';
+  const borderColor = data.borderColor ?? 'none';
 
   return (
     <div className="relative h-full w-full">
@@ -33,7 +55,7 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
           rather than theme CSS vars (see design-node.tsx for why those don't track correctly). */}
       <div
         className={`pointer-events-none absolute inset-0 rounded-md bg-neutral-900/[0.02] dark:bg-white/[0.04] ${
-          selected ? 'border-blue-500 dark:border-blue-400' : 'border-neutral-400 dark:border-neutral-600'
+          selected ? 'border-blue-500 dark:border-blue-400' : BORDER_COLOR_CLASSES[borderColor]
         }`}
         style={{ borderWidth: BORDER_WIDTH, borderStyle }}
       />
@@ -45,7 +67,7 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
           long title wraps onto further lines instead of forcing the box wider or overflowing it —
           `whitespace-nowrap` used to do exactly that. */}
       {icon ? (
-        <div className="pointer-events-none absolute left-2 right-2 top-2 flex items-start gap-1.5 text-neutral-800 dark:text-neutral-200">
+        <div className={`pointer-events-none absolute left-2 right-2 top-2 flex items-start gap-1.5 ${LABEL_COLOR_CLASSES[borderColor]}`}>
           <span className="flex h-5 w-5 shrink-0 items-center justify-center">
             <svg viewBox={icon.viewBox} className="h-5 w-5" dangerouslySetInnerHTML={{ __html: icon.body }} />
           </span>
@@ -53,7 +75,7 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
         </div>
       ) : (
         <div className="pointer-events-none absolute left-1/2 top-2 max-w-[calc(100%-1.5rem)] -translate-x-1/2 text-center">
-          <span className="break-words text-[11px] font-semibold leading-tight text-neutral-700 dark:text-neutral-300">{label}</span>
+          <span className={`break-words text-[11px] font-semibold leading-tight ${LABEL_COLOR_CLASSES[borderColor]}`}>{label}</span>
         </div>
       )}
     </div>

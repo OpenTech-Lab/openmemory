@@ -23,7 +23,7 @@ import { DesignGroupNode } from '@/components/design-group-node';
 import { applyDagreLayout } from '@/lib/design-layout';
 import { exportDesignToPng } from '@/lib/design-export';
 import { AWS_ICON_KEYS, awsIcon } from '@/lib/aws-icons';
-import { BORDER_STYLES, type BorderStyle, type DesignGraph, type DesignNode as DesignNodeType, type DesignNodeData } from '@/lib/design-graph';
+import { BORDER_STYLES, BOX_COLORS, type BorderStyle, type BoxColor, type DesignGraph, type DesignNode as DesignNodeType, type DesignNodeData } from '@/lib/design-graph';
 
 const nodeTypes = { design: DesignNode, group: DesignGroupNode };
 
@@ -78,6 +78,17 @@ const DEFAULT_GROUP_WIDTH = 260;
 const DEFAULT_GROUP_HEIGHT = 160;
 const DEFAULT_NODE_WIDTH = 96;
 const DEFAULT_NODE_HEIGHT = 78;
+// Small solid-fill squares for the inspector's <SelectItem> swatches — distinct from the
+// border-only classes in design-group-node.tsx since a filled swatch reads better at that size
+// than an outline would.
+const BOX_COLOR_SWATCH_CLASSES: Record<BoxColor, string> = {
+  none: 'bg-neutral-400 dark:bg-neutral-600',
+  slate: 'bg-slate-600 dark:bg-slate-400',
+  purple: 'bg-purple-500 dark:bg-purple-400',
+  teal: 'bg-teal-500 dark:bg-teal-400',
+  orange: 'bg-orange-500 dark:bg-orange-400',
+  green: 'bg-green-600 dark:bg-green-400',
+};
 const GROUP_ICON_DATA_KEY = 'application/openmemory-design-box';
 const ICON_DATA_KEY = 'application/openmemory-design-icon';
 
@@ -479,6 +490,27 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
                         {BORDER_STYLES.map((style) => (
                           <SelectItem key={style} value={style} className="capitalize">
                             {style}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Border color</Label>
+                    <Select
+                      value={selectedNode.data.borderColor ?? 'none'}
+                      onValueChange={(value) => patchSelected({ borderColor: value as BoxColor })}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {BOX_COLORS.map((color) => (
+                          <SelectItem key={color} value={color} className="capitalize">
+                            <span className="flex items-center gap-2">
+                              <span className={`h-2.5 w-2.5 rounded-sm ${BOX_COLOR_SWATCH_CLASSES[color]}`} />
+                              {color}
+                            </span>
                           </SelectItem>
                         ))}
                       </SelectContent>
