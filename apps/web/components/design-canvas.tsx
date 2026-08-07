@@ -361,7 +361,7 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
 
   return (
     <div
-      className={`grid h-full min-h-0 grid-cols-1 overflow-hidden rounded-md border ${
+      className={`grid h-full min-h-0 grid-cols-1 overflow-hidden rounded-md ${
         readOnly ? '' : 'md:grid-cols-[200px_minmax(0,1fr)_280px]'
       }`}
     >

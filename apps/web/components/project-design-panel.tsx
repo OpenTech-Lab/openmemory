@@ -387,7 +387,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             silently fails to get a bounded height and the diagram just overflows uncapped. An
             explicit height fixes this; selectedDesign ? '' handles the empty-state case where a
             fixed tall box would look odd with no diagram to fill it. */}
-        <div className={`border rounded-md p-4 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[70vh]' : 'min-h-[300px]'}`}>
+        <div className={`rounded-md p-4 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[70vh]' : 'min-h-[300px]'}`}>
           {selectedDesign ? (
             <>
               <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -410,7 +410,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
               {selectedDesign.notes && (
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">{selectedDesign.notes}</p>
               )}
-              <div className="border rounded-md p-3 bg-muted/20 flex-1 min-h-0 overflow-hidden">
+              <div className="rounded-md p-3 bg-muted/20 flex-1 min-h-0 overflow-hidden">
                 {selectedDesign.diagram_type === 'reactflow' ? (
                   <DesignCanvas
                     key={selectedDesign.id}
