@@ -55,8 +55,17 @@ export function DesignNode({ data, selected }: NodeProps<DesignNodeType>) {
           unbroken tokens (dotted queue/bucket names) that have no space to wrap at inside the
           96px column, and would otherwise overflow the node's width rather than the clamp.
           Nodes therefore vary in height; that's fine, since they're absolutely positioned and
-          only ever grow downward, away from the icon that anchors them. */}
-      <span className="break-words text-center text-[11px] font-medium leading-tight text-neutral-800 dark:text-neutral-200">
+          only ever grow downward, away from the icon that anchors them.
+          Every sample label authors its intended break as a literal "\n" (service name, then
+          resource name) — `whitespace-pre-line` honors that instead of collapsing it to a space,
+          which used to force a 3rd line with a mid-token wrap. The span is wider than the 96px
+          flex column it sits in (equal negative margins keep it centered) so those two lines have
+          room to lay out the way the reference diagrams do; `break-words` stays as the fallback
+          for a token too long even for the wider span. Widening the FLEX CONTAINER instead would
+          be wrong: DEFAULT_NODE_WIDTH (design-canvas.tsx), NODE_WIDTH (design-layout.ts) and this
+          component's own `w-[96px]` are kept in sync, and every sample diagram's coordinates are
+          authored against that 96px column for dagre spacing/measurement. */}
+      <span className="-mx-6 w-[144px] whitespace-pre-line break-words text-center text-[11px] font-medium leading-tight text-neutral-800 dark:text-neutral-200">
         {data.label || 'Untitled'}
       </span>
     </div>
