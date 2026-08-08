@@ -54,7 +54,54 @@ import {
   type DesignDiagramType,
   type DesignGraph,
 } from '@/lib/design-graph';
-import { applyDagreLayout } from '@/lib/design-layout';
+import { applyDagreLayout, applyNestedLayout } from '@/lib/design-layout';
+import { architectureToDesignGraph, isArchitectureSource, parseArchitectureDiagram } from '@/lib/mermaid-architecture';
+import {
+  applyOverrides,
+  diffOverrides,
+  hasCorruptLayoutComment,
+  parseLayoutComment,
+  reconcileOverrides,
+  stripLayoutComment,
+  withLayoutComment,
+  type LayoutOverrides,
+} from '@/lib/mermaid-layout-overrides';
+
+// The editor/preview routing decision (Decision 3): 'reactflow' designs are always 'canvas';
+// mermaid designs split further by content, since architecture-beta is the one starter kind whose
+// text can drive the same draggable canvas the reactflow format uses. Detected from content, not
+// a stored flag — `DESIGN_DIAGRAM_TYPES` and the server contract stay at two values.
+type DesignEditorMode = 'canvas' | 'arch' | 'mermaid';
+
+function computeEditorMode(diagramType: DesignDiagramType, source: string): DesignEditorMode {
+  if (diagramType === 'reactflow') return 'canvas';
+  return isArchitectureSource(source) ? 'arch' : 'mermaid';
+}
+
+/** Builds the read-only preview graph for an architecture-beta mermaid design: parse -> derive
+ * layout -> reapply saved position overrides. `null` when the source doesn't actually parse into
+ * anything (caller falls back to `MermaidDiagram`'s own error UI, which beats an empty canvas). */
+function buildArchPreviewGraph(source: string): DesignGraph | null {
+  const parse = parseArchitectureDiagram(source);
+  if (!parse.ok) return null;
+  const graph = architectureToDesignGraph(parse);
+  if (graph.nodes.length === 0) return null;
+  const laidOut = applyNestedLayout(graph.nodes, graph.edges);
+  return { nodes: applyOverrides(laidOut, parseLayoutComment(source)), edges: graph.edges };
+}
+
+/** Remount key for the derived-mode canvas: a hash of structure/labels/icons — everything except
+ * positions — so editing a label remounts the canvas (cheap at this scale) while dragging (which
+ * only changes override state, never this hash) does not. */
+function archStructureHash(graph: DesignGraph): string {
+  const nodesPart = graph.nodes
+    .map((n) => `${n.id}:${n.type}:${n.parentId ?? ''}:${n.data.label}:${n.data.icon ?? ''}`)
+    .join('|');
+  const edgesPart = graph.edges
+    .map((e) => `${e.source}>${e.target}:${typeof e.label === 'string' ? e.label : ''}`)
+    .join('|');
+  return `${nodesPart}##${edgesPart}`;
+}
 
 interface Design {
   id: string;
@@ -86,7 +133,9 @@ const EMPTY_EDIT_FORM = {
 };
 
 const DIAGRAM_TYPE_LABELS: Record<DesignDiagramType, string> = {
-  mermaid: 'Mermaid text',
+  // AWS/architecture diagrams (architecture-beta) render on a draggable canvas even in this
+  // format — the mermaid text stays the source of truth, positions persist as a trailing comment.
+  mermaid: 'Mermaid text (draggable canvas for AWS/architecture diagrams)',
   reactflow: 'React Flow canvas',
 };
 
@@ -134,6 +183,55 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   // design opened, different design opened, kind/format reset) — the canvas only reads its
   // initialGraph prop once, on mount.
   const [canvasKey, setCanvasKey] = useState(0);
+
+  // --- 'arch' (architecture-beta derived-mode) editor state ---------------------------------
+  // Saved position overrides, seeded from the opened design's `%%` comment and reconciled on
+  // every re-parse (ids that vanished or changed parent are dropped — see reconcileOverrides).
+  const [archOverrides, setArchOverrides] = useState<LayoutOverrides>({});
+  // The derived canvas's live nodes/edges, reported via its own onChange — separate from
+  // `graphState` (reactflow-only) since the two formats' save paths are unrelated.
+  const [archGraphState, setArchGraphState] = useState<DesignGraph | null>(null);
+  // Bumped by "Reset positions" to force a canvas remount even though the structural hash (which
+  // drives `archCanvasKey` below) doesn't change when only positions are cleared.
+  const [archResetNonce, setArchResetNonce] = useState(0);
+  const [archCorruptWarning, setArchCorruptWarning] = useState(false);
+  // ~300ms debounced mirror of editForm.source that the parser/layout/canvas-remount pipeline
+  // reads, so the canvas doesn't re-lay-out (and lag typing) on every keystroke.
+  const [debouncedArchSource, setDebouncedArchSource] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedArchSource(editForm.source), 300);
+    return () => clearTimeout(timer);
+  }, [editForm.source]);
+
+  const editorMode = computeEditorMode(editForm.diagramType, editForm.source);
+  const archParse = useMemo(() => parseArchitectureDiagram(debouncedArchSource), [debouncedArchSource]);
+  const archGraph = useMemo(() => architectureToDesignGraph(archParse), [archParse]);
+  const archLaidOut = useMemo(() => applyNestedLayout(archGraph.nodes, archGraph.edges), [archGraph]);
+  const archCanvasKey = `${archStructureHash(archGraph)}::${archResetNonce}`;
+  // Reconciled INLINE (same render as archLaidOut, not via a setState+effect round-trip) — a
+  // remount can happen in the very same render that archLaidOut changes (archCanvasKey is a plain
+  // derived value, not state), so reconciling a render late would let a stale, since-invalidated
+  // override get baked into the canvas's initial mount with no second remount to correct it
+  // (DesignCanvas only reads `initialGraph` once, on mount).
+  const reconciledArchOverrides = useMemo(() => reconcileOverrides(archOverrides, archLaidOut), [archOverrides, archLaidOut]);
+  const archInitialGraph = useMemo(
+    () => ({ nodes: applyOverrides(archLaidOut, reconciledArchOverrides), edges: archGraph.edges }),
+    [archLaidOut, reconciledArchOverrides, archGraph.edges]
+  );
+  const archLiveNodes = archGraphState?.nodes ?? archInitialGraph.nodes;
+  const archOverrideCount = Object.keys(diffOverrides(archLiveNodes, archLaidOut)).length;
+  // Nothing downstream reads the raw `archOverrides` state directly except through
+  // `reconciledArchOverrides` above (recomputed fresh every render) and handleSave (which
+  // re-derives its own overrides from editForm.source + archGraphState, not from this state) — so
+  // there's no need to also write the pruned value back into state; doing so via a naive
+  // `useEffect` is an infinite loop besides, since `reconcileOverrides` always returns a new
+  // object reference even when its content is unchanged.
+
+  const handleResetArchPositions = useCallback(() => {
+    setArchOverrides({});
+    setArchGraphState(null);
+    setArchResetNonce((n) => n + 1);
+  }, []);
 
   // Delete dialog
   const [deleteDesign, setDeleteDesign] = useState<Design | null>(null);
@@ -188,8 +286,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const openCreate = () => {
     setEditDesign(null);
     const kind = EMPTY_EDIT_FORM.kind;
-    setEditForm({ ...EMPTY_EDIT_FORM, source: STARTER_TEMPLATES[kind as DesignKind] });
+    const source = STARTER_TEMPLATES[kind as DesignKind];
+    setEditForm({ ...EMPTY_EDIT_FORM, source });
     setGraphState(blankDesignGraph(kind));
+    setDebouncedArchSource(source);
+    setArchOverrides({});
+    setArchGraphState(null);
+    setArchResetNonce(0);
+    setArchCorruptWarning(false);
     setCanvasKey((k) => k + 1);
     setAiPrompt('');
     setIsEditOpen(true);
@@ -198,14 +302,22 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const openEdit = (design: Design) => {
     setEditDesign(design);
     const diagramType = (design.diagram_type === 'reactflow' ? 'reactflow' : 'mermaid') as DesignDiagramType;
+    // The textarea never shows the layout comment — a drag can't rewrite text under the user's
+    // caret, and there's no edit-conflict to resolve on save (Decision 2's editor round-trip).
+    const source = diagramType === 'mermaid' ? stripLayoutComment(design.source) : design.source;
     setEditForm({
       title: design.title,
       kind: design.kind,
-      source: design.source,
+      source,
       notes: design.notes ?? '',
       diagramType,
     });
     if (diagramType === 'reactflow') setGraphState(parseDesignGraph(design.source));
+    setDebouncedArchSource(source);
+    setArchOverrides(diagramType === 'mermaid' ? parseLayoutComment(design.source) : {});
+    setArchGraphState(null);
+    setArchResetNonce(0);
+    setArchCorruptWarning(diagramType === 'mermaid' && hasCorruptLayoutComment(design.source));
     setCanvasKey((k) => k + 1);
     setAiPrompt('');
     setIsEditOpen(true);
@@ -240,6 +352,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         setGraphState({ nodes: laidOut, edges: parsed.edges });
         setCanvasKey((k) => k + 1);
       }
+      if (editForm.diagramType === 'mermaid' && data.source) {
+        // A freshly-generated diagram's node ids won't match any prior design's, so stale
+        // overrides would be dropped by reconciliation anyway — clearing them (and syncing the
+        // debounced mirror immediately) just avoids a stale "Reset positions" flash before that
+        // reconcile effect catches up.
+        setDebouncedArchSource(data.source);
+        setArchOverrides({});
+      }
       setEditForm((f) => ({
         ...f,
         source: editForm.diagramType === 'reactflow' ? f.source : (data.source ?? f.source),
@@ -255,17 +375,23 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   };
 
   // Auto-fill the starter template/graph when the kind changes on a NEW doc whose source is
-  // still untouched (empty, or exactly a previous starter) — never clobber real edits.
+  // still untouched (empty, or exactly a previous starter) — never clobber real edits. Picking
+  // 'aws' here now yields a *draggable* starter, since STARTER_TEMPLATES.aws is already
+  // architecture-beta — editorMode picks that up automatically from the new source text.
   const handleKindChange = (kind: string) => {
     const isNewDoc = editDesign === null;
-    setEditForm((prev) => {
-      const sourceIsUntouched =
-        prev.source.trim() === '' || Object.values(STARTER_TEMPLATES).includes(prev.source);
-      if (isNewDoc && prev.diagramType === 'mermaid' && sourceIsUntouched) {
-        return { ...prev, kind, source: STARTER_TEMPLATES[kind as DesignKind] ?? prev.source };
-      }
-      return { ...prev, kind };
-    });
+    const sourceIsUntouched =
+      editForm.source.trim() === '' || Object.values(STARTER_TEMPLATES).includes(editForm.source);
+    const nextSource =
+      isNewDoc && editForm.diagramType === 'mermaid' && sourceIsUntouched
+        ? (STARTER_TEMPLATES[kind as DesignKind] ?? editForm.source)
+        : editForm.source;
+    setEditForm((prev) => ({ ...prev, kind, source: nextSource }));
+    if (nextSource !== editForm.source) {
+      setDebouncedArchSource(nextSource);
+      setArchOverrides({});
+      setArchResetNonce(0);
+    }
     if (isNewDoc && editForm.diagramType === 'reactflow' && graphIsUntouched(graphState, editForm.kind)) {
       setGraphState(blankDesignGraph(kind));
       setCanvasKey((k) => k + 1);
@@ -275,11 +401,13 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   // New-doc-only format toggle (Mermaid text / React Flow canvas) — a design's format is fixed
   // at creation in v1, so this only applies while editDesign is null.
   const handleFormatChange = (diagramType: DesignDiagramType) => {
-    setEditForm((prev) => ({
-      ...prev,
-      diagramType,
-      source: diagramType === 'mermaid' ? (STARTER_TEMPLATES[prev.kind as DesignKind] ?? '') : '',
-    }));
+    const nextSource = diagramType === 'mermaid' ? (STARTER_TEMPLATES[editForm.kind as DesignKind] ?? '') : '';
+    setEditForm((prev) => ({ ...prev, diagramType, source: nextSource }));
+    setDebouncedArchSource(nextSource);
+    setArchOverrides({});
+    setArchGraphState(null);
+    setArchResetNonce(0);
+    setArchCorruptWarning(false);
     if (diagramType === 'reactflow') {
       setGraphState(blankDesignGraph(editForm.kind));
       setCanvasKey((k) => k + 1);
@@ -297,9 +425,22 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       const url = editDesign
         ? `/api/projects/${projectId}/designs/${editDesign.id}`
         : `/api/projects/${projectId}/designs`;
-      const source = editForm.diagramType === 'reactflow'
-        ? serializeDesignGraph(graphState.nodes, graphState.edges, graphState.viewport)
-        : editForm.source;
+      let source: string;
+      if (editForm.diagramType === 'reactflow') {
+        source = serializeDesignGraph(graphState.nodes, graphState.edges, graphState.viewport);
+      } else if (editorMode === 'arch') {
+        // Recomputed fresh from the CURRENT (undebounced) textarea value rather than reused from
+        // render state, so a save immediately after typing can't miss the last edit; reconciled
+        // once more defensively in case the debounced pipeline hasn't caught up yet either.
+        const parse = parseArchitectureDiagram(editForm.source);
+        const graph = architectureToDesignGraph(parse);
+        const baseline = applyNestedLayout(graph.nodes, graph.edges);
+        const current = archGraphState?.nodes ?? baseline;
+        const overrides = reconcileOverrides(diffOverrides(current, baseline), baseline);
+        source = withLayoutComment(editForm.source, overrides);
+      } else {
+        source = editForm.source;
+      }
       const res = await fetch(url, {
         method: editDesign ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -450,15 +591,30 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">{selectedDesign.notes}</p>
               )}
               <div className="rounded-md p-3 bg-muted/20 flex-1 min-h-0 overflow-hidden">
-                {selectedDesign.diagram_type === 'reactflow' ? (
-                  <DesignCanvas
-                    key={selectedDesign.id}
-                    initialGraph={parseDesignGraph(selectedDesign.source)}
-                    readOnly
-                  />
-                ) : (
-                  <MermaidDiagram source={selectedDesign.source} />
-                )}
+                {(() => {
+                  const previewMode = computeEditorMode(
+                    selectedDesign.diagram_type === 'reactflow' ? 'reactflow' : 'mermaid',
+                    selectedDesign.source
+                  );
+                  if (previewMode === 'canvas') {
+                    return (
+                      <DesignCanvas
+                        key={selectedDesign.id}
+                        initialGraph={parseDesignGraph(selectedDesign.source)}
+                        readOnly
+                      />
+                    );
+                  }
+                  const archGraph = previewMode === 'arch' ? buildArchPreviewGraph(selectedDesign.source) : null;
+                  if (archGraph) {
+                    return (
+                      <DesignCanvas key={selectedDesign.id} initialGraph={archGraph} mode="derived" readOnly />
+                    );
+                  }
+                  // Zero parsed nodes (or not actually architecture-beta despite the routing
+                  // guess) — mermaid's own error UI beats an empty canvas.
+                  return <MermaidDiagram source={selectedDesign.source} />;
+                })()}
               </div>
             </>
           ) : (
@@ -474,7 +630,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
         <DialogContent
           className={
-            editForm.diagramType === 'reactflow'
+            editForm.diagramType === 'reactflow' || editorMode === 'arch'
               ? 'flex h-[92vh] w-[96vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
               : 'max-w-3xl max-h-[85vh] overflow-y-auto'
           }
@@ -575,6 +731,149 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
               </div>
               <div className="min-h-0 flex-1 overflow-hidden p-4">
                 <DesignCanvas key={canvasKey} initialGraph={graphState} onChange={setGraphState} />
+              </div>
+              <DialogFooter className="border-t bg-card px-5 py-3">
+                <Button variant="outline" onClick={() => setIsEditOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSave} disabled={isSaving}>
+                  {isSaving ? 'Saving…' : editDesign ? 'Save changes' : 'Create'}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : editorMode === 'arch' ? (
+            <>
+              <div className="border-b bg-card px-5 py-4">
+                <DialogHeader>
+                  <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
+                  <DialogDescription>
+                    Drag nodes to reposition them — structure, labels and icons come from the mermaid text on the left.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+              <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr_1fr]">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-title">Title</Label>
+                  <Input
+                    id="design-title"
+                    value={editForm.title}
+                    onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
+                    placeholder="e.g. Serverless API"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Kind</Label>
+                  <Select value={editForm.kind} onValueChange={handleKindChange}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Software</div>
+                      {DESIGN_KIND_GROUPS.software.map((k) => (
+                        <SelectItem key={k} value={k}>
+                          {designKindMeta(k).label}
+                        </SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Narrative</div>
+                      {DESIGN_KIND_GROUPS.narrative.map((k) => (
+                        <SelectItem key={k} value={k}>
+                          {designKindMeta(k).label}
+                        </SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Infrastructure</div>
+                      {DESIGN_KIND_GROUPS.infrastructure.map((k) => (
+                        <SelectItem key={k} value={k}>
+                          {designKindMeta(k).label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-ai-prompt">AI prompt</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="design-ai-prompt"
+                      value={aiPrompt}
+                      onChange={(e) => setAiPrompt(e.target.value)}
+                      placeholder="a serverless API with S3 and RDS"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1 shrink-0"
+                      onClick={handleGenerateDiagram}
+                      disabled={!aiPrompt.trim() || isGeneratingDiagram}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {isGeneratingDiagram ? 'Generating...' : 'Generate'}
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-notes">Notes</Label>
+                  <Input
+                    id="design-notes"
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                  />
+                </div>
+                {!editDesign && (
+                  <div className="flex flex-col gap-1.5 md:col-span-4">
+                    <Label>Format</Label>
+                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
+                      <SelectTrigger className="w-56">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DESIGN_DIAGRAM_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {DIAGRAM_TYPE_LABELS[type]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              {archCorruptWarning && (
+                <div className="flex items-center justify-between gap-3 border-b bg-amber-50 px-5 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                  <span>Saved node positions couldn&apos;t be read and were reset.</span>
+                  <button type="button" className="underline underline-offset-2" onClick={() => setArchCorruptWarning(false)}>
+                    Dismiss
+                  </button>
+                </div>
+              )}
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden p-4 md:grid-cols-2">
+                <div className="flex min-h-0 flex-col gap-2">
+                  <Label htmlFor="design-source">Mermaid source</Label>
+                  <Textarea
+                    id="design-source"
+                    value={editForm.source}
+                    onChange={(e) => setEditForm((f) => ({ ...f, source: e.target.value }))}
+                    className="min-h-0 flex-1 resize-none font-mono text-xs"
+                  />
+                  {archParse.issues.length > 0 && (
+                    <ul className="max-h-28 shrink-0 space-y-0.5 overflow-y-auto rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+                      {archParse.issues.map((issue, index) => (
+                        <li key={index}>
+                          line {issue.line}: {issue.message}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="min-h-0">
+                  <DesignCanvas
+                    key={archCanvasKey}
+                    initialGraph={archInitialGraph}
+                    mode="derived"
+                    onChange={setArchGraphState}
+                    resetPositionsCount={archOverrideCount}
+                    onResetPositions={handleResetArchPositions}
+                  />
+                </div>
               </div>
               <DialogFooter className="border-t bg-card px-5 py-3">
                 <Button variant="outline" onClick={() => setIsEditOpen(false)}>

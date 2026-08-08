@@ -30,22 +30,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Extracts the saved position overrides from `source`. Takes the LAST matching line (hand
- * editing/duplicated saves shouldn't crash), and never throws: a missing comment, JSON.parse
- * failure, or non-object payload all fall back to `{}` — pure computed layout. */
-export function parseLayoutComment(source: string): LayoutOverrides {
-  if (!source) return {};
-  const lines = source.split(/\r?\n/);
+/** The payload text of the LAST marker line in `source` (hand editing/duplicated saves shouldn't
+ * crash — later lines win), or `null` if there is no marker line at all. Shared by
+ * `parseLayoutComment` and `hasCorruptLayoutComment` so both agree on what counts as "present". */
+function lastMarkerPayload(source: string): string | null {
+  if (!source) return null;
   let lastPayload: string | null = null;
-  for (const line of lines) {
+  for (const line of source.split(/\r?\n/)) {
     const match = MARKER_LINE_RE.exec(line);
     if (match) lastPayload = match[1];
   }
-  if (lastPayload === null) return {};
+  return lastPayload;
+}
+
+/** Extracts the saved position overrides from `source`. Never throws: a missing comment,
+ * JSON.parse failure, or non-object payload all fall back to `{}` — pure computed layout. */
+export function parseLayoutComment(source: string): LayoutOverrides {
+  const payload = lastMarkerPayload(source);
+  if (payload === null) return {};
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(lastPayload);
+    parsed = JSON.parse(payload);
   } catch {
     return {};
   }
@@ -59,6 +65,21 @@ export function parseLayoutComment(source: string): LayoutOverrides {
     overrides[id] = typeof p === 'string' ? { x, y, p } : { x, y };
   }
   return overrides;
+}
+
+/** True when `source` has a marker line that `parseLayoutComment` couldn't read (bad JSON, or
+ * valid JSON that isn't `{"pos": {...}}`) — the editor surfaces this as a dismissible warning
+ * ("saved node positions couldn't be read and were reset") rather than silently discarding it. A
+ * source with no marker line at all (the normal, untouched case) is not corrupt. */
+export function hasCorruptLayoutComment(source: string): boolean {
+  const payload = lastMarkerPayload(source);
+  if (payload === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return !(isRecord(parsed) && isRecord(parsed.pos));
+  } catch {
+    return true;
+  }
 }
 
 /** Removes every layout-comment line from `source`, leaving the rest of the text untouched (this
@@ -123,6 +144,7 @@ export function reconcileOverrides(overrides: LayoutOverrides, nodes: ReconcileN
 export interface OverridableNode {
   id: string;
   position: { x: number; y: number };
+  parentId?: string;
 }
 
 /** Merges saved overrides onto laid-out node positions: `position = override[id] ?? laidOut[id]`
@@ -134,4 +156,25 @@ export function applyOverrides<T extends OverridableNode>(nodes: T[], overrides:
     if (!override) return node;
     return { ...node, position: { x: override.x, y: override.y } };
   });
+}
+
+/** Computes the overrides implied by `current` (the live, possibly-dragged canvas state) versus
+ * `baseline` (the freshly computed layout with no overrides applied) — the save-time counterpart
+ * to `applyOverrides`: "emit only ids that differ from the computed layout, so an untouched
+ * diagram never grows a comment." A node present in `current` but missing from `baseline` is
+ * skipped (nothing to diff against). */
+export function diffOverrides<T extends OverridableNode>(current: T[], baseline: T[]): LayoutOverrides {
+  const baselineById = new Map(baseline.map((node) => [node.id, node]));
+  const result: LayoutOverrides = {};
+  for (const node of current) {
+    const base = baselineById.get(node.id);
+    if (!base) continue;
+    const dx = Math.abs(node.position.x - base.position.x);
+    const dy = Math.abs(node.position.y - base.position.y);
+    if (dx < 0.5 && dy < 0.5) continue;
+    result[node.id] = node.parentId
+      ? { x: node.position.x, y: node.position.y, p: node.parentId }
+      : { x: node.position.x, y: node.position.y };
+  }
+  return result;
 }

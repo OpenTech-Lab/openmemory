@@ -321,6 +321,14 @@ function orderParentsBeforeChildren(nodes: DesignNode[]): DesignNode[] {
   return ordered;
 }
 
+/** True when `source`'s first non-blank, non-comment, non-directive, non-frontmatter line is
+ * exactly `architecture-beta` — the routing decision between the 'arch' derived-mode editor and
+ * the plain 'mermaid' text editor (project-design-panel.tsx). Reuses the parser's own header
+ * detection rather than duplicating the skip-line logic. */
+export function isArchitectureSource(source: string): boolean {
+  return parseArchitectureDiagram(source).ok;
+}
+
 /** Converts a successful `ArchitectureParse` into a `DesignGraph` — nodes land at `{x:0,y:0}`,
  * ungrouped by any layout; `applyNestedLayout` (design-layout.ts) must run before rendering. */
 export function architectureToDesignGraph(parse: ArchitectureParse): DesignGraph {

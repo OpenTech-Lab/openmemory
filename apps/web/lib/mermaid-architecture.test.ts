@@ -2,7 +2,7 @@
 // node --test lib/mermaid-architecture.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { architectureToDesignGraph, parseArchitectureDiagram } from './mermaid-architecture.ts';
+import { architectureToDesignGraph, isArchitectureSource, parseArchitectureDiagram } from './mermaid-architecture.ts';
 
 // Real fixtures, pulled verbatim via:
 // docker exec openmemory-postgres-1 psql -U openmemory -d openmemory -t -A -c \
@@ -268,6 +268,16 @@ service a(logos:aws)["A"] in nosuchgroup`;
   const parse = parseArchitectureDiagram(source);
   assert.equal(parse.issues.length, 1);
   assert.equal(parse.services[0].parentIdRaw, undefined);
+});
+
+test('isArchitectureSource is true for architecture-beta, even behind a comment/blank line', () => {
+  assert.equal(isArchitectureSource('architecture-beta\nservice a(logos:aws)["A"]'), true);
+  assert.equal(isArchitectureSource('\n%% a comment\narchitecture-beta\nservice a(logos:aws)["A"]'), true);
+});
+
+test('isArchitectureSource is false for other mermaid diagram types', () => {
+  assert.equal(isArchitectureSource('flowchart TD\n A --> B'), false);
+  assert.equal(isArchitectureSource(''), false);
 });
 
 test('edge referencing an unknown id drops the edge and reports one issue', () => {

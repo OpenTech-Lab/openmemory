@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import {
   LAYOUT_COMMENT_MARKER,
   applyOverrides,
+  diffOverrides,
+  hasCorruptLayoutComment,
   parseLayoutComment,
   reconcileOverrides,
   stripLayoutComment,
@@ -87,6 +89,38 @@ test('reconcileOverrides clamps a survivor into its (possibly shrunk) parent box
   const result = reconcileOverrides(overrides, nodes);
   assert.equal(result.api.x, 104); // 200 - 96
   assert.equal(result.api.y, 54); // 150 - 96
+});
+
+test('hasCorruptLayoutComment is false when there is no marker line at all', () => {
+  assert.equal(hasCorruptLayoutComment(SOURCE), false);
+});
+
+test('hasCorruptLayoutComment is false for a valid marker line', () => {
+  const withComment = withLayoutComment(SOURCE, { api: { x: 1, y: 2 } });
+  assert.equal(hasCorruptLayoutComment(withComment), false);
+});
+
+test('hasCorruptLayoutComment is true for bad JSON or a non-{pos} payload', () => {
+  assert.equal(hasCorruptLayoutComment(`${SOURCE}\n%% openmemory:layout:v1 {broken`), true);
+  assert.equal(hasCorruptLayoutComment(`${SOURCE}\n%% openmemory:layout:v1 {"other":1}`), true);
+});
+
+test('diffOverrides emits only ids whose position differs from baseline', () => {
+  const baseline = [
+    { id: 'a', position: { x: 0, y: 0 } },
+    { id: 'b', position: { x: 10, y: 10 }, parentId: 'g' },
+  ];
+  const current = [
+    { id: 'a', position: { x: 0, y: 0 } }, // unchanged
+    { id: 'b', position: { x: 50, y: 60 }, parentId: 'g' }, // dragged
+  ];
+  assert.deepEqual(diffOverrides(current, baseline), { b: { x: 50, y: 60, p: 'g' } });
+});
+
+test('diffOverrides skips ids missing from baseline', () => {
+  const baseline = [{ id: 'a', position: { x: 0, y: 0 } }];
+  const current = [{ id: 'gone', position: { x: 5, y: 5 } }];
+  assert.deepEqual(diffOverrides(current, baseline), {});
 });
 
 test('applyOverrides merges override[id] onto laidOut[id] with no coordinate math', () => {
