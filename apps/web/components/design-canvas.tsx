@@ -3,7 +3,7 @@
 // Note: this component must be imported with next/dynamic + ssr:false — it renders React Flow,
 // which touches `document` at import time (same constraint as mermaid-diagram.tsx).
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from 'next-themes';
 import {
   Background, BackgroundVariant, Controls, MarkerType, MiniMap,
@@ -11,7 +11,7 @@ import {
   type Connection, type Edge, type NodeChange, type OnNodeDrag,
   type OnConnect, type ReactFlowInstance, type Viewport,
 } from '@xyflow/react';
-import { Boxes, Group, Image as ImageIcon, LayoutGrid, Square, Trash2, Ungroup } from 'lucide-react';
+import { Boxes, Group, Image as ImageIcon, LayoutGrid, RotateCcw, Square, Trash2, Ungroup } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,12 +20,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DesignNode } from '@/components/design-node';
 import { DesignGroupNode } from '@/components/design-group-node';
+import { DesignJunctionNode } from '@/components/design-junction-node';
 import { applyDagreLayout } from '@/lib/design-layout';
 import { exportDesignToPng } from '@/lib/design-export';
 import { AWS_ICON_KEYS, awsIcon } from '@/lib/aws-icons';
 import { BORDER_STYLES, BOX_COLORS, type BorderStyle, type BoxColor, type DesignGraph, type DesignNode as DesignNodeType, type DesignNodeData } from '@/lib/design-graph';
 
-const nodeTypes = { design: DesignNode, group: DesignGroupNode };
+const nodeTypes = { design: DesignNode, group: DesignGroupNode, junction: DesignJunctionNode };
 
 // AWS "Squid Ink" in light mode — the connector/text color in official AWS architecture diagrams.
 // Dark mode uses a light slate so connectors stay legible against a dark canvas. Canvas colors are
@@ -108,6 +109,20 @@ interface DesignCanvasProps {
   initialGraph: DesignGraph;
   readOnly?: boolean;
   onChange?: (graph: DesignGraph) => void;
+  /** 'derived' is the architecture-beta editor: text is authoritative for structure, the canvas
+   * owns positions only. Hides the icon palette, node/edge inspector, and Group/Ungroup (no
+   * structural edits from the canvas); disables connecting and deleting; group children get
+   * `extent: 'parent'` clamping and skip the freeform reparent-on-drag-overlap logic; and swaps
+   * "Auto-arrange" for "Reset positions", which the caller owns (it knows the override count and
+   * how to clear them — see project-design-panel.tsx). Defaults to 'freeform' (today's behavior). */
+  mode?: 'freeform' | 'derived';
+  /** Derived mode only: how many nodes currently have a saved position override, shown on the
+   * "Reset positions" button and used to disable it when there's nothing to reset. */
+  resetPositionsCount?: number;
+  /** Derived mode only: called when "Reset positions" is clicked — the caller clears its override
+   * state and remounts the canvas (bumping its own key), since positions aren't part of what
+   * would otherwise trigger a remount. */
+  onResetPositions?: () => void;
 }
 
 function iconLabel(key: string): string {
@@ -130,7 +145,8 @@ function absolutePosition(node: DesignNodeType, byId: Map<string, DesignNodeType
   return { x, y };
 }
 
-function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasProps) {
+function DesignCanvasInner({ initialGraph, readOnly, onChange, mode = 'freeform', resetPositionsCount, onResetPositions }: DesignCanvasProps) {
+  const isDerived = mode === 'derived';
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
   const edgeColor = isDark ? EDGE_COLOR_DARK : EDGE_COLOR_LIGHT;
@@ -150,7 +166,14 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
     labelStyle: { fill: edgeColor },
   }), [edgeColor, canvasBg]);
   const [nodes, setNodes, onNodesChangeRaw] = useNodesState<DesignNodeType>(initialGraph.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialGraph.edges);
+  // Derived-mode edges come from mermaid-architecture.ts with their own markerStart/markerEnd
+  // (explicitly `undefined` when the source has no arrowhead) — merged here, at mount, rather
+  // than relying on the `defaultEdgeOptions` prop below, so a parsed edge's own (possibly absent)
+  // marker reliably wins over the default arrow instead of depending on React Flow's internal
+  // merge behavior for declaratively-supplied edges.
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(
+    isDerived ? initialGraph.edges.map((edge) => ({ ...edgeDefaults, ...edge })) : initialGraph.edges
+  );
   const [viewport, setViewport] = useState<Viewport | undefined>(initialGraph.viewport);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -316,7 +339,10 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
   // it back to the canvas root if it no longer overlaps its current parent (exiting). Ported from
   // homelable's CanvasContainer.tsx drag-into-group pattern.
   const onNodeDragStop: OnNodeDrag<DesignNodeType> = useCallback((_event, node) => {
-    if (readOnly || !flow || node.type === 'group') return;
+    // Derived mode: group membership comes from `in <group>` in the text and can't be changed by
+    // dragging (children carry `extent: 'parent'`, set by mermaid-architecture.ts, which already
+    // hard-clamps the drag) — this reparent-on-overlap heuristic is a freeform-only affordance.
+    if (readOnly || !flow || node.type === 'group' || isDerived) return;
     const overlappingGroup = flow
       .getIntersectingNodes({ id: node.id }, false)
       .find((candidate) => candidate.type === 'group');
@@ -347,15 +373,21 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
         return current.map((n) => (n.id === node.id ? ({ ...rest, position: abs } as DesignNodeType) : n));
       });
     }
-  }, [flow, readOnly, setNodes]);
+  }, [flow, readOnly, isDerived, setNodes]);
 
   const autoArrange = () => {
     setNodes((current) => applyDagreLayout(current, edges));
     window.requestAnimationFrame(() => flow?.fitView());
   };
 
+  // Scoped to this canvas instance rather than a global `document.querySelector` — in derived
+  // mode the read-only preview canvas stays mounted behind the Edit dialog's portal, so a global
+  // selector would grab whichever `.react-flow__viewport` happens to come first in the DOM
+  // instead of the one actually being exported from.
+  const rootRef = useRef<HTMLDivElement>(null);
+
   const exportPng = async () => {
-    const viewportEl = document.querySelector<HTMLElement>('.react-flow__viewport');
+    const viewportEl = rootRef.current?.querySelector<HTMLElement>('.react-flow__viewport');
     if (!viewportEl) {
       toast.error('Nothing to export');
       return;
@@ -367,13 +399,17 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
     }
   };
 
+  const showPalette = !readOnly && !isDerived;
+  const showInspector = !readOnly && !isDerived;
+
   return (
     <div
+      ref={rootRef}
       className={`grid h-full min-h-0 grid-cols-1 overflow-hidden rounded-md ${
-        readOnly ? '' : 'md:grid-cols-[200px_minmax(0,1fr)_280px]'
+        showPalette || showInspector ? 'md:grid-cols-[200px_minmax(0,1fr)_280px]' : ''
       }`}
     >
-      {!readOnly && (
+      {showPalette && (
         <aside className="space-y-3 overflow-y-auto border-b bg-muted/20 p-3 md:border-b-0 md:border-r">
           <div className="flex items-center justify-between">
             <Label className="text-xs">Nodes</Label>
@@ -448,9 +484,11 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
           minZoom={0.35}
           maxZoom={1.8}
           defaultEdgeOptions={edgeDefaults}
-          deleteKeyCode={['Backspace', 'Delete']}
+          // Derived mode: structure comes from the text only — connecting/deleting from the
+          // canvas would silently desync from it, so both are disabled (positions still drag).
+          deleteKeyCode={isDerived ? [] : ['Backspace', 'Delete']}
           nodesDraggable={!readOnly}
-          nodesConnectable={!readOnly}
+          nodesConnectable={!readOnly && !isDerived}
           elementsSelectable={!readOnly}
         >
           {/* Dots are an editing aid — the read-only preview stays a clean flat surface so it reads
@@ -474,19 +512,32 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
           <Controls showInteractive={false} className="!overflow-hidden !rounded-lg !border !border-neutral-200 dark:!border-neutral-700 !shadow-sm" />
         </ReactFlow>
         <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
-          {!readOnly && (
+          {!readOnly && !isDerived && (
             <Button type="button" size="sm" variant="outline" className="pointer-events-auto gap-1.5 border-neutral-300 bg-white/90 text-neutral-800 backdrop-blur hover:bg-white dark:border-neutral-700 dark:bg-neutral-900/90 dark:text-neutral-100 dark:hover:bg-neutral-900" onClick={autoArrange}>
               <LayoutGrid className="h-3.5 w-3.5" />
               Auto-arrange
             </Button>
           )}
-          {!readOnly && selectedNodes.length >= 2 && (
+          {!readOnly && isDerived && onResetPositions && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!resetPositionsCount}
+              className="pointer-events-auto gap-1.5 border-neutral-300 bg-white/90 text-neutral-800 backdrop-blur hover:bg-white dark:border-neutral-700 dark:bg-neutral-900/90 dark:text-neutral-100 dark:hover:bg-neutral-900"
+              onClick={onResetPositions}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reset positions{resetPositionsCount ? ` (${resetPositionsCount})` : ''}
+            </Button>
+          )}
+          {!readOnly && !isDerived && selectedNodes.length >= 2 && (
             <Button type="button" size="sm" variant="outline" className="pointer-events-auto gap-1.5 border-neutral-300 bg-white/90 text-neutral-800 backdrop-blur hover:bg-white dark:border-neutral-700 dark:bg-neutral-900/90 dark:text-neutral-100 dark:hover:bg-neutral-900" onClick={groupSelection}>
               <Group className="h-3.5 w-3.5" />
               Group selection
             </Button>
           )}
-          {!readOnly && selectedNode?.type === 'group' && (
+          {!readOnly && !isDerived && selectedNode?.type === 'group' && (
             <Button type="button" size="sm" variant="outline" className="pointer-events-auto gap-1.5 border-neutral-300 bg-white/90 text-neutral-800 backdrop-blur hover:bg-white dark:border-neutral-700 dark:bg-neutral-900/90 dark:text-neutral-100 dark:hover:bg-neutral-900" onClick={ungroupSelected}>
               <Ungroup className="h-3.5 w-3.5" />
               Ungroup
@@ -499,7 +550,7 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
         </div>
       </main>
 
-      {!readOnly && (
+      {showInspector && (
         <aside className="overflow-y-auto border-t bg-card p-3 md:border-l md:border-t-0">
           {selectedNode ? (
             <div className="space-y-3">

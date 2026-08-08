@@ -389,10 +389,14 @@ export function architectureToDesignGraph(parse: ArchitectureParse): DesignGraph
       target,
       sourceHandle,
       targetHandle,
+      // Explicitly present (even as `undefined`) rather than omitted: the derived-mode canvas
+      // merges `{ ...edgeDefaults, ...edge }` per edge (design-canvas.tsx), and a plain object
+      // spread only lets `edge.markerEnd` win over the default arrowhead when the key itself is
+      // present — an omitted key would silently fall through to the default marker.
+      markerStart,
+      markerEnd,
     };
     if (edge.label) edgeOut.label = edge.label;
-    if (markerStart) edgeOut.markerStart = markerStart;
-    if (markerEnd) edgeOut.markerEnd = markerEnd;
     return edgeOut;
   });
 

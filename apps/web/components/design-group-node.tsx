@@ -51,7 +51,7 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
   return (
     <div className="group relative h-full w-full">
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && !data.derivedSize}
         minWidth={120}
         minHeight={80}
         lineClassName="!border-blue-500 dark:!border-blue-400"
@@ -64,7 +64,7 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
           handles stay mounted (just non-interactive) so React Flow can keep measuring their
           position for already-connected edges. */}
       {HANDLE_POSITIONS.map((position) => (
-        <span key={position} className={selected ? 'pointer-events-none' : ''}>
+        <span key={position} className={selected && !data.derivedSize ? 'pointer-events-none' : ''}>
           <Handle type="target" position={position} id={`${position}-target`} className={HANDLE_CLASS} />
           <Handle type="source" position={position} id={`${position}-source`} className={HANDLE_CLASS} />
         </span>
