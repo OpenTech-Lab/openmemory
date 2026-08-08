@@ -6,11 +6,20 @@
 // top-left corner). Both are the same node type — purely data-driven, no name special-casing.
 // Follows the app's light/dark theme (see design-canvas.tsx).
 
-import { NodeResizer, type NodeProps } from '@xyflow/react';
+import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react';
 import { awsIcon } from '@/lib/aws-icons';
 import type { BoxColor, DesignNode as DesignNodeType } from '@/lib/design-graph';
 
 const BORDER_WIDTH = 1.5;
+
+const HANDLE_POSITIONS = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
+
+// Same invisible-until-hover treatment as design-node.tsx's HANDLE_CLASS, so box-anchored edges
+// (e.g. an external actor box pointing into a service inside the canvas) get the same affordance
+// service nodes do — group nodes previously declared zero handles, so any edge omitting an
+// explicit sourceHandle/targetHandle (the sample data always does) silently failed to bind and
+// the arrow was never drawn.
+const HANDLE_CLASS = '!h-2.5 !w-2.5 !border-2 !border-white dark:!border-neutral-950 !bg-neutral-500/70 opacity-0 transition-opacity group-hover:opacity-100 !z-10';
 
 // AWS diagram convention: color distinguishes nesting level (VPC vs. subnet vs. outer cloud
 // box), not fill — the box interior stays neutral (see the fill layer below) and only the
@@ -40,7 +49,7 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
   const borderColor = data.borderColor ?? 'none';
 
   return (
-    <div className="relative h-full w-full">
+    <div className="group relative h-full w-full">
       <NodeResizer
         isVisible={selected}
         minWidth={120}
@@ -48,6 +57,18 @@ export function DesignGroupNode({ data, selected }: NodeProps<DesignNodeType>) {
         lineClassName="!border-blue-500 dark:!border-blue-400"
         handleClassName="!h-2.5 !w-2.5 !rounded-sm !border !border-blue-500 dark:!border-blue-400 !bg-white dark:!bg-neutral-900"
       />
+
+      {/* Connection handles — outside the pointer-events-none border layer below so they stay
+          interactive. While the node is selected the NodeResizer's own handles occupy the same
+          edge midpoints, so pointer events are dropped here to let the resize controls win; the
+          handles stay mounted (just non-interactive) so React Flow can keep measuring their
+          position for already-connected edges. */}
+      {HANDLE_POSITIONS.map((position) => (
+        <span key={position} className={selected ? 'pointer-events-none' : ''}>
+          <Handle type="target" position={position} id={`${position}-target`} className={HANDLE_CLASS} />
+          <Handle type="source" position={position} id={`${position}-source`} className={HANDLE_CLASS} />
+        </span>
+      ))}
 
       {/* Border layer — pointer-events none so dragged/dropped children underneath (and the pane
           behind an empty box) stay clickable/draggable through the box's interior.
