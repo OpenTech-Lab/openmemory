@@ -869,8 +869,8 @@ impl McpServer {
                             },
                             "secret_target": {
                                 "type": "string",
-                                "description": "Where the secret goes: 'header' (default) puts it in an auth header alongside the 'url' arg; 'url' means the secret itself IS the full request URL (no auth header sent) — for self-authenticating URLs like incoming webhooks.",
-                                "enum": ["header", "url"]
+                                "description": "Where the secret goes: 'header' (default) puts it in an auth header alongside the 'url' arg; 'url' means the secret itself IS the full request URL (no auth header sent) — for self-authenticating URLs like incoming webhooks; 'query' appends the secret as a URL query parameter (name from secret_query_param, default 'key') — for APIs that require the key in the query string, like Pixabay.",
+                                "enum": ["header", "url", "query"]
                             },
                             "auth_header": {
                                 "type": "string",
@@ -879,6 +879,10 @@ impl McpServer {
                             "auth_prefix": {
                                 "type": "string",
                                 "description": "Prefix for the header value. Defaults to 'Bearer '. Set to '' for bare token headers like X-Auth-Key. Ignored when secret_target='url'."
+                            },
+                            "secret_query_param": {
+                                "type": "string",
+                                "description": "Query parameter name for the secret when secret_target='query'. Defaults to 'key'."
                             },
                             "body": {
                                 "type": "object",
@@ -890,6 +894,54 @@ impl McpServer {
                             }
                         },
                         "required": ["method", "auth_key"]
+                    }
+                },
+                {
+                    "name": "env_http_download",
+                    "description": "Like env_http_request, but for binary responses (video, images, archives, any non-text payload): the server streams the response bytes straight to a file on local disk instead of returning them as a JSON/text string. Use this whenever the response isn't text/JSON — env_http_request reads the body as UTF-8 text and silently corrupts binary data (invalid byte sequences get replaced with U+FFFD), so it must never be used for downloads. Only metadata (path, size, content-type, status) is returned to the agent — never the bytes. save_path must be an absolute path; parent directories are created if missing and an existing file at that path is overwritten.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method: GET, POST, PUT, PATCH, DELETE",
+                                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Full URL to request. Required unless secret_target='url' (in which case the secret itself is the URL and this is ignored)."
+                            },
+                            "auth_key": {
+                                "type": "string",
+                                "description": "Name of the secret env param whose value will be used as the auth credential, or as the full URL when secret_target='url'"
+                            },
+                            "secret_target": {
+                                "type": "string",
+                                "description": "Where the secret goes: 'header' (default) puts it in an auth header alongside the 'url' arg; 'url' means the secret itself IS the full request URL (no auth header sent); 'query' appends the secret as a URL query parameter (name from secret_query_param, default 'key') — for APIs that require the key in the query string, like Pixabay.",
+                                "enum": ["header", "url", "query"]
+                            },
+                            "auth_header": {
+                                "type": "string",
+                                "description": "Header name for the credential. Defaults to 'Authorization'. Ignored when secret_target='url'."
+                            },
+                            "auth_prefix": {
+                                "type": "string",
+                                "description": "Prefix for the header value. Defaults to 'Bearer '. Set to '' for bare token headers like X-Auth-Key. Ignored when secret_target='url'."
+                            },
+                            "secret_query_param": {
+                                "type": "string",
+                                "description": "Query parameter name for the secret when secret_target='query'. Defaults to 'key'."
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": "Optional additional headers as key-value pairs"
+                            },
+                            "save_path": {
+                                "type": "string",
+                                "description": "Absolute local filesystem path to write the downloaded bytes to. Parent directories are created if needed; an existing file is overwritten."
+                            }
+                        },
+                        "required": ["method", "auth_key", "save_path"]
                     }
                 },
                 {
@@ -1401,6 +1453,7 @@ impl McpServer {
             "workflow_run" => self.workflow_run(arguments).await,
             "workflow_continue" => self.workflow_continue(arguments).await,
             "env_http_request" => self.env_http_request(arguments).await,
+            "env_http_download" => self.env_http_download(arguments).await,
             "env_sign_jwt" => self.env_sign_jwt(arguments).await,
             "env_http_request_jwt" => self.env_http_request_jwt(arguments).await,
             "env_set_file" => self.env_set_file(arguments).await,
@@ -2227,8 +2280,12 @@ impl McpServer {
         // "header" (default): secret goes in an auth header, url comes from the
         // "url" arg. "url": the secret itself IS the full request URL (for
         // self-authenticating URLs like incoming webhooks) — no auth header is
-        // sent, and the "url" arg is ignored/not required.
+        // sent, and the "url" arg is ignored/not required. "query": secret is
+        // appended as a query string parameter (name from secret_query_param,
+        // default "key") onto the "url" arg — for APIs like Pixabay that only
+        // accept the API key as ?key=... and reject header-based auth.
         let secret_target = args["secret_target"].as_str().unwrap_or("header").to_string();
+        let secret_query_param = args["secret_query_param"].as_str().unwrap_or("key").to_string();
 
         // Resolve the secret from the DB — never returned to the agent
         let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
@@ -2247,6 +2304,13 @@ impl McpServer {
 
         let url = if secret_target == "url" {
             secret_value.trim().to_string()
+        } else if secret_target == "query" {
+            let base = args["url"].as_str().context("missing url")?;
+            let mut parsed = reqwest::Url::parse(base).context("invalid url")?;
+            parsed
+                .query_pairs_mut()
+                .append_pair(&secret_query_param, secret_value.trim());
+            parsed.to_string()
         } else {
             args["url"].as_str().context("missing url")?.to_string()
         };
@@ -2281,7 +2345,7 @@ impl McpServer {
         }
         .header("Content-Type", "application/json");
 
-        if secret_target != "url" {
+        if secret_target != "url" && secret_target != "query" {
             let auth_value = format!("{}{}", auth_prefix, secret_value);
             req = req.header(&auth_header, &auth_value);
         }
@@ -2320,6 +2384,133 @@ impl McpServer {
                 "text": format!("HTTP {} — status {}\n\n{}", method, status, display)
             }],
             "isError": status >= 400
+        }))
+    }
+
+    async fn env_http_download(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let method = args["method"].as_str().context("missing method")?.to_uppercase();
+        let auth_key = args["auth_key"].as_str().context("missing auth_key")?.to_string();
+        let auth_header = args["auth_header"].as_str().unwrap_or("Authorization").to_string();
+        let auth_prefix = args["auth_prefix"].as_str().unwrap_or("Bearer ").to_string();
+        let secret_target = args["secret_target"].as_str().unwrap_or("header").to_string();
+        let secret_query_param = args["secret_query_param"].as_str().unwrap_or("key").to_string();
+        let save_path = args["save_path"].as_str().context("missing save_path")?.to_string();
+
+        if !std::path::Path::new(&save_path).is_absolute() {
+            anyhow::bail!("save_path must be an absolute path");
+        }
+
+        // Resolve the secret from the DB — never returned to the agent
+        let row: Option<(Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT value_encrypted, is_secret FROM env_params WHERE key = $1",
+        )
+        .bind(&auth_key)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to query auth secret")?;
+
+        let secret_value = match row {
+            None => anyhow::bail!("Secret '{}' not found in env params", auth_key),
+            Some((encrypted, _)) => decrypt_value(&self.encryption_key, &encrypted)
+                .context("failed to decrypt secret")?,
+        };
+
+        let url = if secret_target == "url" {
+            secret_value.trim().to_string()
+        } else if secret_target == "query" {
+            let base = args["url"].as_str().context("missing url")?;
+            let mut parsed = reqwest::Url::parse(base).context("invalid url")?;
+            parsed
+                .query_pairs_mut()
+                .append_pair(&secret_query_param, secret_value.trim());
+            parsed.to_string()
+        } else {
+            args["url"].as_str().context("missing url")?.to_string()
+        };
+
+        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
+            let allowed_hosts: Vec<String> = allowed
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            if !allowed_hosts.iter().any(|h| h == &host) {
+                anyhow::bail!(
+                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
+                    host
+                );
+            }
+        }
+
+        let client = HttpClient::new();
+
+        let mut req = match method.as_str() {
+            "GET"    => client.get(&url),
+            "POST"   => client.post(&url),
+            "PUT"    => client.put(&url),
+            "PATCH"  => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            other    => anyhow::bail!("Unsupported HTTP method: {}", other),
+        };
+
+        if secret_target != "url" && secret_target != "query" {
+            let auth_value = format!("{}{}", auth_prefix, secret_value);
+            req = req.header(&auth_header, &auth_value);
+        }
+
+        if let Some(headers) = args["headers"].as_object() {
+            for (k, v) in headers {
+                if let Some(v_str) = v.as_str() {
+                    req = req.header(k.as_str(), v_str);
+                }
+            }
+        }
+
+        let response = req.send().await.context("HTTP request failed")?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        // Bytes, not text — this is the whole point: no UTF-8 lossy conversion.
+        let bytes = response.bytes().await.context("failed to read response body")?;
+
+        if status >= 400 {
+            // Error bodies are almost always text (JSON error payloads) — safe to
+            // surface directly rather than writing an error page to save_path.
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            return Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("HTTP {} — status {}\n\n{}", method, status, text)
+                }],
+                "isError": true
+            }));
+        }
+
+        if let Some(parent) = std::path::Path::new(&save_path).parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("failed to create parent directories for save_path")?;
+        }
+        tokio::fs::write(&save_path, &bytes)
+            .await
+            .context("failed to write downloaded bytes to save_path")?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "HTTP {} — status {}\nSaved {} bytes to {}\nContent-Type: {}",
+                    method, status, bytes.len(), save_path, content_type
+                )
+            }],
+            "isError": false
         }))
     }
 
