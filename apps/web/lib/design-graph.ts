@@ -8,7 +8,11 @@ import type { Edge, Node, Viewport } from '@xyflow/react';
 export const DESIGN_DIAGRAM_TYPES = ['mermaid', 'reactflow'] as const;
 export type DesignDiagramType = (typeof DESIGN_DIAGRAM_TYPES)[number];
 
-export const DESIGN_NODE_TYPES = ['design', 'group'] as const;
+// 'junction' is the architecture-beta derived-mode dot-node (design-junction-node.tsx). Nothing
+// writes it from the freeform reactflow canvas today, but toDesignNode below must still accept it
+// so a future reactflow save/reload round-trip can't silently downgrade a persisted junction to a
+// generic 'design' node.
+export const DESIGN_NODE_TYPES = ['design', 'group', 'junction'] as const;
 export type DesignNodeType = (typeof DESIGN_NODE_TYPES)[number];
 
 export const BORDER_STYLES = ['solid', 'dashed', 'dotted'] as const;
@@ -26,6 +30,9 @@ export interface DesignNodeData extends Record<string, unknown> {
   borderStyle?: BorderStyle;
   /** Group-only: box border/label accent color. 'none' (default) keeps the neutral look. */
   borderColor?: BoxColor;
+  /** Derived-mode only: size comes from applyNestedLayout's recursion, not NodeResizer — the
+   * group node gates its own resize handles off this flag (design-group-node.tsx). */
+  derivedSize?: boolean;
 }
 
 export type DesignNode = Node<DesignNodeData, DesignNodeType>;
@@ -47,7 +54,7 @@ function toDesignNode(raw: unknown): DesignNode | null {
   if (!isRecord(position) || typeof position.x !== 'number' || typeof position.y !== 'number') return null;
   const rawData = isRecord(data) ? data : {};
   const label = typeof rawData.label === 'string' ? rawData.label : '';
-  const nodeType: DesignNodeType = type === 'group' ? 'group' : 'design';
+  const nodeType: DesignNodeType = type === 'group' ? 'group' : type === 'junction' ? 'junction' : 'design';
   const borderStyle = BORDER_STYLES.includes(rawData.borderStyle as BorderStyle)
     ? (rawData.borderStyle as BorderStyle)
     : undefined;
@@ -66,6 +73,7 @@ function toDesignNode(raw: unknown): DesignNode | null {
       note: typeof rawData.note === 'string' ? rawData.note : undefined,
       borderStyle,
       borderColor,
+      derivedSize: rawData.derivedSize === true ? true : undefined,
     },
   };
 
