@@ -353,7 +353,7 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
       return;
     }
     try {
-      await exportDesignToPng(viewportEl, canvasBg);
+      await exportDesignToPng(viewportEl, nodes, canvasBg);
     } catch {
       toast.error('Failed to export PNG');
     }
