@@ -140,7 +140,15 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange }: DesignCanvasPro
     type: 'step' as const,
     style: { stroke: edgeColor, strokeWidth: 1.5 },
     markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor, width: 18, height: 18 },
-  }), [edgeColor]);
+    // `.react-flow__edge-textbg`/`-text` normally pick up fill from the `--xy-edge-label-*` vars
+    // declared on the ReactFlow root (see CANVAS_VARS_* above) — fine on screen, but PNG export
+    // clones the viewport into a detached document where that ancestor (and its custom
+    // properties) doesn't exist, so the var falls back to black and labels render as solid black
+    // boxes. Setting the colors inline here survives the clone; the vars stay in place too since
+    // they're still what's live on screen before any export happens.
+    labelBgStyle: { fill: canvasBg },
+    labelStyle: { fill: edgeColor },
+  }), [edgeColor, canvasBg]);
   const [nodes, setNodes, onNodesChangeRaw] = useNodesState<DesignNodeType>(initialGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialGraph.edges);
   const [viewport, setViewport] = useState<Viewport | undefined>(initialGraph.viewport);
