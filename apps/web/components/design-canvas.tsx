@@ -13,6 +13,16 @@ import {
 } from '@xyflow/react';
 import { Boxes, Group, Image as ImageIcon, LayoutGrid, RotateCcw, Square, Trash2, Ungroup } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,7 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DesignNode } from '@/components/design-node';
 import { DesignGroupNode } from '@/components/design-group-node';
 import { DesignJunctionNode } from '@/components/design-junction-node';
-import { applyDagreLayout } from '@/lib/design-layout';
+import { applyNestedLayout } from '@/lib/design-layout';
 import { exportDesignToPng } from '@/lib/design-export';
 import { AWS_ICON_KEYS, awsIcon } from '@/lib/aws-icons';
 import { BORDER_STYLES, BOX_COLORS, type BorderStyle, type BoxColor, type DesignGraph, type DesignNode as DesignNodeType, type DesignNodeData } from '@/lib/design-graph';
@@ -375,9 +385,21 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange, mode = 'freeform'
     }
   }, [flow, readOnly, isDerived, setNodes]);
 
-  const autoArrange = () => {
-    setNodes((current) => applyDagreLayout(current, edges));
+  const runAutoArrange = () => {
+    setNodes((current) => applyNestedLayout(current, edges));
     window.requestAnimationFrame(() => flow?.fitView());
+  };
+
+  // Resizing groups to fit their contents overwrites box dimensions the user set by hand with
+  // NodeResizer — only confirm when that's actually on the table (i.e. there's a group node to
+  // resize). With no groups, arranging is non-destructive, so skip the nag.
+  const [confirmArrange, setConfirmArrange] = useState(false);
+  const autoArrange = () => {
+    if (nodes.some((node) => node.type === 'group')) {
+      setConfirmArrange(true);
+      return;
+    }
+    runAutoArrange();
   };
 
   // Scoped to this canvas instance rather than a global `document.querySelector` — in derived
@@ -675,6 +697,22 @@ function DesignCanvasInner({ initialGraph, readOnly, onChange, mode = 'freeform'
           )}
         </aside>
       )}
+
+      <AlertDialog open={confirmArrange} onOpenChange={setConfirmArrange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Auto-arrange this design?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This re-lays out every node and resizes group boxes to fit their contents,
+              replacing any sizes you set by hand. Nothing is written until you Save.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={runAutoArrange}>Arrange</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
