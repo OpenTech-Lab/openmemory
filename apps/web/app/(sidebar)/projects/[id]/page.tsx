@@ -167,6 +167,12 @@ export default function ProjectDetailPage() {
   const [isCreatingRoutine, setIsCreatingRoutine] = useState(false);
   const [isCheckingRoutines, setIsCheckingRoutines] = useState(false);
 
+  // Design/Lessons tab counts — ProjectDesignPanel and LessonsPanel own their own data and
+  // fetching, so these are lightweight count-only fetches (same pattern as tasks/routines above)
+  // purely to feed the tab badges without lifting those panels' full state up to this page.
+  const [designCount, setDesignCount] = useState(0);
+  const [lessonCount, setLessonCount] = useState(0);
+
   const fetchProject = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -211,9 +217,34 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchDesignCount = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${id}/designs?limit=200`);
+      const data = await res.json();
+      setDesignCount(data.designs?.length ?? 0);
+    } catch {
+      // Badge-only fetch — a failure here shouldn't surface a toast on top of the panel's own.
+    }
+  }, [id]);
+
+  const fetchLessonCount = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${id}/lessons?limit=200`);
+      const data = await res.json();
+      setLessonCount(data.lessons?.length ?? 0);
+    } catch {
+      // Badge-only fetch — a failure here shouldn't surface a toast on top of the panel's own.
+    }
+  }, [id]);
+
   useEffect(() => { fetchProject(); }, [fetchProject]);
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
   useEffect(() => { fetchRoutines(); }, [fetchRoutines]);
+  // Re-fetched on every tab switch (not just mount) since ProjectDesignPanel/LessonsPanel own
+  // their create/delete flows independently — this is the only way the badge picks up a change
+  // made while that tab was open, without prop-drilling a refresh callback into either panel.
+  useEffect(() => { fetchDesignCount(); }, [fetchDesignCount, activeTab]);
+  useEffect(() => { fetchLessonCount(); }, [fetchLessonCount, activeTab]);
 
   // The Files/Graph/History tabs only render content for a project with a filesystem path
   // (hasGraph below) — a path-less project landing on the Files default would otherwise show a
@@ -557,7 +588,7 @@ export default function ProjectDetailPage() {
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'design' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('design')}
         >
-          Design
+          Design {designCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{designCount}</span>}
         </button>
         <button
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'tasks' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
@@ -575,7 +606,7 @@ export default function ProjectDetailPage() {
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'lessons' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('lessons')}
         >
-          Lessons
+          Lessons {lessonCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{lessonCount}</span>}
         </button>
         {hasGraph && (
           <button

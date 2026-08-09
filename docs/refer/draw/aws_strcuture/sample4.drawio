@@ -1,0 +1,83 @@
+<mxfile host="OpenMemory" modified="2026-08-09T06:00:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="aws-iot-ingest-worker-fanout" name="IoT ingest &amp; worker fan-out">
+    <mxGraphModel dx="1400" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="txt-devices-label" value="Devices" style="text;html=1;align=center;verticalAlign=middle;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="85" width="180" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="dev-icon-1" value="" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.generic;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="40" y="130" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="dev-icon-2" value="" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.generic;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="110" y="130" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="dev-icon-3" value="" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.generic;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="180" y="130" width="40" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api-gateway" value="Amazon API Gateway" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="290" y="360" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-ingester" value="AWS Lambda (Ingester)" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="460" y="360" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="kinesis-queue" value="Amazon Kinesis Data Streams (Queue)" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.kinesis_data_streams;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=150;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="630" y="360" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-preprocessor" value="AWS Lambda (Pre-Processor)" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=150;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="800" y="360" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dynamodb" value="Amazon DynamoDB" style="fillColor=#C925D1;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="630" y="90" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="worker-1" value="AWS Lambda (Workers)" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="990" y="90" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="worker-2" value="AWS Lambda (Workers)" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="990" y="340" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="txt-ellipsis" value="&#8942;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="425" width="20" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="worker-3" value="AWS Lambda (Workers)" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="990" y="520" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="bedrock" value="Amazon Bedrock" style="fillColor=#01A88D;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=120;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="90" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="notification" value="Notification" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.email;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=100;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="1185" y="345" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="external-system" value="External System" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="530" width="110" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-dev1-api" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="dev-icon-1" target="api-gateway"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-dev2-api" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="dev-icon-2" target="api-gateway"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-dev3-api" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="dev-icon-3" target="api-gateway"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="e-api-ingester" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="api-gateway" target="lambda-ingester"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-ingester-kinesis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="lambda-ingester" target="kinesis-queue"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-kinesis-preprocessor" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="kinesis-queue" target="lambda-preprocessor"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="e-dynamodb-ingester" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=1.4;" edge="1" parent="1" source="dynamodb" target="lambda-ingester"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-dynamodb-preprocessor" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=1.4;" edge="1" parent="1" source="dynamodb" target="lambda-preprocessor"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-preprocessor-dynamodb-feedback" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="lambda-preprocessor" target="dynamodb"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="830" y="20" /><mxPoint x="660" y="20" /></Array></mxGeometry></mxCell>
+
+        <mxCell id="e-preprocessor-worker1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="lambda-preprocessor" target="worker-1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-preprocessor-worker2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="lambda-preprocessor" target="worker-2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-preprocessor-worker3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="lambda-preprocessor" target="worker-3"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="e-worker1-bedrock" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=1.4;" edge="1" parent="1" source="worker-1" target="bedrock"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-worker2-notification" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="1" source="worker-2" target="notification"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-worker3-external" value="Webhook" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=1.4;fontStyle=2;" edge="1" parent="1" source="worker-3" target="external-system"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

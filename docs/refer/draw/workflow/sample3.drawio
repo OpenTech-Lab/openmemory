@@ -1,0 +1,162 @@
+<mxfile host="OpenMemory" modified="2026-08-09T00:00:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="support-request-triage-workflow" name="Support request triage workflow">
+    <mxGraphModel dx="1040" dy="610" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1040" pageHeight="610" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="lane-creately-users" value="Creately Users" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#A0522D;fontStyle=1;fontSize=10;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="0" y="0" width="1040" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-creately-support" value="Creately Support" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#A0522D;fontStyle=1;fontSize=10;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="0" y="90" width="1040" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-dev" value="Dev" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#A0522D;fontStyle=1;fontSize=10;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="0" y="210" width="1040" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-qa" value="QA" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#A0522D;fontStyle=1;fontSize=10;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="0" y="400" width="1040" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-marketing-design" value="Marketing Design" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#A0522D;fontStyle=1;fontSize=10;horizontal=0;" vertex="1" parent="1">
+          <mxGeometry x="0" y="490" width="1040" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- Lane 1: Creately Users (purple) -->
+        <mxCell id="box-happy" value="Happy &amp; Satisfied" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#8E44AD;" vertex="1" parent="lane-creately-users">
+          <mxGeometry x="50" y="20" width="110" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="box-sends-email" value="Sends Email - support@creately.com" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#8E44AD;" vertex="1" parent="lane-creately-users">
+          <mxGeometry x="210" y="20" width="170" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Lane 2: Creately Support (blue) -->
+        <mxCell id="box-notify-user" value="Notify User!" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#3498DB;" vertex="1" parent="lane-creately-support">
+          <mxGeometry x="50" y="35" width="110" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="box-reads-replies" value="Reads, Replies &amp; Takes action" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#3498DB;" vertex="1" parent="lane-creately-support">
+          <mxGeometry x="210" y="20" width="140" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="diamond-reported-bug" value="Reported Bug?" style="rhombus;whiteSpace=wrap;html=1;fontSize=9;fillColor=#3498DB;fontColor=#FFFFFF;strokeColor=none;" vertex="1" parent="lane-creately-support">
+          <mxGeometry x="400" y="15" width="120" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="diamond-request-templates" value="Request for Templates?" style="rhombus;whiteSpace=wrap;html=1;fontSize=9;fillColor=#3498DB;fontColor=#FFFFFF;strokeColor=none;" vertex="1" parent="lane-creately-support">
+          <mxGeometry x="570" y="15" width="130" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="diamond-request-objects" value="Request for new Objects?" style="rhombus;whiteSpace=wrap;html=1;fontSize=9;fillColor=#3498DB;fontColor=#FFFFFF;strokeColor=none;" vertex="1" parent="lane-creately-support">
+          <mxGeometry x="750" y="15" width="130" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="box-email-back" value="Email back requesting for a clear issue" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#3498DB;" vertex="1" parent="lane-creately-support">
+          <mxGeometry x="910" y="25" width="110" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Lane 3: Dev (teal) -->
+        <mxCell id="box-add-details" value="Add details to Request Tracker" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#16A085;" vertex="1" parent="lane-dev">
+          <mxGeometry x="400" y="15" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="box-bug-fixes" value="Bug Fixes" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#16A085;" vertex="1" parent="lane-dev">
+          <mxGeometry x="400" y="75" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="box-email-notify-bugfix" value="Email notifying the Bug Fix" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#16A085;" vertex="1" parent="lane-dev">
+          <mxGeometry x="400" y="135" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="box-push-templates" value="Push out as Templates" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#16A085;" vertex="1" parent="lane-dev">
+          <mxGeometry x="570" y="75" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="box-coding" value="Coding" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#16A085;" vertex="1" parent="lane-dev">
+          <mxGeometry x="750" y="75" width="130" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- Lane 4: QA (yellow, dark font for readability) -->
+        <mxCell id="box-testing-bugfix" value="Testing" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#1B1B1B;strokeColor=none;fillColor=#F1C40F;" vertex="1" parent="lane-qa">
+          <mxGeometry x="400" y="20" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="box-testing-coding" value="Testing" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#1B1B1B;strokeColor=none;fillColor=#F1C40F;" vertex="1" parent="lane-qa">
+          <mxGeometry x="750" y="20" width="130" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Lane 5: Marketing Design (red) -->
+        <mxCell id="box-blog-announcing" value="Blog Announcing the latest news" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#E74C3C;" vertex="1" parent="lane-marketing-design">
+          <mxGeometry x="400" y="20" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="box-create-templates" value="Create New Templates" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#E74C3C;" vertex="1" parent="lane-marketing-design">
+          <mxGeometry x="590" y="20" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="box-create-objects" value="Create New Objects" style="rounded=1;whiteSpace=wrap;html=1;arcSize=20;fontSize=9;fontColor=#FFFFFF;strokeColor=none;fillColor=#E74C3C;" vertex="1" parent="lane-marketing-design">
+          <mxGeometry x="750" y="20" width="140" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: main bug-report chain -->
+        <mxCell id="edge-sendsemail-readsreplies" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-sends-email" target="box-reads-replies">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-readsreplies-reportedbug" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-reads-replies" target="diamond-reported-bug">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-reportedbug-no-templates" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="diamond-reported-bug" target="diamond-request-templates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-templates-no-objects" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="diamond-request-templates" target="diamond-request-objects">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-objects-no-emailback" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="diamond-request-objects" target="box-email-back">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-reportedbug-yes-adddetails" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="diamond-reported-bug" target="box-add-details">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-adddetails-bugfixes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-add-details" target="box-bug-fixes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-bugfixes-emailnotify" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-bug-fixes" target="box-email-notify-bugfix">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-emailnotify-testing1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-email-notify-bugfix" target="box-testing-bugfix">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-testing1-blog" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-testing-bugfix" target="box-blog-announcing">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-notifyuser-happy" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-notify-user" target="box-happy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: templates request chain -->
+        <mxCell id="edge-templates-yes-pushtemplates" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="diamond-request-templates" target="box-push-templates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-pushtemplates-createtemplates" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-push-templates" target="box-create-templates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-createtemplates-blog" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-create-templates" target="box-blog-announcing">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: new objects request chain -->
+        <mxCell id="edge-objects-yes-coding" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="diamond-request-objects" target="box-coding">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-coding-testing2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-coding" target="box-testing-coding">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-testing2-createobjects" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-testing-coding" target="box-create-objects">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-createobjects-blog" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-create-objects" target="box-blog-announcing">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Long loop-back edge: bottom-right (Create New Objects) back to top-left (Notify User!) -->
+        <mxCell id="edge-loopback-createobjects-notifyuser" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeColor=#A0522D;strokeWidth=1;" edge="1" parent="1" source="box-create-objects" target="box-notify-user">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="820" y="595" />
+              <mxPoint x="15" y="595" />
+              <mxPoint x="15" y="150" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

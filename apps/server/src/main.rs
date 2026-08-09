@@ -6005,7 +6005,7 @@ async fn create_project_design(
     }
 
     let kind = payload.kind.as_deref().unwrap_or("other");
-    let diagram_type = payload.diagram_type.as_deref().unwrap_or("mermaid");
+    let diagram_type = payload.diagram_type.as_deref().unwrap_or("drawio");
     let source = payload.source.clone().unwrap_or_default();
     let tags = normalize_labels(&payload.tags.clone().unwrap_or_default());
     let sort_order = payload.sort_order.unwrap_or(0);

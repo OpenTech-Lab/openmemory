@@ -1,0 +1,88 @@
+<mxfile host="OpenMemory" modified="2026-08-09T00:00:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="ecommerce-order-flow" name="E-commerce order flow">
+    <mxGraphModel dx="1500" dy="400" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="400" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="customer-box" value="" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=center;fontSize=10;fillColor=none;strokeColor=#000000;container=1;collapsible=0;recursiveResize=0;" vertex="1" parent="1">
+          <mxGeometry x="30" y="30" width="140" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="customer-circle" value="Customer" style="ellipse;whiteSpace=wrap;html=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="customer-box">
+          <mxGeometry x="25" y="110" width="90" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ecommerce-box" value="E-commerce Website" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=center;fontSize=10;fillColor=none;strokeColor=#000000;container=1;collapsible=0;recursiveResize=0;" vertex="1" parent="1">
+          <mxGeometry x="250" y="30" width="400" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="hex-product-selection" value="Product Selection" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="ecommerce-box">
+          <mxGeometry x="10" y="120" width="100" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="hex-add-to-cart" value="Add to Cart" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="ecommerce-box">
+          <mxGeometry x="150" y="120" width="100" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="hex-checkout" value="Checkout" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="ecommerce-box">
+          <mxGeometry x="290" y="120" width="100" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="payment-box" value="Payment Gateway" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=center;fontSize=10;fillColor=none;strokeColor=#000000;container=1;collapsible=0;recursiveResize=0;" vertex="1" parent="1">
+          <mxGeometry x="760" y="30" width="150" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="payment-circle" value="Payment Gateway" style="ellipse;whiteSpace=wrap;html=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="payment-box">
+          <mxGeometry x="30" y="110" width="90" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="orderproc-box" value="Order Processing System" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=center;fontSize=10;fillColor=none;strokeColor=#000000;container=1;collapsible=0;recursiveResize=0;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="30" width="200" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="orderproc-circle" value="Order Processing System" style="ellipse;whiteSpace=wrap;html=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="orderproc-box">
+          <mxGeometry x="50" y="105" width="100" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="warehouse-box" value="Warehouse" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=center;fontSize=10;fillColor=none;strokeColor=#000000;container=1;collapsible=0;recursiveResize=0;" vertex="1" parent="1">
+          <mxGeometry x="1300" y="30" width="170" height="310" as="geometry" />
+        </mxCell>
+        <mxCell id="check-inventory-circle" value="Check Inventory" style="ellipse;whiteSpace=wrap;html=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="warehouse-box">
+          <mxGeometry x="40" y="40" width="90" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="pack-ship-circle" value="Pack &amp; Ship" style="ellipse;whiteSpace=wrap;html=1;fontSize=10;strokeColor=#000000;fillColor=#FFFFFF;" vertex="1" parent="warehouse-box">
+          <mxGeometry x="40" y="180" width="90" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge-customer-to-product" style="edgeStyle=none;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="customer-circle" target="hex-product-selection">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-product-to-cart" style="edgeStyle=none;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="hex-product-selection" target="hex-add-to-cart">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-cart-to-checkout" style="edgeStyle=none;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="hex-add-to-cart" target="hex-checkout">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-checkout-to-payment" style="edgeStyle=none;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="hex-checkout" target="payment-circle">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-payment-to-orderproc" style="edgeStyle=none;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="payment-circle" target="orderproc-circle">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edge-orderproc-to-checkinventory" style="edgeStyle=none;rounded=0;html=1;curved=1;endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="orderproc-circle" target="check-inventory-circle">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1220" y="140" />
+              <mxPoint x="1290" y="120" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-orderproc-to-packship" style="edgeStyle=none;rounded=0;html=1;curved=1;endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=1;strokeColor=#000000;" edge="1" parent="1" source="orderproc-circle" target="pack-ship-circle">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1220" y="230" />
+              <mxPoint x="1290" y="250" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -584,14 +584,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             only a background, since fullscreen otherwise renders on a transparent/black canvas. */}
         <div
           ref={previewRef}
-          className={`rounded-md p-4 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[70vh]' : 'min-h-[300px]'} ${isPreviewFullscreen ? 'bg-background' : ''}`}
+          className={`rounded-md p-4 pb-6 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[85vh]' : 'min-h-[300px]'} ${isPreviewFullscreen ? 'bg-background' : ''}`}
         >
           {selectedDesign ? (
             <>
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div>
+                <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold">{selectedDesign.title}</h3>
-                  <Badge variant="outline" className={`text-xs mt-1 ${designKindMeta(selectedDesign.kind).color}`}>
+                  <Badge variant="outline" className={`text-xs ${designKindMeta(selectedDesign.kind).color}`}>
                     {designKindMeta(selectedDesign.kind).label}
                   </Badge>
                 </div>
@@ -664,7 +664,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         <DialogContent
           className={
             editForm.diagramType === 'drawio' || editForm.diagramType === 'reactflow' || editorMode === 'arch'
-              ? 'flex h-[92vh] w-[96vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
+              ? 'flex h-[92vh] w-[96vw] min-w-[80vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
               : 'max-w-3xl max-h-[85vh] overflow-y-auto'
           }
         >

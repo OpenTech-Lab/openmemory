@@ -1,0 +1,125 @@
+<mxfile host="OpenMemory" modified="2026-08-09T05:15:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="aws-payment-platform" name="Payment platform (nested Cloud / Region / VPC / ECS)">
+    <mxGraphModel dx="1540" dy="920" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1540" pageHeight="920" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="cloud" value="AWS Cloud" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud;verticalAlign=top;align=left;grIconSize=28;spacingLeft=34;spacingTop=4;fontStyle=1;fontSize=12;fillColor=none;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="1500" height="880" as="geometry" />
+        </mxCell>
+
+        <mxCell id="payment-companies" value="各種決済社" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fontSize=10;" vertex="1" parent="cloud">
+          <mxGeometry x="20" y="50" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="member-stores" value="加盟店" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fontSize=10;" vertex="1" parent="cloud">
+          <mxGeometry x="20" y="150" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="office" value="オフィス" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fontSize=10;" vertex="1" parent="cloud">
+          <mxGeometry x="20" y="480" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="enduser" value="エンドユーザー" style="fillColor=#545B64;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.users;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=100;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="65" y="330" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="cloudfront" value="Amazon CloudFront" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="250" y="330" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="route53" value="Amazon Route 53" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_53;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="250" y="480" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="region" value="東京リージョン" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;verticalAlign=top;align=left;grIconSize=28;spacingLeft=34;spacingTop=4;fontStyle=1;fontSize=12;fillColor=none;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;strokeColor=#00A4A6;" vertex="1" parent="cloud">
+          <mxGeometry x="340" y="20" width="1080" height="840" as="geometry" />
+        </mxCell>
+
+        <mxCell id="waf" value="AWS WAF" style="fillColor=#DD344C;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=90;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="430" y="45" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="kms" value="AWS KMS" style="fillColor=#DD344C;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.key_management_service;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=90;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="530" y="45" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="ses" value="Amazon SES" style="fillColor=#BC1356;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.simple_email_service;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=100;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="630" y="45" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="ecr" value="Amazon ECR" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecr;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=100;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="730" y="45" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="step-functions" value="AWS Step Functions" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.step_functions;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="830" y="45" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api-gateway" value="Amazon API Gateway" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="40" y="260" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="vpc" value="VPC" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc;verticalAlign=top;align=left;grIconSize=28;spacingLeft=34;spacingTop=4;fontStyle=1;fontSize=12;fillColor=none;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;strokeColor=#8C4FFF;" vertex="1" parent="region">
+          <mxGeometry x="150" y="150" width="850" height="560" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s3-longterm" value="Amazon S3&lt;br&gt;&lt;b&gt;長期保管&lt;/b&gt;" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="430" y="740" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="cloudwatch" value="Amazon CloudWatch" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=120;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="530" y="740" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="systems-manager" value="AWS Systems Manager" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.systems_manager;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="630" y="740" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="codebuild" value="AWS CodeBuild" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.codebuild;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="730" y="740" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="dynamodb" value="Amazon DynamoDB" style="fillColor=#C925D1;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=120;spacingTop=5;" vertex="1" parent="region">
+          <mxGeometry x="830" y="740" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="elb" value="Elastic Load Balancing" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="vpc">
+          <mxGeometry x="40" y="110" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-traffic" value="AWS Lambda&lt;br&gt;&lt;b&gt;流量制御&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="vpc">
+          <mxGeometry x="40" y="230" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s3-content" value="Amazon S3&lt;br&gt;&lt;b&gt;コンテンツ&lt;/b&gt;" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="vpc">
+          <mxGeometry x="40" y="350" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ecs" value="Amazon ECS" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#ED7100;fontStyle=1;fontSize=11;" vertex="1" parent="vpc">
+          <mxGeometry x="160" y="40" width="520" height="460" as="geometry" />
+        </mxCell>
+
+        <mxCell id="task-result-notify" value="結果通知" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs_task;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=3;" vertex="1" parent="ecs">
+          <mxGeometry x="60" y="50" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="task-common" value="共通処理" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs_task;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=3;" vertex="1" parent="ecs">
+          <mxGeometry x="290" y="50" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="task-vuln-check" value="脆弱性チェック" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs_task;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=3;" vertex="1" parent="ecs">
+          <mxGeometry x="60" y="180" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="task-payment-front-api" value="決済フロント API" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs_task;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=3;" vertex="1" parent="ecs">
+          <mxGeometry x="290" y="180" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="task-batch" value="バッチ" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs_task;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=3;" vertex="1" parent="ecs">
+          <mxGeometry x="60" y="310" width="36" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="task-link-type" value="リンクタイプ" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs_task;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=3;" vertex="1" parent="ecs">
+          <mxGeometry x="290" y="310" width="36" height="36" as="geometry" />
+        </mxCell>
+
+        <mxCell id="aurora" value="Amazon Aurora" style="fillColor=#C925D1;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=100;spacingTop=5;" vertex="1" parent="vpc">
+          <mxGeometry x="740" y="390" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-payment-cloudfront" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="payment-companies" target="cloudfront"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-member-cloudfront" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="member-stores" target="cloudfront"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-enduser-cloudfront" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="enduser" target="cloudfront"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-office-cloudfront" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="office" target="cloudfront"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-cloudfront-route53" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="cloudfront" target="route53"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-cloudfront-apigw" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="cloudfront" target="api-gateway"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-cloudfront-s3content" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.3;" edge="1" parent="cloud" source="cloudfront" target="s3-content"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-apigw-elb" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="api-gateway" target="elb"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-elb-lambda" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="elb" target="lambda-traffic"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-lambda-ecs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-traffic" target="ecs"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

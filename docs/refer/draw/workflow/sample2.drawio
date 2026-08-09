@@ -1,0 +1,155 @@
+<mxfile host="OpenMemory" modified="2026-08-09T04:30:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="order-fulfilment-bpmn" name="Order fulfilment (BPMN swimlanes)">
+    <mxGraphModel dx="1600" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1950" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Inventory management system data box, floats above the Accounts lane -->
+        <mxCell id="box-inventory" value="Inventory management system" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E5E7EB;strokeColor=#6B7280;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="90" y="10" width="380" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Lanes / pools -->
+        <mxCell id="pool-accounts" value="Accounts" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;swimlaneFillColor=#DBEAFE;fillColor=#DBEAFE;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="0" y="90" width="1900" height="200" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pool-itemsrus" value="Items'R'us" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;swimlaneFillColor=#F1F5F9;fillColor=#F1F5F9;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="0" y="290" width="1900" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-warehouse" value="Warehouse" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;swimlaneFillColor=#D1FAE5;fillColor=#D1FAE5;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="pool-itemsrus">
+          <mxGeometry x="0" y="26" width="1900" height="147" as="geometry" />
+        </mxCell>
+        <mxCell id="lane-purchasing" value="Purchasing" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;swimlaneFillColor=#FEF9C3;fillColor=#FEF9C3;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="pool-itemsrus">
+          <mxGeometry x="0" y="173" width="1900" height="147" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pool-client" value="Client" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;swimlaneFillColor=#FEE2E2;fillColor=#FEE2E2;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="0" y="610" width="1900" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- Accounts lane elements -->
+        <mxCell id="evt-order-received" value="Order received" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="20" y="70" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="task-check-availability" value="Check availability" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="90" y="60" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-in-stock" value="" style="points=[[0.25,0.25,0],[0.5,0,0],[0.75,0.25,0],[1,0.5,0],[0.75,0.75,0],[0.5,1,0],[0.25,0.75,0],[0,0.5,0]];shape=mxgraph.bpmn.gateway2;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=rhombusPerimeter;outlineConnect=0;outline=none;symbol=none;gwType=exclusive;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="250" y="65" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="task-send-invoice" value="Send invoice" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="760" y="45" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="evt-await-payment" value="" style="ellipse;whiteSpace=wrap;html=1;fontSize=7;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="920" y="55" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-payment" value="" style="points=[[0.25,0.25,0],[0.5,0,0],[0.75,0.25,0],[1,0.5,0],[0.75,0.75,0],[0.5,1,0],[0.25,0.75,0],[0,0.5,0]];shape=mxgraph.bpmn.gateway2;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=rhombusPerimeter;outlineConnect=0;outline=none;symbol=none;gwType=exclusive;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="980" y="45" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="task-send-receipt" value="Send receipt" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="1070" y="115" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-reminder" value="" style="points=[[0.25,0.25,0],[0.5,0,0],[0.75,0.25,0],[1,0.5,0],[0.75,0.75,0],[0.5,1,0],[0.25,0.75,0],[0,0.5,0]];shape=mxgraph.bpmn.gateway2;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=rhombusPerimeter;outlineConnect=0;outline=none;symbol=none;gwType=exclusive;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="1230" y="45" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="task-send-reminder" value="Send reminder" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="1320" y="115" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="sub-legal-proceedings" value="Initiate legal proceedings" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;dashed=1;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="1470" y="45" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="evt-end" value="" style="ellipse;whiteSpace=wrap;html=1;fontSize=8;strokeWidth=3;fillColor=#000000;strokeColor=#000000;" vertex="1" parent="pool-accounts">
+          <mxGeometry x="1650" y="55" width="40" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Warehouse lane elements -->
+        <mxCell id="task-pack-items" value="Pack items" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-warehouse">
+          <mxGeometry x="250" y="40" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-order-complete" value="" style="points=[[0.25,0.25,0],[0.5,0,0],[0.75,0.25,0],[1,0.5,0],[0.75,0.75,0],[0.5,1,0],[0.25,0.75,0],[0,0.5,0]];shape=mxgraph.bpmn.gateway2;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=rhombusPerimeter;outlineConnect=0;outline=none;symbol=none;gwType=exclusive;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-warehouse">
+          <mxGeometry x="420" y="45" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="task-update-inventory" value="Update inventory" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-warehouse">
+          <mxGeometry x="760" y="32" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="task-send-parcel" value="Send parcel" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-warehouse">
+          <mxGeometry x="760" y="82" width="120" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Purchasing lane elements -->
+        <mxCell id="task-procure-items" value="Procure items from suppliers" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-purchasing">
+          <mxGeometry x="250" y="40" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="task-update-product-list" value="Update product list and inventory" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-purchasing">
+          <mxGeometry x="430" y="40" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="task-inform-client" value="Inform client" style="rounded=1;whiteSpace=wrap;html=1;arcSize=14;fontSize=9;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="lane-purchasing">
+          <mxGeometry x="610" y="40" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Client lane elements (message envelopes) -->
+        <mxCell id="env-order" value="Order" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="20" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="env-message" value="Message" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="610" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="env-items" value="Items" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="740" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="env-invoice" value="Invoice" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="800" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="env-payment" value="Payment" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="980" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="env-receipt" value="Receipt" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="1090" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="env-reminder" value="Reminder" style="points=[[0.145,0.145,0],[0.5,0,0],[0.855,0.145,0],[1,0.5,0],[0.855,0.855,0],[0.5,1,0],[0.145,0.855,0],[0,0.5,0]];shape=mxgraph.bpmn.event;html=1;verticalLabelPosition=bottom;labelBackgroundColor=#ffffff;verticalAlign=top;align=center;perimeter=ellipsePerimeter;outlineConnect=0;aspect=fixed;outline=standard;symbol=message;fontSize=8;fillColor=#FFFFFF;strokeColor=#000000;" vertex="1" parent="pool-client">
+          <mxGeometry x="1340" y="70" width="30" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Solid process-flow edges -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="evt-order-received" target="task-check-availability"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-check-availability" target="gw-in-stock"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" value="In stock" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-in-stock" target="task-pack-items"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" value="Items not in inventory" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-in-stock" target="task-procure-items"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-pack-items" target="gw-order-complete"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" value="Order complete" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-order-complete" target="task-update-inventory"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7" value="Missing items" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-order-complete" target="task-procure-items"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-update-inventory" target="task-send-parcel"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-send-parcel" target="task-send-invoice"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-send-invoice" target="evt-await-payment"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="evt-await-payment" target="gw-payment"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e12" value="Payment received" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-payment" target="task-send-receipt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e13" value="Payment late" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-payment" target="gw-reminder"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e14" value="First reminder" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-reminder" target="task-send-reminder"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e15" value="Reminder already sent" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="gw-reminder" target="sub-legal-proceedings"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;exitX=0.5;exitY=0;entryX=1;entryY=0.5;" edge="1" parent="1" source="task-send-reminder" target="evt-await-payment"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1380" y="30" /><mxPoint x="935" y="30" /></Array></mxGeometry></mxCell>
+        <mxCell id="e17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-send-receipt" target="evt-end"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="sub-legal-proceedings" target="evt-end"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e19" value="Delivery delayed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;exitX=0.5;exitY=0;entryX=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="task-procure-items" target="task-procure-items"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="320" y="15" /></Array></mxGeometry></mxCell>
+        <mxCell id="e20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-procure-items" target="task-update-product-list"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e21" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-update-product-list" target="task-inform-client"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e22" value="Item not available" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1" source="task-inform-client" target="task-pack-items"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Dashed data associations from the inventory system -->
+        <mxCell id="e23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="box-inventory" target="task-check-availability"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e24" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="box-inventory" target="task-update-inventory"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Dashed message associations up to the Client lane envelopes -->
+        <mxCell id="e25" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-order" target="evt-order-received"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e26" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-message" target="task-inform-client"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e27" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-items" target="task-send-parcel"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e28" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-invoice" target="task-send-invoice"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e29" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-payment" target="gw-payment"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-receipt" target="task-send-receipt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e31" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=3 2;endArrow=open;endFill=0;strokeColor=#666666;strokeWidth=1;" edge="1" parent="1" source="env-reminder" target="task-send-reminder"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
