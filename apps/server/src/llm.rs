@@ -116,6 +116,7 @@ pub(crate) async fn call_openai_compat(
     system: &str,
     user: &str,
     timeout: std::time::Duration,
+    max_tokens: u32,
     extra_header: Option<(&str, &str)>,
 ) -> Result<String> {
     let client = reqwest::Client::builder().timeout(timeout).build()?;
@@ -126,7 +127,7 @@ pub(crate) async fn call_openai_compat(
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
         "temperature": 0.0
     });
 
@@ -161,12 +162,13 @@ pub(crate) async fn call_anthropic(
     system: &str,
     user: &str,
     timeout: std::time::Duration,
+    max_tokens: u32,
 ) -> Result<String> {
     let client = reqwest::Client::builder().timeout(timeout).build()?;
 
     let body = serde_json::json!({
         "model": model,
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
         "system": system,
         "messages": [
             {"role": "user", "content": user}
@@ -298,8 +300,21 @@ pub(crate) async fn call_llm(
     timeout: std::time::Duration,
     cfg: &LlmConfig,
 ) -> Result<String> {
+    call_llm_with_max_tokens(system, user, timeout, cfg, 1024).await
+}
+
+pub(crate) async fn call_llm_with_max_tokens(
+    system: &str,
+    user: &str,
+    timeout: std::time::Duration,
+    cfg: &LlmConfig,
+    max_tokens: u32,
+) -> Result<String> {
+    let max_tokens = max_tokens.clamp(256, 4096);
     match cfg.provider.as_str() {
-        "anthropic" => call_anthropic(&cfg.api_key, &cfg.model, system, user, timeout).await,
+        "anthropic" => {
+            call_anthropic(&cfg.api_key, &cfg.model, system, user, timeout, max_tokens).await
+        }
         "openai" => {
             call_openai_compat(
                 "https://api.openai.com/v1",
@@ -308,6 +323,7 @@ pub(crate) async fn call_llm(
                 system,
                 user,
                 timeout,
+                max_tokens,
                 None,
             )
             .await
@@ -321,6 +337,7 @@ pub(crate) async fn call_llm(
                 system,
                 user,
                 timeout,
+                max_tokens,
                 Some(("HTTP-Referer", "https://github.com/openmemory/openmemory")),
             )
             .await
@@ -338,4 +355,3 @@ pub(crate) fn strip_fences(raw: &str) -> &str {
         .unwrap_or(cleaned);
     cleaned.strip_suffix("```").unwrap_or(cleaned).trim()
 }
-

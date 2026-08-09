@@ -1,7 +1,9 @@
 mod autofill;
+mod budget_ai;
 mod claude_usage;
 mod crypto;
 mod design_ai;
+mod design_budgets;
 mod falkordb;
 mod forecasts;
 mod llm;
@@ -164,6 +166,7 @@ struct ForecastProfilePayload {
     monthly_budget_usd: i64,
     stress_tolerance: String,
     usage_pattern: String,
+    engagement_percent: i32,
     planning_horizon_months: i32,
     annual_growth_percent: i32,
     notes: Option<String>,
@@ -179,6 +182,7 @@ impl From<ForecastProfilePayload> for forecasts::ForecastInput {
             monthly_budget_usd: value.monthly_budget_usd,
             stress_tolerance: value.stress_tolerance,
             usage_pattern: value.usage_pattern,
+            engagement_percent: value.engagement_percent,
             planning_horizon_months: value.planning_horizon_months,
             annual_growth_percent: value.annual_growth_percent,
             notes: value.notes,
@@ -930,6 +934,15 @@ enum McpRequest {
         forecast_profile_id: Option<Uuid>,
     },
 
+    #[serde(rename = "ai.budget_forecast")]
+    AiBudgetForecast {
+        design_id: Uuid,
+        #[serde(default)]
+        forecast_profile_id: Option<Uuid>,
+        #[serde(default)]
+        conditions: Option<String>,
+    },
+
     #[serde(rename = "graph.get_llm_config")]
     GraphGetLlmConfig {},
 
@@ -1173,6 +1186,12 @@ enum McpResponse {
     #[serde(rename = "ai.design_diagram.result")]
     AiDesignDiagramResult {
         source: String,
+        model: String,
+    },
+
+    #[serde(rename = "ai.budget_forecast.result")]
+    AiBudgetForecastResult {
+        estimate: budget_ai::BudgetEstimate,
         model: String,
     },
 
@@ -1471,6 +1490,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/lessons", get(search_lessons))
         .route("/projects/:id/designs", get(list_project_designs).post(create_project_design))
         .route("/projects/:id/designs/:design_id", axum::routing::put(update_project_design).delete(delete_project_design))
+        .route("/projects/:id/designs/:design_id/budgets", get(list_design_budgets).post(create_design_budget))
+        .route("/projects/:id/designs/:design_id/budgets/:budget_id", axum::routing::put(update_design_budget).delete(delete_design_budget))
         .route("/projects/:id/design-assets", get(list_project_design_assets))
         .route("/forecast-profiles", get(list_forecast_profiles).post(create_forecast_profile))
         .route("/forecast-profiles/:id", axum::routing::put(update_forecast_profile).delete(delete_forecast_profile))
@@ -1909,6 +1930,8 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .execute(db).await.ok();
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_designs_tags ON project_designs USING gin(tags)")
         .execute(db).await.ok();
+
+    design_budgets::ensure_table(db).await?;
 
     workflows::ensure_table(db).await?;
 
@@ -4375,6 +4398,39 @@ async fn mcp(
             }
         }
 
+        McpRequest::AiBudgetForecast { design_id, forecast_profile_id, conditions } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "authentication required"}))));
+            }
+            let design = sqlx::query_as::<_, (String, String, String)>(
+                "SELECT title, kind, source FROM project_designs WHERE id = $1",
+            ).bind(design_id).fetch_optional(&state.db).await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+            let Some((title, kind, source)) = design else {
+                return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))));
+            };
+            let mut planning_conditions = conditions.unwrap_or_default();
+            if let Some(profile_id) = forecast_profile_id {
+                let profile = forecasts::get(&state.db, profile_id).await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+                let Some(profile) = profile else {
+                    return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "forecast profile not found"}))));
+                };
+                planning_conditions = format!("{}\n{}", forecasts::design_context(&profile), planning_conditions);
+            }
+            if planning_conditions.trim().is_empty() {
+                return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "choose a forecast profile or provide custom conditions"}))));
+            }
+            let cfg = load_llm_config(&state.db, &state.encryption_key).await.ok_or_else(|| (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+            ))?;
+            match budget_ai::estimate(&title, &kind, &source, &planning_conditions, &cfg).await {
+                Ok(estimate) => Ok((StatusCode::OK, Json(McpResponse::AiBudgetForecastResult { estimate, model: cfg.model }))),
+                Err(e) => Err((StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("LLM request failed: {e}")})))),
+            }
+        }
+
         McpRequest::AiDesignDiagram { prompt, kind, format, forecast_profile_id } => {
             if !is_authenticated(&headers, &state.api_token) {
                 return Err((
@@ -6057,6 +6113,95 @@ async fn search_lessons(
             error!("search_lessons error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
+    }
+}
+
+async fn design_belongs_to_project(db: &PgPool, project_id: Uuid, design_id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM project_designs WHERE id = $1 AND project_id = $2)",
+    ).bind(design_id).bind(project_id).fetch_one(db).await
+}
+
+async fn list_design_budgets(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match design_belongs_to_project(&state.db, project_id, design_id).await {
+        Ok(false) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(true) => {}
+    }
+    match design_budgets::list(&state.db, design_id).await {
+        Ok(forecasts) => Json(serde_json::json!({"forecasts": forecasts})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn create_design_budget(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id)): Path<(Uuid, Uuid)>,
+    Json(mut input): Json<design_budgets::BudgetInput>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match design_belongs_to_project(&state.db, project_id, design_id).await {
+        Ok(false) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(true) => {}
+    }
+    input.created_by = Some("human".into());
+    if let Err(message) = input.validate() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": message}))).into_response();
+    }
+    match design_budgets::create(&state.db, design_id, &input).await {
+        Ok(forecast) => (StatusCode::CREATED, Json(serde_json::json!(forecast))).into_response(),
+        Err(e) if e.to_string().contains("foreign key") => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "forecast profile not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_design_budget(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id, budget_id)): Path<(Uuid, Uuid, Uuid)>,
+    Json(input): Json<design_budgets::BudgetInput>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match design_belongs_to_project(&state.db, project_id, design_id).await {
+        Ok(false) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(true) => {}
+    }
+    if let Err(message) = input.validate() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": message}))).into_response();
+    }
+    match design_budgets::update(&state.db, design_id, budget_id, &input).await {
+        Ok(Some(forecast)) => Json(serde_json::json!(forecast)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "budget forecast not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_design_budget(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id, budget_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let result = sqlx::query(
+        "DELETE FROM design_budget_forecasts b USING project_designs d \
+         WHERE b.id = $1 AND b.design_id = $2 AND d.id = b.design_id AND d.project_id = $3 RETURNING b.id",
+    ).bind(budget_id).bind(design_id).bind(project_id).fetch_optional(&state.db).await;
+    match result {
+        Ok(Some(_)) => Json(serde_json::json!({"deleted": true})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "budget forecast not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }
 

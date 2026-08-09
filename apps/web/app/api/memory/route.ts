@@ -22,6 +22,7 @@ export async function POST(request: Request) {
       'graph.analyze_all',
       'ai.autofill',
       'ai.design_diagram',
+      'ai.budget_forecast',
     ]);
     if (body?.type && AUTH_REQUIRED.has(body.type)) {
       headers['Authorization'] = `Bearer ${API_TOKEN}`;

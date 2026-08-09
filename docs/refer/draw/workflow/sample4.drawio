@@ -1,0 +1,107 @@
+<mxfile host="OpenMemory" modified="2026-08-09T08:00:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="multi-agent-research-sequence" name="Multi-agent research system">
+    <mxGraphModel dx="1400" dy="1050" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1380" pageHeight="1030" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Lifelines -->
+        <mxCell id="ll-user" value="User" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#F5F5F5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+        <mxCell id="ll-system" value="System" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#E8F5F0;strokeColor=#2E8B75;" vertex="1" parent="1">
+          <mxGeometry x="240" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+        <mxCell id="ll-lead" value="LeadResearcher" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#E8F5F0;strokeColor=#2E8B75;" vertex="1" parent="1">
+          <mxGeometry x="440" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+        <mxCell id="ll-sub1" value="Subagent1" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#DFF3EA;strokeColor=#2E8B75;" vertex="1" parent="1">
+          <mxGeometry x="640" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+        <mxCell id="ll-sub2" value="Subagent2" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#DFF3EA;strokeColor=#2E8B75;" vertex="1" parent="1">
+          <mxGeometry x="840" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+        <mxCell id="ll-memory" value="Memory" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#0E9A76;fontColor=#FFFFFF;strokeColor=#0E9A76;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+        <mxCell id="ll-citation" value="CitationAgent" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;dropTarget=0;fontStyle=1;fontSize=10;fillColor=#0E9A76;fontColor=#FFFFFF;strokeColor=#0E9A76;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="20" width="100" height="980" as="geometry" />
+        </mxCell>
+
+        <!-- Loop frame: Iterative Research Process (listed early so messages paint on top) -->
+        <mxCell id="frame-iterative" value="Iterative Research Process" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fillColor=none;strokeColor=#009900;dashed=1;fontStyle=1;fontSize=9;spacingLeft=6;spacingTop=2;" vertex="1" parent="1">
+          <mxGeometry x="430" y="170" width="720" height="560" as="geometry" />
+        </mxCell>
+
+        <!-- Messages -->
+        <mxCell id="m1" value="send user query" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="90" y="100" as="sourcePoint" /><mxPoint x="290" y="100" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m2" value="Create Lead Researcher" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="290" y="145" as="sourcePoint" /><mxPoint x="490" y="145" as="targetPoint" /></mxGeometry>
+        </mxCell>
+
+        <mxCell id="m3" value="think (plan approach)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="490" y="190" as="sourcePoint" /><mxPoint x="490" y="215" as="targetPoint" /><Array as="points"><mxPoint x="530" y="202" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="m4" value="save plan" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="490" y="235" as="sourcePoint" /><mxPoint x="1090" y="235" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m5" value="retrieve context" style="html=1;dashed=1;endArrow=open;endFill=0;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="1090" y="280" as="sourcePoint" /><mxPoint x="490" y="280" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m6" value="create subagent for aspect A" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="490" y="325" as="sourcePoint" /><mxPoint x="690" y="325" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m7" value="create subagent for aspect B" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="490" y="370" as="sourcePoint" /><mxPoint x="890" y="370" as="targetPoint" /></mxGeometry>
+        </mxCell>
+
+        <mxCell id="m8" value="web_search" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="690" y="415" as="sourcePoint" /><mxPoint x="690" y="440" as="targetPoint" /><Array as="points"><mxPoint x="730" y="427" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="m9" value="think (evaluate)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="690" y="460" as="sourcePoint" /><mxPoint x="690" y="485" as="targetPoint" /><Array as="points"><mxPoint x="730" y="472" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="m10" value="complete_task" style="html=1;dashed=1;endArrow=open;endFill=0;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="690" y="505" as="sourcePoint" /><mxPoint x="490" y="505" as="targetPoint" /></mxGeometry>
+        </mxCell>
+
+        <mxCell id="m11" value="web_search" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="890" y="550" as="sourcePoint" /><mxPoint x="890" y="575" as="targetPoint" /><Array as="points"><mxPoint x="930" y="562" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="m12" value="think (evaluate)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="890" y="595" as="sourcePoint" /><mxPoint x="890" y="620" as="targetPoint" /><Array as="points"><mxPoint x="930" y="607" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="m13" value="complete_task" style="html=1;dashed=1;endArrow=open;endFill=0;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="890" y="640" as="sourcePoint" /><mxPoint x="490" y="640" as="targetPoint" /></mxGeometry>
+        </mxCell>
+
+        <mxCell id="m14" value="think (synthesize results)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="490" y="685" as="sourcePoint" /><mxPoint x="490" y="710" as="targetPoint" /><Array as="points"><mxPoint x="530" y="697" /></Array></mxGeometry>
+        </mxCell>
+
+        <mxCell id="decision-more-research" value="More research needed?&#10;(X exit loop / ✓ continue loop)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=8;fillColor=#F0FFF0;strokeColor=#009900;align=center;" vertex="1" parent="1">
+          <mxGeometry x="480" y="730" width="300" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="m15" value="complete_task (research result)" style="html=1;dashed=1;endArrow=open;endFill=0;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="490" y="810" as="sourcePoint" /><mxPoint x="290" y="810" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m16" value="Process documents + research report to identify locations for citations" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="1290" y="855" as="sourcePoint" /><mxPoint x="290" y="855" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m17" value="Return report with citations inserted" style="html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="1290" y="900" as="sourcePoint" /><mxPoint x="290" y="900" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="m18" value="Persist results" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;endFill=1;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="290" y="925" as="sourcePoint" /><mxPoint x="290" y="950" as="targetPoint" /><Array as="points"><mxPoint x="330" y="937" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="m19" value="Return research results with citations" style="html=1;dashed=1;endArrow=open;endFill=0;strokeWidth=1;fontSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="290" y="975" as="sourcePoint" /><mxPoint x="90" y="975" as="targetPoint" /></mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

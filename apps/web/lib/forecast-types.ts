@@ -11,6 +11,7 @@ export interface ForecastProfile {
   monthly_budget_usd: number;
   stress_tolerance: StressTolerance;
   usage_pattern: UsagePattern;
+  engagement_percent: number;
   planning_horizon_months: number;
   annual_growth_percent: number;
   notes: string | null;
@@ -25,8 +26,16 @@ export const APPLICATION_LABELS: Record<ApplicationType, string> = {
   internal: 'Internal tool', ecommerce: 'E-commerce', other: 'Other',
 };
 
+// Short label + plain-language hint for each traffic shape, since the bare
+// enum values ("bursty", "seasonal") read as jargon in the UI.
+export const USAGE_PATTERN_LABELS: Record<UsagePattern, { label: string; hint: string }> = {
+  steady: { label: 'Steady', hint: 'Consistent traffic day to day' },
+  bursty: { label: 'Bursty', hint: 'Spiky, peak-driven traffic' },
+  seasonal: { label: 'Seasonal', hint: 'Varies by time of year' },
+};
+
 export const EMPTY_FORECAST: ForecastDraft = {
   name: '', description: null, application_type: 'web_saas', user_count: 1000,
   monthly_budget_usd: 500, stress_tolerance: 'balanced', usage_pattern: 'steady',
-  planning_horizon_months: 12, annual_growth_percent: 50, notes: null,
+  engagement_percent: 100, planning_horizon_months: 12, annual_growth_percent: 50, notes: null,
 };

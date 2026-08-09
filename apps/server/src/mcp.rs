@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod crypto;
+mod design_budgets;
 mod falkordb;
 mod forecasts;
 mod project_graphs;
@@ -354,6 +355,21 @@ impl McpServer {
             .execute(&db).await.ok();
         sqlx::query("ALTER TABLE project_graphs ALTER COLUMN canonical_path DROP NOT NULL")
             .execute(&db).await.ok();
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS project_designs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                project_id UUID NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+                title TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'other',
+                diagram_type TEXT NOT NULL DEFAULT 'mermaid', source TEXT NOT NULL DEFAULT '',
+                notes TEXT, tags TEXT[] NOT NULL DEFAULT '{}', sort_order INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL DEFAULT 'user',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )"#,
+        ).execute(&db).await.context("failed to create project_designs table")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_designs_project_id ON project_designs(project_id)")
+            .execute(&db).await.ok();
+        design_budgets::ensure_table(&db).await?;
 
         // Project tasks table
         sqlx::query(
@@ -1249,11 +1265,12 @@ impl McpServer {
                             "monthly_budget_usd": {"type": "integer", "minimum": 0},
                             "stress_tolerance": {"type": "string", "enum": ["conservative", "balanced", "aggressive"], "description": "Conservative favors more headroom; aggressive favors lower cost and accepts operational pressure."},
                             "usage_pattern": {"type": "string", "enum": ["steady", "bursty", "seasonal"]},
+                            "engagement_percent": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Stickiness: % of monthly active users active on a typical day (e.g. 15 of 30 days = 50)."},
                             "planning_horizon_months": {"type": "integer", "minimum": 1, "maximum": 120},
                             "annual_growth_percent": {"type": "integer", "minimum": 0, "maximum": 1000},
                             "notes": {"type": "string"}
                         },
-                        "required": ["name", "application_type", "user_count", "monthly_budget_usd", "stress_tolerance", "usage_pattern", "planning_horizon_months", "annual_growth_percent"]
+                        "required": ["name", "application_type", "user_count", "monthly_budget_usd", "stress_tolerance", "usage_pattern", "engagement_percent", "planning_horizon_months", "annual_growth_percent"]
                     }
                 },
                 {
@@ -1268,16 +1285,63 @@ impl McpServer {
                             "user_count": {"type": "integer"}, "monthly_budget_usd": {"type": "integer"},
                             "stress_tolerance": {"type": "string", "enum": ["conservative", "balanced", "aggressive"]},
                             "usage_pattern": {"type": "string", "enum": ["steady", "bursty", "seasonal"]},
+                            "engagement_percent": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Stickiness: % of monthly active users active on a typical day (e.g. 15 of 30 days = 50)."},
                             "planning_horizon_months": {"type": "integer"}, "annual_growth_percent": {"type": "integer"},
                             "notes": {"type": "string"}
                         },
-                        "required": ["id", "name", "application_type", "user_count", "monthly_budget_usd", "stress_tolerance", "usage_pattern", "planning_horizon_months", "annual_growth_percent"]
+                        "required": ["id", "name", "application_type", "user_count", "monthly_budget_usd", "stress_tolerance", "usage_pattern", "engagement_percent", "planning_horizon_months", "annual_growth_percent"]
                     }
                 },
                 {
                     "name": "forecast_delete",
                     "description": "Delete a reusable forecast profile permanently.",
                     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+                },
+                {
+                    "name": "design_budget_list",
+                    "description": "List saved monthly budget forecasts for a design, including AWS service line items and the usage profile or custom conditions used.",
+                    "inputSchema": {"type": "object", "properties": {"design_id": {"type": "string"}}, "required": ["design_id"]}
+                },
+                {
+                    "name": "design_budget_create",
+                    "description": "Add a monthly budget forecast to a design. Use forecast_profile_id to base it on a saved Settings > Forecasts profile, conditions for custom assumptions, or both. monthly_total is derived from line_items.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "design_id": {"type": "string"}, "name": {"type": "string"},
+                            "forecast_profile_id": {"type": "string"}, "conditions": {"type": "string"},
+                            "currency": {"type": "string", "default": "USD"},
+                            "line_items": {"type": "array", "items": {"type": "object", "properties": {
+                                "service": {"type": "string"}, "usage": {"type": "string"},
+                                "monthly_cost_cents": {"type": "integer", "minimum": 0}, "notes": {"type": "string"}
+                            }, "required": ["service", "usage", "monthly_cost_cents"]}},
+                            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                            "pricing_basis": {"type": "string"}
+                        },
+                        "required": ["design_id", "name", "line_items"]
+                    }
+                },
+                {
+                    "name": "design_budget_update",
+                    "description": "Replace a design budget forecast's assumptions and line items. monthly_total is recalculated from line_items.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "design_id": {"type": "string"}, "budget_id": {"type": "string"}, "name": {"type": "string"},
+                            "forecast_profile_id": {"type": "string"}, "conditions": {"type": "string"}, "currency": {"type": "string"},
+                            "line_items": {"type": "array", "items": {"type": "object", "properties": {
+                                "service": {"type": "string"}, "usage": {"type": "string"},
+                                "monthly_cost_cents": {"type": "integer", "minimum": 0}, "notes": {"type": "string"}
+                            }, "required": ["service", "usage", "monthly_cost_cents"]}},
+                            "confidence": {"type": "string", "enum": ["low", "medium", "high"]}, "pricing_basis": {"type": "string"}
+                        },
+                        "required": ["design_id", "budget_id", "name", "line_items"]
+                    }
+                },
+                {
+                    "name": "design_budget_delete",
+                    "description": "Delete a saved design budget forecast permanently.",
+                    "inputSchema": {"type": "object", "properties": {"design_id": {"type": "string"}, "budget_id": {"type": "string"}}, "required": ["design_id", "budget_id"]}
                 },
                 {
                     "name": "project_list",
@@ -1520,6 +1584,10 @@ impl McpServer {
             "forecast_create" => self.forecast_create(arguments).await,
             "forecast_update" => self.forecast_update(arguments).await,
             "forecast_delete" => self.forecast_delete(arguments).await,
+            "design_budget_list" => self.design_budget_list(arguments).await,
+            "design_budget_create" => self.design_budget_create(arguments).await,
+            "design_budget_update" => self.design_budget_update(arguments).await,
+            "design_budget_delete" => self.design_budget_delete(arguments).await,
             "project_list" => self.project_list(arguments).await,
             "project_create" => self.project_create(arguments).await,
             "project_task_list" => self.project_task_list(arguments).await,
@@ -3582,6 +3650,55 @@ impl McpServer {
             .bind(id).fetch_optional(&self.db).await?;
         deleted.context("forecast profile not found")?;
         Ok(json!({"content": [{"type": "text", "text": format!("Deleted forecast profile {id}.")}]}))
+    }
+
+    async fn design_budget_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let design_id = Uuid::parse_str(args["design_id"].as_str().context("missing design_id")?)
+            .context("invalid design_id")?;
+        let forecasts = design_budgets::list(&self.db, design_id).await?;
+        let text = if forecasts.is_empty() { "No budget forecasts saved for this design.".into() }
+            else { serde_json::to_string_pretty(&forecasts)? };
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn design_budget_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let design_id = Uuid::parse_str(args["design_id"].as_str().context("missing design_id")?)
+            .context("invalid design_id")?;
+        let mut input: design_budgets::BudgetInput = serde_json::from_value(args.clone())
+            .context("invalid budget forecast fields")?;
+        input.created_by = Some("agent".into());
+        input.validate().map_err(anyhow::Error::msg)?;
+        let forecast = design_budgets::create(&self.db, design_id, &input).await?;
+        Ok(json!({"content": [{"type": "text", "text": format!(
+            "Created design budget '{}' [id: {}], estimated at {:.2} {} per month.",
+            forecast.name, forecast.id, forecast.monthly_total_cents as f64 / 100.0, forecast.currency
+        )}]}))
+    }
+
+    async fn design_budget_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let design_id = Uuid::parse_str(args["design_id"].as_str().context("missing design_id")?)
+            .context("invalid design_id")?;
+        let budget_id = Uuid::parse_str(args["budget_id"].as_str().context("missing budget_id")?)
+            .context("invalid budget_id")?;
+        let input: design_budgets::BudgetInput = serde_json::from_value(args.clone())
+            .context("invalid budget forecast fields")?;
+        input.validate().map_err(anyhow::Error::msg)?;
+        let forecast = design_budgets::update(&self.db, design_id, budget_id, &input).await?
+            .context("budget forecast not found")?;
+        Ok(json!({"content": [{"type": "text", "text": format!(
+            "Updated design budget '{}' [id: {}].", forecast.name, forecast.id
+        )}]}))
+    }
+
+    async fn design_budget_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let design_id = Uuid::parse_str(args["design_id"].as_str().context("missing design_id")?)
+            .context("invalid design_id")?;
+        let budget_id = Uuid::parse_str(args["budget_id"].as_str().context("missing budget_id")?)
+            .context("invalid budget_id")?;
+        let deleted = sqlx::query("DELETE FROM design_budget_forecasts WHERE id = $1 AND design_id = $2 RETURNING id")
+            .bind(budget_id).bind(design_id).fetch_optional(&self.db).await?;
+        deleted.context("budget forecast not found")?;
+        Ok(json!({"content": [{"type": "text", "text": format!("Deleted design budget {budget_id}.")}]}))
     }
 
     async fn project_list(&mut self, _args: &serde_json::Value) -> Result<serde_json::Value> {

@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Select,
   SelectContent,
@@ -34,7 +35,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, RefreshCw, Pencil, Trash2, Palette, Sparkles, Expand, Shrink } from 'lucide-react';
+import { Plus, RefreshCw, Pencil, Trash2, Palette, Sparkles, Expand, Shrink, WalletCards, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import { MermaidDiagram } from '@/components/mermaid-diagram';
 import { DesignCanvas } from '@/components/design-canvas';
@@ -69,6 +70,7 @@ import {
 } from '@/lib/mermaid-layout-overrides';
 import { drawioStarterSource, isDrawioStarterSource } from '@/lib/drawio';
 import type { ForecastProfile } from '@/lib/forecast-types';
+import { DesignBudgetSheet } from '@/components/design-budget-sheet';
 
 // The editor/preview routing decision (Decision 3): draw.io uses the same mxGraph document in its
 // editor and viewer, React Flow designs are always 'canvas';
@@ -156,6 +158,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const [designs, setDesigns] = useState<Design[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [isBudgetOpen, setIsBudgetOpen] = useState(false);
 
   // Preview fullscreen — same Fullscreen API pattern as mermaid-diagram.tsx's own toggle,
   // applied here to the whole preview block (title/badge/Edit/Delete row + canvas) rather than
@@ -605,8 +608,22 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   <Badge variant="outline" className={`text-xs ${designKindMeta(selectedDesign.kind).color}`}>
                     {designKindMeta(selectedDesign.kind).label}
                   </Badge>
+                  {selectedDesign.notes && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-sm whitespace-pre-wrap text-left">
+                        {selectedDesign.notes}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
                 <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setIsBudgetOpen(true)}>
+                    <WalletCards className="h-4 w-4 mr-2" />
+                    Budget
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => openEdit(selectedDesign)}>
                     <Pencil className="h-4 w-4 mr-2" />
                     Edit
@@ -624,9 +641,6 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   </Button>
                 </div>
               </div>
-              {selectedDesign.notes && (
-                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{selectedDesign.notes}</p>
-              )}
               <div className="rounded-md p-3 bg-muted/20 flex-1 min-h-0 overflow-hidden">
                 {(() => {
                   if (selectedDesign.diagram_type === 'drawio') {
@@ -1187,6 +1201,13 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <DesignBudgetSheet
+        open={isBudgetOpen}
+        onOpenChange={setIsBudgetOpen}
+        projectId={projectId}
+        design={selectedDesign}
+      />
     </div>
   );
 }
@@ -1205,7 +1226,7 @@ function ForecastProfileSelect({ profiles, value, onChange }: {
         <SelectItem value="none">No usage forecast</SelectItem>
         {profiles.map((profile) => (
           <SelectItem key={profile.id} value={profile.id}>
-            {profile.name} · {profile.user_count.toLocaleString()} users · ${profile.monthly_budget_usd.toLocaleString()}/mo
+            {profile.name} · {profile.user_count.toLocaleString()} MAU · ${profile.monthly_budget_usd.toLocaleString()}/mo
           </SelectItem>
         ))}
       </SelectContent>

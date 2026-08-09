@@ -20,6 +20,7 @@ pub struct ForecastProfile {
     pub monthly_budget_usd: i64,
     pub stress_tolerance: String,
     pub usage_pattern: String,
+    pub engagement_percent: i32,
     pub planning_horizon_months: i32,
     pub annual_growth_percent: i32,
     pub notes: Option<String>,
@@ -36,6 +37,7 @@ pub struct ForecastInput {
     pub monthly_budget_usd: i64,
     pub stress_tolerance: String,
     pub usage_pattern: String,
+    pub engagement_percent: i32,
     pub planning_horizon_months: i32,
     pub annual_growth_percent: i32,
     pub notes: Option<String>,
@@ -54,6 +56,9 @@ impl ForecastInput {
         }
         if !USAGE_PATTERNS.contains(&self.usage_pattern.as_str()) {
             return Err("invalid usage_pattern".into());
+        }
+        if !(1..=100).contains(&self.engagement_percent) {
+            return Err("engagement_percent must be between 1 and 100".into());
         }
         if !(1..=1_000_000_000).contains(&self.user_count) {
             return Err("user_count must be between 1 and 1,000,000,000".into());
@@ -83,6 +88,7 @@ pub async fn ensure_table(db: &PgPool) -> anyhow::Result<()> {
             monthly_budget_usd      BIGINT NOT NULL CHECK (monthly_budget_usd >= 0),
             stress_tolerance        TEXT NOT NULL,
             usage_pattern           TEXT NOT NULL,
+            engagement_percent      INTEGER NOT NULL DEFAULT 100,
             planning_horizon_months INTEGER NOT NULL,
             annual_growth_percent   INTEGER NOT NULL DEFAULT 0,
             notes                   TEXT,
@@ -94,6 +100,10 @@ pub async fn ensure_table(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .context("failed to create forecast_profiles table")?;
+    sqlx::query("ALTER TABLE forecast_profiles ADD COLUMN IF NOT EXISTS engagement_percent INTEGER NOT NULL DEFAULT 100")
+        .execute(db)
+        .await
+        .context("failed to add engagement_percent column")?;
     Ok(())
 }
 
@@ -119,8 +129,8 @@ pub async fn create(db: &PgPool, input: &ForecastInput) -> anyhow::Result<Foreca
     sqlx::query_as::<_, ForecastProfile>(
         r#"INSERT INTO forecast_profiles
            (name, description, application_type, user_count, monthly_budget_usd,
-            stress_tolerance, usage_pattern, planning_horizon_months, annual_growth_percent, notes)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *"#,
+            stress_tolerance, usage_pattern, engagement_percent, planning_horizon_months, annual_growth_percent, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *"#,
     )
     .bind(input.name.trim())
     .bind(&input.description)
@@ -129,6 +139,7 @@ pub async fn create(db: &PgPool, input: &ForecastInput) -> anyhow::Result<Foreca
     .bind(input.monthly_budget_usd)
     .bind(&input.stress_tolerance)
     .bind(&input.usage_pattern)
+    .bind(input.engagement_percent)
     .bind(input.planning_horizon_months)
     .bind(input.annual_growth_percent)
     .bind(&input.notes)
@@ -142,12 +153,12 @@ pub async fn update(db: &PgPool, id: Uuid, input: &ForecastInput) -> anyhow::Res
     sqlx::query_as::<_, ForecastProfile>(
         r#"UPDATE forecast_profiles SET name=$1, description=$2, application_type=$3,
            user_count=$4, monthly_budget_usd=$5, stress_tolerance=$6, usage_pattern=$7,
-           planning_horizon_months=$8, annual_growth_percent=$9, notes=$10, updated_at=NOW()
-           WHERE id=$11 RETURNING *"#,
+           engagement_percent=$8, planning_horizon_months=$9, annual_growth_percent=$10, notes=$11, updated_at=NOW()
+           WHERE id=$12 RETURNING *"#,
     )
     .bind(input.name.trim()).bind(&input.description).bind(&input.application_type)
     .bind(input.user_count).bind(input.monthly_budget_usd).bind(&input.stress_tolerance)
-    .bind(&input.usage_pattern).bind(input.planning_horizon_months)
+    .bind(&input.usage_pattern).bind(input.engagement_percent).bind(input.planning_horizon_months)
     .bind(input.annual_growth_percent).bind(&input.notes).bind(id)
     .fetch_optional(db).await.context("failed to update forecast profile")
 }
@@ -155,10 +166,11 @@ pub async fn update(db: &PgPool, id: Uuid, input: &ForecastInput) -> anyhow::Res
 pub fn design_context(profile: &ForecastProfile) -> String {
     format!(
         "Planning forecast: profile={}; application_type={}; users={}; monthly_budget_usd={}; \
-         stress_tolerance={}; usage_pattern={}; horizon_months={}; annual_growth_percent={}%.{}",
+         stress_tolerance={}; usage_pattern={}; engagement={}% of MAU active on a typical day; \
+         horizon_months={}; annual_growth_percent={}%.{}",
         profile.name, profile.application_type, profile.user_count, profile.monthly_budget_usd,
-        profile.stress_tolerance, profile.usage_pattern, profile.planning_horizon_months,
-        profile.annual_growth_percent,
+        profile.stress_tolerance, profile.usage_pattern, profile.engagement_percent,
+        profile.planning_horizon_months, profile.annual_growth_percent,
         profile.notes.as_deref().map(|n| format!(" Additional constraints: {n}")).unwrap_or_default()
     )
 }
@@ -170,7 +182,7 @@ mod tests {
     fn valid_input() -> ForecastInput {
         ForecastInput { name: "Growth SaaS".into(), description: None, application_type: "web_saas".into(),
             user_count: 10_000, monthly_budget_usd: 2_000, stress_tolerance: "balanced".into(),
-            usage_pattern: "bursty".into(), planning_horizon_months: 18,
+            usage_pattern: "bursty".into(), engagement_percent: 50, planning_horizon_months: 18,
             annual_growth_percent: 80, notes: None }
     }
 
@@ -180,5 +192,14 @@ mod tests {
         let mut invalid = valid_input();
         invalid.user_count = 0;
         assert!(invalid.validate().unwrap_err().contains("user_count"));
+    }
+
+    #[test]
+    fn validates_engagement_percent_boundaries() {
+        let mut invalid = valid_input();
+        invalid.engagement_percent = 0;
+        assert!(invalid.validate().unwrap_err().contains("engagement_percent"));
+        invalid.engagement_percent = 101;
+        assert!(invalid.validate().unwrap_err().contains("engagement_percent"));
     }
 }
