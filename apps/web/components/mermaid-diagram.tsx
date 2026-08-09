@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTheme } from 'next-themes';
 import mermaid from 'mermaid';
+import elkLayouts from '@mermaid-js/layout-elk';
 import { AlertTriangle, ZoomIn, ZoomOut, RotateCcw, Maximize2, Expand, Shrink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import awsIconPack from '@/lib/aws-icon-pack.json';
@@ -16,6 +17,7 @@ interface MermaidDiagramProps {
 
 let renderCounter = 0;
 let iconPacksRegistered = false;
+let layoutLoadersRegistered = false;
 
 function ensureIconPacksRegistered() {
   if (iconPacksRegistered) return;
@@ -24,6 +26,21 @@ function ensureIconPacksRegistered() {
   // this in module-level state, not per-render.
   mermaid.registerIconPacks([{ name: 'logos', icons: awsIconPack as never }]);
   iconPacksRegistered = true;
+}
+
+function ensureLayoutLoadersRegistered() {
+  if (layoutLoadersRegistered) return;
+  // ELK gives markedly better routing/nesting than mermaid's built-in dagre renderer on the
+  // container-heavy diagrams this app draws — same registration the mermaid Live Editor does
+  // (see ~/projects/mermaid-live-editor/src/lib/util/mermaid.ts). Module-level state like the
+  // icon packs above, so it registers once per page rather than per render.
+  //
+  // Note this only reaches diagrams that go through mermaid's pluggable layout system —
+  // `flowchart` and friends. `architecture-beta` runs its own cytoscape-based layout internally
+  // and ignores `layout` entirely, so an architecture diagram renders identically with or
+  // without this. Registered anyway for every other diagram type.
+  mermaid.registerLayoutLoaders(elkLayouts);
+  layoutLoadersRegistered = true;
 }
 
 const MIN_ZOOM = 0.25;
@@ -56,12 +73,16 @@ export function MermaidDiagram({ source }: MermaidDiagramProps) {
     }
 
     ensureIconPacksRegistered();
+    ensureLayoutLoadersRegistered();
 
     mermaid.initialize({
       startOnLoad: false,
       // Mandatory: strict mode disallows click handlers / raw HTML injected via node labels.
       securityLevel: 'strict',
       theme: resolvedTheme === 'dark' ? 'dark' : 'default',
+      // Honored by diagram types using mermaid's pluggable layout system (flowchart et al.);
+      // architecture-beta ignores it and uses its own internal layout.
+      layout: 'elk',
     });
 
     (async () => {

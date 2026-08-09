@@ -78,18 +78,6 @@ function computeEditorMode(diagramType: DesignDiagramType, source: string): Desi
   return isArchitectureSource(source) ? 'arch' : 'mermaid';
 }
 
-/** Builds the read-only preview graph for an architecture-beta mermaid design: parse -> derive
- * layout -> reapply saved position overrides. `null` when the source doesn't actually parse into
- * anything (caller falls back to `MermaidDiagram`'s own error UI, which beats an empty canvas). */
-function buildArchPreviewGraph(source: string): DesignGraph | null {
-  const parse = parseArchitectureDiagram(source);
-  if (!parse.ok) return null;
-  const graph = architectureToDesignGraph(parse);
-  if (graph.nodes.length === 0) return null;
-  const laidOut = applyNestedLayout(graph.nodes, graph.edges);
-  return { nodes: applyOverrides(laidOut, parseLayoutComment(source)), edges: graph.edges };
-}
-
 /** Remount key for the derived-mode canvas: a hash of structure/labels/icons — everything except
  * positions — so editing a label remounts the canvas (cheap at this scale) while dragging (which
  * only changes override state, never this hash) does not. */
@@ -133,9 +121,10 @@ const EMPTY_EDIT_FORM = {
 };
 
 const DIAGRAM_TYPE_LABELS: Record<DesignDiagramType, string> = {
-  // AWS/architecture diagrams (architecture-beta) render on a draggable canvas even in this
-  // format — the mermaid text stays the source of truth, positions persist as a trailing comment.
-  mermaid: 'Mermaid text (draggable canvas for AWS/architecture diagrams)',
+  // Rendered by mermaid itself. AWS/architecture diagrams additionally get an "Adjust positions"
+  // view in the editor, where the same text drives a draggable canvas and nudged positions persist
+  // as a trailing `%%` comment — but mermaid's own rendering stays what the design actually looks like.
+  mermaid: 'Mermaid text',
   reactflow: 'React Flow canvas',
 };
 
@@ -195,6 +184,11 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   // drives `archCanvasKey` below) doesn't change when only positions are cleared.
   const [archResetNonce, setArchResetNonce] = useState(0);
   const [archCorruptWarning, setArchCorruptWarning] = useState(false);
+  // Which surface the edit dialog's right pane shows. 'mermaid' is the default because mermaid's
+  // own rendering is the real output; 'canvas' is the opt-in position-editing detour. Staying on
+  // 'mermaid' leaves `archGraphState` null, so the save path diffs baseline against itself and a
+  // source that had no `%%` layout comment never grows one.
+  const [archView, setArchView] = useState<'mermaid' | 'canvas'>('mermaid');
   // ~300ms debounced mirror of editForm.source that the parser/layout/canvas-remount pipeline
   // reads, so the canvas doesn't re-lay-out (and lag typing) on every keystroke.
   const [debouncedArchSource, setDebouncedArchSource] = useState('');
@@ -294,6 +288,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     setArchGraphState(null);
     setArchResetNonce(0);
     setArchCorruptWarning(false);
+    setArchView('mermaid');
     setCanvasKey((k) => k + 1);
     setAiPrompt('');
     setIsEditOpen(true);
@@ -408,6 +403,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     setArchGraphState(null);
     setArchResetNonce(0);
     setArchCorruptWarning(false);
+    setArchView('mermaid');
     if (diagramType === 'reactflow') {
       setGraphState(blankDesignGraph(editForm.kind));
       setCanvasKey((k) => k + 1);
@@ -605,14 +601,11 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                       />
                     );
                   }
-                  const archGraph = previewMode === 'arch' ? buildArchPreviewGraph(selectedDesign.source) : null;
-                  if (archGraph) {
-                    return (
-                      <DesignCanvas key={selectedDesign.id} initialGraph={archGraph} mode="derived" readOnly />
-                    );
-                  }
-                  // Zero parsed nodes (or not actually architecture-beta despite the routing
-                  // guess) — mermaid's own error UI beats an empty canvas.
+                  // Every mermaid design — architecture-beta included — previews through mermaid's
+                  // own renderer. The React Flow canvas is a position-editing surface, not a
+                  // display surface: reproducing architecture-beta on it was a worse likeness of
+                  // the diagram than mermaid drawing it itself. Dragging still lives in the edit
+                  // dialog's "Adjust positions" view.
                   return <MermaidDiagram source={selectedDesign.source} />;
                 })()}
               </div>
@@ -864,15 +857,44 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                     </ul>
                   )}
                 </div>
-                <div className="min-h-0">
-                  <DesignCanvas
-                    key={archCanvasKey}
-                    initialGraph={archInitialGraph}
-                    mode="derived"
-                    onChange={setArchGraphState}
-                    resetPositionsCount={archOverrideCount}
-                    onResetPositions={handleResetArchPositions}
-                  />
+                <div className="flex min-h-0 flex-col gap-2">
+                  {/* Mermaid draws the diagram; the canvas only exists to nudge positions. Default
+                      to mermaid so what you edit is what you'll see in the preview and anywhere
+                      else the source is rendered — the canvas is an explicit detour, and it's
+                      disabled when the source doesn't parse (nothing to drag). */}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={archView === 'mermaid' ? 'default' : 'outline'}
+                      onClick={() => setArchView('mermaid')}
+                    >
+                      Mermaid
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={archView === 'canvas' ? 'default' : 'outline'}
+                      disabled={archGraph.nodes.length === 0}
+                      onClick={() => setArchView('canvas')}
+                    >
+                      Adjust positions
+                    </Button>
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    {archView === 'canvas' ? (
+                      <DesignCanvas
+                        key={archCanvasKey}
+                        initialGraph={archInitialGraph}
+                        mode="derived"
+                        onChange={setArchGraphState}
+                        resetPositionsCount={archOverrideCount}
+                        onResetPositions={handleResetArchPositions}
+                      />
+                    ) : (
+                      <MermaidDiagram source={stripLayoutComment(editForm.source)} />
+                    )}
+                  </div>
                 </div>
               </div>
               <DialogFooter className="border-t bg-card px-5 py-3">
