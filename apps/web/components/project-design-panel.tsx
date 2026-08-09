@@ -38,6 +38,7 @@ import { Plus, RefreshCw, Pencil, Trash2, Palette, Sparkles, Expand, Shrink } fr
 import { toast } from 'sonner';
 import { MermaidDiagram } from '@/components/mermaid-diagram';
 import { DesignCanvas } from '@/components/design-canvas';
+import { DrawioDiagram, type DrawioDiagramHandle } from '@/components/drawio-diagram';
 import {
   DESIGN_KINDS,
   DESIGN_KIND_GROUPS,
@@ -66,14 +67,17 @@ import {
   withLayoutComment,
   type LayoutOverrides,
 } from '@/lib/mermaid-layout-overrides';
+import { drawioStarterSource, isDrawioStarterSource } from '@/lib/drawio';
 
-// The editor/preview routing decision (Decision 3): 'reactflow' designs are always 'canvas';
+// The editor/preview routing decision (Decision 3): draw.io uses the same mxGraph document in its
+// editor and viewer, React Flow designs are always 'canvas';
 // mermaid designs split further by content, since architecture-beta is the one starter kind whose
 // text can drive the same draggable canvas the reactflow format uses. Detected from content, not
-// a stored flag — `DESIGN_DIAGRAM_TYPES` and the server contract stay at two values.
-type DesignEditorMode = 'canvas' | 'arch' | 'mermaid';
+// a stored flag.
+type DesignEditorMode = 'drawio' | 'canvas' | 'arch' | 'mermaid';
 
 function computeEditorMode(diagramType: DesignDiagramType, source: string): DesignEditorMode {
+  if (diagramType === 'drawio') return 'drawio';
   if (diagramType === 'reactflow') return 'canvas';
   return isArchitectureSource(source) ? 'arch' : 'mermaid';
 }
@@ -114,13 +118,14 @@ interface ProjectDesignPanelProps {
 
 const EMPTY_EDIT_FORM = {
   title: '',
-  kind: DESIGN_KINDS[0] as string,
-  source: '',
+  kind: 'aws' as string,
+  source: drawioStarterSource('aws'),
   notes: '',
-  diagramType: 'reactflow' as DesignDiagramType,
+  diagramType: 'drawio' as DesignDiagramType,
 };
 
 const DIAGRAM_TYPE_LABELS: Record<DesignDiagramType, string> = {
+  drawio: 'Diagram studio (draw.io)',
   // Rendered by mermaid itself. AWS/architecture diagrams additionally get an "Adjust positions"
   // view in the editor, where the same text drives a draggable canvas and nudged positions persist
   // as a trailing `%%` comment — but mermaid's own rendering stays what the design actually looks like.
@@ -172,6 +177,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   // design opened, different design opened, kind/format reset) — the canvas only reads its
   // initialGraph prop once, on mount.
   const [canvasKey, setCanvasKey] = useState(0);
+  const drawioEditorRef = useRef<DrawioDiagramHandle>(null);
 
   // --- 'arch' (architecture-beta derived-mode) editor state ---------------------------------
   // Saved position overrides, seeded from the opened design's `%%` comment and reconciled on
@@ -280,7 +286,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const openCreate = () => {
     setEditDesign(null);
     const kind = EMPTY_EDIT_FORM.kind;
-    const source = STARTER_TEMPLATES[kind as DesignKind];
+    const source = drawioStarterSource(kind);
     setEditForm({ ...EMPTY_EDIT_FORM, source });
     setGraphState(blankDesignGraph(kind));
     setDebouncedArchSource(source);
@@ -296,7 +302,13 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
 
   const openEdit = (design: Design) => {
     setEditDesign(design);
-    const diagramType = (design.diagram_type === 'reactflow' ? 'reactflow' : 'mermaid') as DesignDiagramType;
+    const diagramType = (
+      design.diagram_type === 'drawio'
+        ? 'drawio'
+        : design.diagram_type === 'reactflow'
+          ? 'reactflow'
+          : 'mermaid'
+    ) as DesignDiagramType;
     // The textarea never shows the layout comment — a drag can't rewrite text under the user's
     // caret, and there's no edit-conflict to resolve on save (Decision 2's editor round-trip).
     const source = diagramType === 'mermaid' ? stripLayoutComment(design.source) : design.source;
@@ -319,6 +331,10 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   };
 
   const handleGenerateDiagram = async () => {
+    if (editForm.diagramType === 'drawio') {
+      toast.error('AI generation for Diagram studio documents is not available yet.');
+      return;
+    }
     const prompt = aiPrompt.trim();
     if (!prompt) return;
     setIsGeneratingDiagram(true);
@@ -375,11 +391,16 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   // architecture-beta — editorMode picks that up automatically from the new source text.
   const handleKindChange = (kind: string) => {
     const isNewDoc = editDesign === null;
-    const sourceIsUntouched =
-      editForm.source.trim() === '' || Object.values(STARTER_TEMPLATES).includes(editForm.source);
+    const sourceIsUntouched = editForm.diagramType === 'drawio'
+      ? isDrawioStarterSource(editForm.source)
+      : editForm.source.trim() === '' || Object.values(STARTER_TEMPLATES).includes(editForm.source);
     const nextSource =
-      isNewDoc && editForm.diagramType === 'mermaid' && sourceIsUntouched
-        ? (STARTER_TEMPLATES[kind as DesignKind] ?? editForm.source)
+      isNewDoc && sourceIsUntouched
+        ? editForm.diagramType === 'drawio'
+          ? drawioStarterSource(kind)
+          : editForm.diagramType === 'mermaid'
+            ? (STARTER_TEMPLATES[kind as DesignKind] ?? editForm.source)
+            : editForm.source
         : editForm.source;
     setEditForm((prev) => ({ ...prev, kind, source: nextSource }));
     if (nextSource !== editForm.source) {
@@ -391,12 +412,19 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       setGraphState(blankDesignGraph(kind));
       setCanvasKey((k) => k + 1);
     }
+    if (isNewDoc && editForm.diagramType === 'drawio' && sourceIsUntouched) {
+      setCanvasKey((k) => k + 1);
+    }
   };
 
   // New-doc-only format toggle (Mermaid text / React Flow canvas) — a design's format is fixed
   // at creation in v1, so this only applies while editDesign is null.
   const handleFormatChange = (diagramType: DesignDiagramType) => {
-    const nextSource = diagramType === 'mermaid' ? (STARTER_TEMPLATES[editForm.kind as DesignKind] ?? '') : '';
+    const nextSource = diagramType === 'drawio'
+      ? drawioStarterSource(editForm.kind)
+      : diagramType === 'mermaid'
+        ? (STARTER_TEMPLATES[editForm.kind as DesignKind] ?? '')
+        : '';
     setEditForm((prev) => ({ ...prev, diagramType, source: nextSource }));
     setDebouncedArchSource(nextSource);
     setArchOverrides({});
@@ -406,8 +434,8 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     setArchView('mermaid');
     if (diagramType === 'reactflow') {
       setGraphState(blankDesignGraph(editForm.kind));
-      setCanvasKey((k) => k + 1);
     }
+    setCanvasKey((k) => k + 1);
   };
 
   const handleSave = async () => {
@@ -422,7 +450,9 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         ? `/api/projects/${projectId}/designs/${editDesign.id}`
         : `/api/projects/${projectId}/designs`;
       let source: string;
-      if (editForm.diagramType === 'reactflow') {
+      if (editForm.diagramType === 'drawio') {
+        source = await drawioEditorRef.current?.flushSource() ?? editForm.source;
+      } else if (editForm.diagramType === 'reactflow') {
         source = serializeDesignGraph(graphState.nodes, graphState.edges, graphState.viewport);
       } else if (editorMode === 'arch') {
         // Recomputed fresh from the CURRENT (undebounced) textarea value rather than reused from
@@ -489,7 +519,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         <div>
           <h2 className="text-base font-semibold">Design ({designs.length})</h2>
           <p className="text-sm text-muted-foreground">
-            Mermaid diagrams or interactive React Flow canvases for this project&apos;s UI, structure, workflows, or story.
+            WYSIWYG diagram studio, Mermaid text, or React Flow canvases for architectures and workflows.
           </p>
         </div>
         <div className="flex gap-2">
@@ -588,6 +618,17 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
               )}
               <div className="rounded-md p-3 bg-muted/20 flex-1 min-h-0 overflow-hidden">
                 {(() => {
+                  if (selectedDesign.diagram_type === 'drawio') {
+                    return (
+                      <DrawioDiagram
+                        key={selectedDesign.id}
+                        source={selectedDesign.source}
+                        mode="viewer"
+                        title={selectedDesign.title}
+                        kind={selectedDesign.kind}
+                      />
+                    );
+                  }
                   const previewMode = computeEditorMode(
                     selectedDesign.diagram_type === 'reactflow' ? 'reactflow' : 'mermaid',
                     selectedDesign.source
@@ -618,17 +659,104 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         </div>
       </div>
 
-      {/* Create/Edit dialog — the reactflow format needs far more width for the canvas than the
-          mermaid textarea+preview grid ever did, so the dialog itself widens for that case. */}
+      {/* Create/Edit dialog — canvas formats need far more width than the Mermaid textarea. */}
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
         <DialogContent
           className={
-            editForm.diagramType === 'reactflow' || editorMode === 'arch'
+            editForm.diagramType === 'drawio' || editForm.diagramType === 'reactflow' || editorMode === 'arch'
               ? 'flex h-[92vh] w-[96vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
               : 'max-w-3xl max-h-[85vh] overflow-y-auto'
           }
         >
-          {editForm.diagramType === 'reactflow' ? (
+          {editForm.diagramType === 'drawio' ? (
+            <>
+              <div className="border-b bg-card px-5 py-4">
+                <DialogHeader>
+                  <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
+                  <DialogDescription>
+                    Build AWS architectures, workflows, swimlanes, BPMN, and sequence diagrams with the full visual studio.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+              <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr]">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-title">Title</Label>
+                  <Input
+                    id="design-title"
+                    value={editForm.title}
+                    onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
+                    placeholder="e.g. Multi-region service architecture"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Kind</Label>
+                  <Select value={editForm.kind} onValueChange={handleKindChange}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Software</div>
+                      {DESIGN_KIND_GROUPS.software.map((k) => (
+                        <SelectItem key={k} value={k}>{designKindMeta(k).label}</SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Narrative</div>
+                      {DESIGN_KIND_GROUPS.narrative.map((k) => (
+                        <SelectItem key={k} value={k}>{designKindMeta(k).label}</SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Infrastructure</div>
+                      {DESIGN_KIND_GROUPS.infrastructure.map((k) => (
+                        <SelectItem key={k} value={k}>{designKindMeta(k).label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-notes">Notes</Label>
+                  <Input
+                    id="design-notes"
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                    placeholder="Context, decisions, or implementation notes"
+                  />
+                </div>
+                {!editDesign && (
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
+                    <Label>Format</Label>
+                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
+                      <SelectTrigger className="w-64">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DESIGN_DIAGRAM_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>{DIAGRAM_TYPE_LABELS[type]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              <div className="min-h-0 flex-1 bg-slate-100 p-3 dark:bg-slate-950">
+                <DrawioDiagram
+                  ref={drawioEditorRef}
+                  key={editDesign?.id ?? `new-${canvasKey}`}
+                  source={editForm.source}
+                  mode="editor"
+                  title={editForm.title || 'Untitled diagram'}
+                  kind={editForm.kind}
+                  onChange={(source) => setEditForm((form) => ({ ...form, source }))}
+                />
+              </div>
+              <DialogFooter className="border-t bg-card px-5 py-3">
+                <p className="mr-auto text-xs text-muted-foreground">
+                  Changes stay in this dialog until you save the OpenMemory design.
+                </p>
+                <Button variant="outline" onClick={() => setIsEditOpen(false)}>Cancel</Button>
+                <Button onClick={handleSave} disabled={isSaving}>
+                  {isSaving ? 'Saving…' : editDesign ? 'Save changes' : 'Create'}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : editForm.diagramType === 'reactflow' ? (
             <>
               <div className="border-b bg-card px-5 py-4">
                 <DialogHeader>

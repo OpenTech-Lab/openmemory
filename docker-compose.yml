@@ -92,15 +92,39 @@ services:
     build:
       context: apps/web
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_DRAWIO_EDITOR_URL: ${NEXT_PUBLIC_DRAWIO_EDITOR_URL:-http://localhost:18081}
+        NEXT_PUBLIC_DRAWIO_VIEWER_URL: ${NEXT_PUBLIC_DRAWIO_VIEWER_URL:-http://localhost:18081}
     ports:
       - "13000:3000"
     environment:
       NEXT_PUBLIC_API_URL: http://openmemory-server:18080
       API_URL: http://openmemory-server:18080
       OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
+      NEXT_PUBLIC_DRAWIO_EDITOR_URL: ${NEXT_PUBLIC_DRAWIO_EDITOR_URL:-http://localhost:18081}
+      NEXT_PUBLIC_DRAWIO_VIEWER_URL: ${NEXT_PUBLIC_DRAWIO_VIEWER_URL:-http://localhost:18081}
     depends_on:
       openmemory-server:
         condition: service_healthy
+      drawio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Local-only draw.io studio. This serves the user's checked-out static webapp directly, so the
+  # browser never needs embed.diagrams.net or viewer.diagrams.net. Override DRAWIO_WEBAPP_PATH if
+  # the checkout is not a sibling of this repository, and keep the mount read-only.
+  drawio:
+    profiles: [api]
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:${DRAWIO_PORT:-18081}:80"
+    volumes:
+      - ${DRAWIO_WEBAPP_PATH:-../drawio/src/main/webapp}:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/index.html || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   openmemory-server:

@@ -1,0 +1,128 @@
+<mxfile host="OpenMemory" modified="2026-08-09T04:30:00.000Z" agent="OpenMemory draw.io studio" version="24.7.17" compressed="false">
+  <diagram id="aws-live-event-video" name="Live event video pipeline">
+    <mxGraphModel dx="1500" dy="666" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="666" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="cloud" value="AWS Cloud" style="shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud;verticalAlign=top;align=left;grIconSize=28;spacingLeft=34;spacingTop=4;fontStyle=1;fontSize=12;fillColor=none;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="1460" height="626" as="geometry" />
+        </mxCell>
+
+        <mxCell id="section-ingest" value="動画データ連携" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="cloud">
+          <mxGeometry x="0" y="110" width="510" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="section-detect" value="AI 検知" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="cloud">
+          <mxGeometry x="520" y="110" width="365" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="section-clip" value="動画切り出し" style="swimlane;horizontal=1;startSize=26;rounded=0;html=1;whiteSpace=wrap;container=1;collapsible=0;recursiveResize=0;fillColor=none;swimlaneFillColor=none;strokeColor=#64748B;fontStyle=1;fontSize=11;" vertex="1" parent="cloud">
+          <mxGeometry x="900" y="110" width="270" height="205" as="geometry" />
+        </mxCell>
+
+        <mxCell id="file-ts" value="xxx.ts" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#FFFFFF;strokeColor=#0F172A;fontSize=9;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="cloud">
+          <mxGeometry x="230" y="15" width="26" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="file-m3u8" value="m3u8" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#FFFFFF;strokeColor=#0F172A;fontSize=9;verticalLabelPosition=bottom;verticalAlign=top;align=center;" vertex="1" parent="cloud">
+          <mxGeometry x="270" y="15" width="26" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="s3-input" value="Amazon S3&lt;br&gt;&lt;b&gt;video-stream-input&lt;/b&gt;" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=145;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="310" y="8" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ddb-history" value="Amazon DynamoDB&lt;br&gt;&lt;b&gt;live-event-file-processing-history&lt;/b&gt;" style="fillColor=#C925D1;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=170;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="170" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-producer" value="AWS Lambda&lt;br&gt;&lt;b&gt;live-event-producer&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=145;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="305" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="step-scheduler" value="AWS Step Functions&lt;br&gt;&lt;b&gt;event-scheduler&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.step_functions;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=145;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="305" y="165" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="api-controller" value="Amazon API Gateway&lt;br&gt;&lt;b&gt;controller-job-api&lt;/b&gt;" style="fillColor=#8C4FFF;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=145;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="35" y="300" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-start" value="AWS Lambda&lt;br&gt;&lt;b&gt;start-streaming&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="170" y="300" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="sqs-scheduler" value="Amazon SQS&lt;br&gt;&lt;b&gt;event-scheduler-requests&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=155;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="305" y="300" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-scheduler" value="AWS Lambda&lt;br&gt;&lt;b&gt;event-scheduler&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="440" y="300" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="sqs-scheduler-dlq" value="Amazon SQS&lt;br&gt;&lt;b&gt;event-scheduler-requests-dlq&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=170;spacingTop=5;" vertex="1" parent="section-ingest">
+          <mxGeometry x="305" y="430" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sqs-detections" value="Amazon SQS&lt;br&gt;&lt;b&gt;detections-requests.fifo&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=155;spacingTop=5;" vertex="1" parent="section-detect">
+          <mxGeometry x="55" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="sqs-detections-dlq" value="Amazon SQS&lt;br&gt;&lt;b&gt;detections-requests-dlq.fifo&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=170;spacingTop=5;" vertex="1" parent="section-detect">
+          <mxGeometry x="55" y="120" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-detections" value="AWS Lambda&lt;br&gt;&lt;b&gt;detections&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=120;spacingTop=5;" vertex="1" parent="section-detect">
+          <mxGeometry x="190" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s3-detect" value="Amazon S3&lt;br&gt;&lt;b&gt;auto-clip&lt;/b&gt;" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="section-detect">
+          <mxGeometry x="55" y="300" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="bedrock" value="Amazon Bedrock&lt;br&gt;&lt;b&gt;ゴール判定&lt;/b&gt;" style="fillColor=#01A88D;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=125;spacingTop=5;" vertex="1" parent="section-detect">
+          <mxGeometry x="145" y="430" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="rekognition" value="Amazon Rekognition&lt;br&gt;&lt;b&gt;ショット分析&lt;/b&gt;" style="fillColor=#01A88D;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.rekognition_2;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=135;spacingTop=5;" vertex="1" parent="section-detect">
+          <mxGeometry x="280" y="430" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sqs-goal" value="Amazon SQS&lt;br&gt;&lt;b&gt;goal-generator-requests.fifo&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=170;spacingTop=5;" vertex="1" parent="section-clip">
+          <mxGeometry x="55" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-goal" value="AWS Lambda&lt;br&gt;&lt;b&gt;goal-generator&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=125;spacingTop=5;" vertex="1" parent="section-clip">
+          <mxGeometry x="190" y="30" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="sqs-goal-dlq" value="Amazon SQS&lt;br&gt;&lt;b&gt;goal-generator-requests-dlq.fifo&lt;/b&gt;" style="fillColor=#E7157B;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=180;spacingTop=5;" vertex="1" parent="section-clip">
+          <mxGeometry x="55" y="120" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s3-output" value="Amazon S3&lt;br&gt;&lt;b&gt;auto-clip&lt;/b&gt;" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="1290" y="140" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda-clip-failed" value="AWS Lambda&lt;br&gt;&lt;b&gt;video-clip-failed&lt;/b&gt;" style="fillColor=#ED7100;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=130;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="1290" y="230" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="ddb-clip-history" value="Amazon DynamoDB&lt;br&gt;&lt;b&gt;clip-status-history&lt;/b&gt;" style="fillColor=#C925D1;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="1290" y="410" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="timestream" value="Amazon Timestream&lt;br&gt;&lt;b&gt;detect-result-db&lt;/b&gt;" style="fillColor=#C925D1;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.timestream;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=140;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="1290" y="540" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s3-archive" value="Amazon S3&lt;br&gt;&lt;b&gt;auto-clip&lt;/b&gt;" style="fillColor=#7AA116;strokeColor=#FFFFFF;gradientColor=none;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;labelWidth=110;spacingTop=5;" vertex="1" parent="cloud">
+          <mxGeometry x="1405" y="540" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e-api-start" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="api-controller" target="lambda-start"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-start-queue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-start" target="sqs-scheduler"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-scheduler-queue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-scheduler" target="sqs-scheduler"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-queue-dlq" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="sqs-scheduler" target="sqs-scheduler-dlq"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-scheduler-step" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-scheduler" target="step-scheduler"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="480" y="300" /><mxPoint x="480" y="300" /></Array></mxGeometry></mxCell>
+        <mxCell id="e-step-producer" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="step-scheduler" target="lambda-producer"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-producer-history" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-producer" target="ddb-history"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-producer-detections" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-producer" target="sqs-detections"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-producer-input" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.3;" edge="1" parent="cloud" source="lambda-producer" target="s3-input"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-detect-queue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-detections" target="sqs-detections"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-detect-s3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-detections" target="s3-detect"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-detect-bedrock" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-detections" target="bedrock"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-bedrock-rekognition" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="bedrock" target="rekognition"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-detect-goal" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.8;" edge="1" parent="cloud" source="lambda-detections" target="sqs-goal"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-goal-queue" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-goal" target="sqs-goal"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-failed-dlq" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-clip-failed" target="sqs-goal-dlq"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-goal-output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-goal" target="s3-output"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-failed-history" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-clip-failed" target="ddb-clip-history"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-goal-history" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-goal" target="ddb-clip-history"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-detect-history" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="lambda-detections" target="ddb-clip-history"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-detect-input" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.3;" edge="1" parent="cloud" source="lambda-detections" target="s3-input"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="735" y="22" /><mxPoint x="370" y="22" /></Array></mxGeometry></mxCell>
+        <mxCell id="e-detect-results" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.3;" edge="1" parent="cloud" source="lambda-detections" target="timestream"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-goal-results" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;dashPattern=4 3;endArrow=classic;endFill=1;strokeWidth=1.3;" edge="1" parent="cloud" source="lambda-goal" target="timestream"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e-results-archive" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;endFill=1;strokeWidth=1.4;" edge="1" parent="cloud" source="timestream" target="s3-archive"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
