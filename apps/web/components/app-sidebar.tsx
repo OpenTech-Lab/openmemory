@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow, Gauge } from 'lucide-react';
+import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow, Gauge, TrendingUp } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -54,6 +54,7 @@ const NAV_GROUPS = [
     label: 'Settings',
     items: [
       { href: '/settings', label: 'LLM', icon: SlidersHorizontal },
+      { href: '/settings/forecasts', label: 'Forecasts', icon: TrendingUp },
       { href: '/settings/environment', label: 'Environment', icon: Settings2 },
       { href: '/settings/resources', label: 'Resources', icon: Boxes },
       { href: '/settings/workflows', label: 'Workflows', icon: Workflow },
@@ -95,6 +96,8 @@ export function AppSidebar() {
                     ? pathname === '/projects' || (pathname.startsWith('/projects/') && !pathname.startsWith('/projects/board'))
                     : item.href === '/agents'
                     ? pathname === '/agents' || (pathname.startsWith('/agents/') && !pathname.startsWith('/agents/sessions') && !pathname.startsWith('/agents/usage'))
+                    : item.href === '/settings'
+                    ? pathname === '/settings'
                     : pathname === item.href || pathname.startsWith(`${item.href}/`);
                   return (
                     <SidebarMenuItem key={item.href}>

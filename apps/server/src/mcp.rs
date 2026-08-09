@@ -2,6 +2,7 @@
 
 mod crypto;
 mod falkordb;
+mod forecasts;
 mod project_graphs;
 mod indexer;
 mod resources;
@@ -308,6 +309,7 @@ impl McpServer {
         .context("failed to create env_params table")?;
 
         resources::ensure_resources_table(&db).await?;
+        forecasts::ensure_table(&db).await?;
         workflows::ensure_table(&db).await?;
 
         sqlx::query(
@@ -1230,6 +1232,54 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "forecast_list",
+                    "description": "List reusable usage forecast profiles. Reference these before planning or designing a project so user scale, budget, risk tolerance, growth, and usage shape inform decisions.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                },
+                {
+                    "name": "forecast_create",
+                    "description": "Create a reusable usage forecast profile for future project planning and design.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "application_type": {"type": "string", "enum": ["web_saas", "mobile", "ai", "data", "internal", "ecommerce", "other"]},
+                            "user_count": {"type": "integer", "minimum": 1},
+                            "monthly_budget_usd": {"type": "integer", "minimum": 0},
+                            "stress_tolerance": {"type": "string", "enum": ["conservative", "balanced", "aggressive"], "description": "Conservative favors more headroom; aggressive favors lower cost and accepts operational pressure."},
+                            "usage_pattern": {"type": "string", "enum": ["steady", "bursty", "seasonal"]},
+                            "planning_horizon_months": {"type": "integer", "minimum": 1, "maximum": 120},
+                            "annual_growth_percent": {"type": "integer", "minimum": 0, "maximum": 1000},
+                            "notes": {"type": "string"}
+                        },
+                        "required": ["name", "application_type", "user_count", "monthly_budget_usd", "stress_tolerance", "usage_pattern", "planning_horizon_months", "annual_growth_percent"]
+                    }
+                },
+                {
+                    "name": "forecast_update",
+                    "description": "Update a forecast profile as assumptions change. Pass the complete profile fields.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"}, "description": {"type": "string"},
+                            "application_type": {"type": "string", "enum": ["web_saas", "mobile", "ai", "data", "internal", "ecommerce", "other"]},
+                            "user_count": {"type": "integer"}, "monthly_budget_usd": {"type": "integer"},
+                            "stress_tolerance": {"type": "string", "enum": ["conservative", "balanced", "aggressive"]},
+                            "usage_pattern": {"type": "string", "enum": ["steady", "bursty", "seasonal"]},
+                            "planning_horizon_months": {"type": "integer"}, "annual_growth_percent": {"type": "integer"},
+                            "notes": {"type": "string"}
+                        },
+                        "required": ["id", "name", "application_type", "user_count", "monthly_budget_usd", "stress_tolerance", "usage_pattern", "planning_horizon_months", "annual_growth_percent"]
+                    }
+                },
+                {
+                    "name": "forecast_delete",
+                    "description": "Delete a reusable forecast profile permanently.",
+                    "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+                },
+                {
                     "name": "project_list",
                     "description": "List all projects with their task counts. Use this to find project_id for task operations.",
                     "inputSchema": {"type": "object", "properties": {}}
@@ -1466,6 +1516,10 @@ impl McpServer {
             "project_graph_god_nodes" => self.project_graph_god_nodes(arguments).await,
             "project_graph_delete" => self.project_graph_delete(arguments).await,
             "project_graph_rebuild" => self.project_graph_rebuild(arguments).await,
+            "forecast_list" => self.forecast_list(arguments).await,
+            "forecast_create" => self.forecast_create(arguments).await,
+            "forecast_update" => self.forecast_update(arguments).await,
+            "forecast_delete" => self.forecast_delete(arguments).await,
             "project_list" => self.project_list(arguments).await,
             "project_create" => self.project_create(arguments).await,
             "project_task_list" => self.project_task_list(arguments).await,
@@ -3486,6 +3540,48 @@ impl McpServer {
                 )
             }]
         }))
+    }
+
+    async fn forecast_list(&mut self, _args: &serde_json::Value) -> Result<serde_json::Value> {
+        let profiles = forecasts::list(&self.db).await?;
+        let text = if profiles.is_empty() {
+            "No forecast profiles configured. Use forecast_create to add one.".to_string()
+        } else {
+            serde_json::to_string_pretty(&profiles)?
+        };
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    async fn forecast_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let input: forecasts::ForecastInput = serde_json::from_value(args.clone())
+            .context("invalid forecast profile fields")?;
+        input.validate().map_err(anyhow::Error::msg)?;
+        let profile = forecasts::create(&self.db, &input).await?;
+        Ok(json!({"content": [{"type": "text", "text": format!(
+            "Created forecast profile '{}' [id: {}].", profile.name, profile.id
+        )}]}))
+    }
+
+    async fn forecast_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let id = Uuid::parse_str(args["id"].as_str().context("missing id")?)
+            .context("invalid forecast profile id")?;
+        let input: forecasts::ForecastInput = serde_json::from_value(args.clone())
+            .context("invalid forecast profile fields")?;
+        input.validate().map_err(anyhow::Error::msg)?;
+        let profile = forecasts::update(&self.db, id, &input).await?
+            .context("forecast profile not found")?;
+        Ok(json!({"content": [{"type": "text", "text": format!(
+            "Updated forecast profile '{}' [id: {}].", profile.name, profile.id
+        )}]}))
+    }
+
+    async fn forecast_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let id = Uuid::parse_str(args["id"].as_str().context("missing id")?)
+            .context("invalid forecast profile id")?;
+        let deleted = sqlx::query("DELETE FROM forecast_profiles WHERE id = $1 RETURNING id")
+            .bind(id).fetch_optional(&self.db).await?;
+        deleted.context("forecast profile not found")?;
+        Ok(json!({"content": [{"type": "text", "text": format!("Deleted forecast profile {id}.")}]}))
     }
 
     async fn project_list(&mut self, _args: &serde_json::Value) -> Result<serde_json::Value> {

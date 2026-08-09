@@ -3,6 +3,7 @@ mod claude_usage;
 mod crypto;
 mod design_ai;
 mod falkordb;
+mod forecasts;
 mod llm;
 mod resources;
 mod workflows;
@@ -152,6 +153,37 @@ struct UpdateProjectGraphPayload {
     #[serde(default, deserialize_with = "deserialize_some")]
     description: Option<Option<String>>,
     version_status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ForecastProfilePayload {
+    name: String,
+    description: Option<String>,
+    application_type: String,
+    user_count: i64,
+    monthly_budget_usd: i64,
+    stress_tolerance: String,
+    usage_pattern: String,
+    planning_horizon_months: i32,
+    annual_growth_percent: i32,
+    notes: Option<String>,
+}
+
+impl From<ForecastProfilePayload> for forecasts::ForecastInput {
+    fn from(value: ForecastProfilePayload) -> Self {
+        Self {
+            name: value.name,
+            description: value.description,
+            application_type: value.application_type,
+            user_count: value.user_count,
+            monthly_budget_usd: value.monthly_budget_usd,
+            stress_tolerance: value.stress_tolerance,
+            usage_pattern: value.usage_pattern,
+            planning_horizon_months: value.planning_horizon_months,
+            annual_growth_percent: value.annual_growth_percent,
+            notes: value.notes,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -894,6 +926,8 @@ enum McpRequest {
         kind: Option<String>,
         #[serde(default)]
         format: Option<String>,
+        #[serde(default)]
+        forecast_profile_id: Option<Uuid>,
     },
 
     #[serde(rename = "graph.get_llm_config")]
@@ -1438,6 +1472,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/designs", get(list_project_designs).post(create_project_design))
         .route("/projects/:id/designs/:design_id", axum::routing::put(update_project_design).delete(delete_project_design))
         .route("/projects/:id/design-assets", get(list_project_design_assets))
+        .route("/forecast-profiles", get(list_forecast_profiles).post(create_forecast_profile))
+        .route("/forecast-profiles/:id", axum::routing::put(update_forecast_profile).delete(delete_forecast_profile))
         .route("/workflows", get(list_workflows).post(create_workflow))
         .route("/workflows/:id", get(get_workflow).put(update_workflow).delete(delete_workflow))
         .route("/workflows/:id/run", post(run_workflow))
@@ -1678,6 +1714,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
 
     // resources catalog (paths / URLs + optional env_param_keys links)
     resources::ensure_resources_table(db).await?;
+    forecasts::ensure_table(db).await?;
 
     // Add graph_analyzed_at column if not present (tracks which memories have been LLM-extracted)
     sqlx::query(
@@ -4338,7 +4375,7 @@ async fn mcp(
             }
         }
 
-        McpRequest::AiDesignDiagram { prompt, kind, format } => {
+        McpRequest::AiDesignDiagram { prompt, kind, format, forecast_profile_id } => {
             if !is_authenticated(&headers, &state.api_token) {
                 return Err((
                     StatusCode::UNAUTHORIZED,
@@ -4361,6 +4398,16 @@ async fn mcp(
                         Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
                     ));
                 }
+            };
+
+            let prompt = if let Some(profile_id) = forecast_profile_id {
+                match forecasts::get(&state.db, profile_id).await {
+                    Ok(Some(profile)) => format!("{}\n\n{}", prompt, forecasts::design_context(&profile)),
+                    Ok(None) => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "forecast profile not found"})))),
+                    Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))),
+                }
+            } else {
+                prompt
             };
 
             let result = if format.as_deref() == Some("reactflow") {
@@ -4728,6 +4775,67 @@ fn is_authenticated(headers: &HeaderMap, token: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Project Graph handlers
 // ---------------------------------------------------------------------------
+
+async fn list_forecast_profiles(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match forecasts::list(&state.db).await {
+        Ok(profiles) => Json(serde_json::json!({"profiles": profiles})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn create_forecast_profile(
+    State(state): State<AppState>, headers: HeaderMap, Json(payload): Json<ForecastProfilePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let input: forecasts::ForecastInput = payload.into();
+    if let Err(message) = input.validate() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": message}))).into_response();
+    }
+    match forecasts::create(&state.db, &input).await {
+        Ok(profile) => (StatusCode::CREATED, Json(serde_json::json!(profile))).into_response(),
+        Err(e) if e.to_string().contains("unique") => (StatusCode::CONFLICT, Json(serde_json::json!({"error": "a forecast profile with this name already exists"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_forecast_profile(
+    State(state): State<AppState>, headers: HeaderMap, Path(id): Path<Uuid>,
+    Json(payload): Json<ForecastProfilePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let input: forecasts::ForecastInput = payload.into();
+    if let Err(message) = input.validate() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": message}))).into_response();
+    }
+    match forecasts::update(&state.db, id, &input).await {
+        Ok(Some(profile)) => Json(serde_json::json!(profile)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "forecast profile not found"}))).into_response(),
+        Err(e) if e.to_string().contains("unique") => (StatusCode::CONFLICT, Json(serde_json::json!({"error": "a forecast profile with this name already exists"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_forecast_profile(
+    State(state): State<AppState>, headers: HeaderMap, Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match sqlx::query("DELETE FROM forecast_profiles WHERE id = $1 RETURNING id")
+        .bind(id).fetch_optional(&state.db).await
+    {
+        Ok(Some(_)) => Json(serde_json::json!({"deleted": true})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "forecast profile not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
 
 async fn list_project_graphs(
     State(state): State<AppState>,

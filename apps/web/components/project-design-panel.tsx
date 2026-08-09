@@ -68,6 +68,7 @@ import {
   type LayoutOverrides,
 } from '@/lib/mermaid-layout-overrides';
 import { drawioStarterSource, isDrawioStarterSource } from '@/lib/drawio';
+import type { ForecastProfile } from '@/lib/forecast-types';
 
 // The editor/preview routing decision (Decision 3): draw.io uses the same mxGraph document in its
 // editor and viewer, React Flow designs are always 'canvas';
@@ -168,6 +169,8 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const [editForm, setEditForm] = useState(EMPTY_EDIT_FORM);
   const [isSaving, setIsSaving] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
+  const [forecastProfiles, setForecastProfiles] = useState<ForecastProfile[]>([]);
+  const [forecastProfileId, setForecastProfileId] = useState('none');
   const [isGeneratingDiagram, setIsGeneratingDiagram] = useState(false);
   // Current reactflow graph in the edit/create dialog — tracked separately from editForm.source
   // because DesignCanvas is uncontrolled and reports state upward via onChange; only serialized
@@ -260,6 +263,13 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  useEffect(() => {
+    fetch('/api/forecast-profiles')
+      .then((res) => res.json())
+      .then((data) => setForecastProfiles(data.profiles ?? []))
+      .catch(() => setForecastProfiles([]));
+  }, []);
+
   // Keep isPreviewFullscreen in sync with the browser's actual fullscreen state — the user can
   // exit via Esc or the browser's own UI, not just our button.
   useEffect(() => {
@@ -346,6 +356,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
           type: 'ai.design_diagram',
           prompt,
           kind: editForm.kind,
+          ...(forecastProfileId !== 'none' ? { forecast_profile_id: forecastProfileId } : {}),
           ...(editForm.diagramType === 'reactflow' ? { format: 'reactflow' } : {}),
         }),
       });
@@ -804,6 +815,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="design-ai-prompt">AI prompt</Label>
+                  <ForecastProfileSelect profiles={forecastProfiles} value={forecastProfileId} onChange={setForecastProfileId} />
                   <div className="flex gap-2">
                     <Input
                       id="design-ai-prompt"
@@ -912,6 +924,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="design-ai-prompt">AI prompt</Label>
+                  <ForecastProfileSelect profiles={forecastProfiles} value={forecastProfileId} onChange={setForecastProfileId} />
                   <div className="flex gap-2">
                     <Input
                       id="design-ai-prompt"
@@ -1100,6 +1113,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   )}
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="design-ai-prompt">AI prompt</Label>
+                    <ForecastProfileSelect profiles={forecastProfiles} value={forecastProfileId} onChange={setForecastProfileId} />
                     <div className="flex gap-2">
                       <Input
                         id="design-ai-prompt"
@@ -1174,5 +1188,27 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function ForecastProfileSelect({ profiles, value, onChange }: {
+  profiles: ForecastProfile[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className="h-8 text-xs">
+        <SelectValue placeholder="No usage forecast" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="none">No usage forecast</SelectItem>
+        {profiles.map((profile) => (
+          <SelectItem key={profile.id} value={profile.id}>
+            {profile.name} · {profile.user_count.toLocaleString()} users · ${profile.monthly_budget_usd.toLocaleString()}/mo
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
