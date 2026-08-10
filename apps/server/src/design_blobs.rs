@@ -187,4 +187,13 @@ mod tests {
         assert!(file_name.starts_with(&format!("{design_id}.")));
         assert!(file_name.ends_with(".fig.tmp"));
     }
+
+    #[test]
+    fn pen_is_an_accepted_diagram_type() {
+        assert!(crate::VALID_DIAGRAM_TYPES.contains(&"pen"));
+        // The pre-existing types must keep working.
+        for existing in ["drawio", "mermaid", "reactflow"] {
+            assert!(crate::VALID_DIAGRAM_TYPES.contains(&existing));
+        }
+    }
 }

@@ -346,7 +346,7 @@ struct UpdateDesignPayload {
     status: Option<String>,
 }
 
-const VALID_DIAGRAM_TYPES: &[&str] = &["drawio", "mermaid", "reactflow"];
+pub(crate) const VALID_DIAGRAM_TYPES: &[&str] = &["drawio", "mermaid", "reactflow", "pen"];
 
 #[derive(Debug, Deserialize)]
 struct ListDesignsParams {
@@ -6264,7 +6264,7 @@ async fn create_project_design(
 
     if let Some(dt) = payload.diagram_type.as_deref() {
         if !VALID_DIAGRAM_TYPES.contains(&dt) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow"}))).into_response();
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen"}))).into_response();
         }
     }
 
@@ -6312,7 +6312,7 @@ async fn update_project_design(
 
     if let Some(dt) = payload.diagram_type.as_deref() {
         if !VALID_DIAGRAM_TYPES.contains(&dt) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow"}))).into_response();
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen"}))).into_response();
         }
     }
 
