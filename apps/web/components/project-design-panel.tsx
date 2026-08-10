@@ -40,6 +40,8 @@ import { toast } from 'sonner';
 import { MermaidDiagram } from '@/components/mermaid-diagram';
 import { DesignCanvas } from '@/components/design-canvas';
 import { DrawioDiagram, type DrawioDiagramHandle } from '@/components/drawio-diagram';
+import { PencilDiagram, type PencilDiagramHandle } from '@/components/pencil-diagram';
+import { blankPencilSource } from '@/lib/pencil';
 import {
   DESIGN_KINDS,
   DESIGN_KIND_GROUPS,
@@ -77,10 +79,11 @@ import { DesignBudgetSheet } from '@/components/design-budget-sheet';
 // mermaid designs split further by content, since architecture-beta is the one starter kind whose
 // text can drive the same draggable canvas the reactflow format uses. Detected from content, not
 // a stored flag.
-type DesignEditorMode = 'drawio' | 'canvas' | 'arch' | 'mermaid';
+type DesignEditorMode = 'drawio' | 'pencil' | 'canvas' | 'arch' | 'mermaid';
 
 function computeEditorMode(diagramType: DesignDiagramType, source: string): DesignEditorMode {
   if (diagramType === 'drawio') return 'drawio';
+  if (diagramType === 'pen') return 'pencil';
   if (diagramType === 'reactflow') return 'canvas';
   return isArchitectureSource(source) ? 'arch' : 'mermaid';
 }
@@ -134,6 +137,7 @@ const DIAGRAM_TYPE_LABELS: Record<DesignDiagramType, string> = {
   // as a trailing `%%` comment — but mermaid's own rendering stays what the design actually looks like.
   mermaid: 'Mermaid text',
   reactflow: 'React Flow canvas',
+  pen: 'OpenPencil',
 };
 
 // True when `graph` is still exactly the auto-generated starter for `kind` — mirrors the
@@ -184,6 +188,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   // initialGraph prop once, on mount.
   const [canvasKey, setCanvasKey] = useState(0);
   const drawioEditorRef = useRef<DrawioDiagramHandle>(null);
+  const pencilEditorRef = useRef<PencilDiagramHandle>(null);
 
   // --- 'arch' (architecture-beta derived-mode) editor state ---------------------------------
   // Saved position overrides, seeded from the opened design's `%%` comment and reconciled on
@@ -438,7 +443,9 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       ? drawioStarterSource(editForm.kind)
       : diagramType === 'mermaid'
         ? (STARTER_TEMPLATES[editForm.kind as DesignKind] ?? '')
-        : '';
+        : diagramType === 'pen'
+          ? blankPencilSource()
+          : '';
     setEditForm((prev) => ({ ...prev, diagramType, source: nextSource }));
     setDebouncedArchSource(nextSource);
     setArchOverrides({});
@@ -466,6 +473,15 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       let source: string;
       if (editForm.diagramType === 'drawio') {
         source = await drawioEditorRef.current?.flushSource() ?? editForm.source;
+      } else if (editForm.diagramType === 'pen') {
+        // On create there is no embed mounted yet, so just store the marker; the user
+        // reopens the design to draw. On update, pull from the embed: flushSource()
+        // uploads the .fig bytes and resolves only once the blob is safely written, so a
+        // failed upload rejects here and abandons the record save rather than leaving the
+        // row pointing at a blob that was never written.
+        source = editDesign
+          ? await pencilEditorRef.current!.flushSource()
+          : blankPencilSource();
       } else if (editForm.diagramType === 'reactflow') {
         source = serializeDesignGraph(graphState.nodes, graphState.edges, graphState.viewport);
       } else if (editorMode === 'arch') {
@@ -688,7 +704,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
         <DialogContent
           className={
-            editForm.diagramType === 'drawio' || editForm.diagramType === 'reactflow' || editorMode === 'arch'
+            editForm.diagramType === 'drawio' || editForm.diagramType === 'pen' || editForm.diagramType === 'reactflow' || editorMode === 'arch'
               ? 'flex h-[92vh] w-[96vw] min-w-[80vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
               : 'max-w-3xl max-h-[85vh] overflow-y-auto'
           }
@@ -883,6 +899,98 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                 <Button variant="outline" onClick={() => setIsEditOpen(false)}>
                   Cancel
                 </Button>
+                <Button onClick={handleSave} disabled={isSaving}>
+                  {isSaving ? 'Saving…' : editDesign ? 'Save changes' : 'Create'}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : editForm.diagramType === 'pen' ? (
+            <>
+              <div className="border-b bg-card px-5 py-4">
+                <DialogHeader>
+                  <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
+                  <DialogDescription>
+                    Free-form design surface, powered by OpenPencil.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+              <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr]">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-title">Title</Label>
+                  <Input
+                    id="design-title"
+                    value={editForm.title}
+                    onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
+                    placeholder="e.g. Onboarding flow sketch"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Kind</Label>
+                  <Select value={editForm.kind} onValueChange={handleKindChange}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Software</div>
+                      {DESIGN_KIND_GROUPS.software.map((k) => (
+                        <SelectItem key={k} value={k}>{designKindMeta(k).label}</SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Narrative</div>
+                      {DESIGN_KIND_GROUPS.narrative.map((k) => (
+                        <SelectItem key={k} value={k}>{designKindMeta(k).label}</SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Infrastructure</div>
+                      {DESIGN_KIND_GROUPS.infrastructure.map((k) => (
+                        <SelectItem key={k} value={k}>{designKindMeta(k).label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="design-notes">Notes</Label>
+                  <Input
+                    id="design-notes"
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                    placeholder="Context, decisions, or implementation notes"
+                  />
+                </div>
+                {!editDesign && (
+                  <div className="flex flex-col gap-1.5 md:col-span-3">
+                    <Label>Format</Label>
+                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
+                      <SelectTrigger className="w-64">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DESIGN_DIAGRAM_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>{DIAGRAM_TYPE_LABELS[type]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              <div className="min-h-0 flex-1 bg-slate-100 p-3 dark:bg-slate-950">
+                {editDesign ? (
+                  <PencilDiagram
+                    key={editDesign.id}
+                    ref={pencilEditorRef}
+                    projectId={projectId}
+                    designId={editDesign.id}
+                    title={editForm.title}
+                  />
+                ) : (
+                  <div className="flex h-full min-h-[360px] items-center justify-center rounded-lg border border-border/80 bg-muted/30 p-6 text-center text-sm text-muted-foreground">
+                    Save this design first — the editor opens once the design has an ID.
+                  </div>
+                )}
+              </div>
+              <DialogFooter className="border-t bg-card px-5 py-3">
+                <p className="mr-auto text-xs text-muted-foreground">
+                  Changes stay in this dialog until you save the OpenMemory design.
+                </p>
+                <Button variant="outline" onClick={() => setIsEditOpen(false)}>Cancel</Button>
                 <Button onClick={handleSave} disabled={isSaving}>
                   {isSaving ? 'Saving…' : editDesign ? 'Save changes' : 'Create'}
                 </Button>

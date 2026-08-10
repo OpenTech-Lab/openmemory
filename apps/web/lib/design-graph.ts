@@ -5,7 +5,7 @@
 
 import type { Edge, Node, Viewport } from '@xyflow/react';
 
-export const DESIGN_DIAGRAM_TYPES = ['drawio', 'mermaid', 'reactflow'] as const;
+export const DESIGN_DIAGRAM_TYPES = ['drawio', 'mermaid', 'reactflow', 'pen'] as const;
 export type DesignDiagramType = (typeof DESIGN_DIAGRAM_TYPES)[number];
 
 // 'junction' is the architecture-beta derived-mode dot-node (design-junction-node.tsx). Nothing
