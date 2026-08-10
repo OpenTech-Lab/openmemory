@@ -66,7 +66,6 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
           frameWindow.postMessage(
             JSON.stringify({
               action: 'load',
-              baseUrl: window.location.origin,
               projectId,
               designId,
             }),

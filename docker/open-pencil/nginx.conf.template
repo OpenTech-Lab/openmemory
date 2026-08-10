@@ -1,0 +1,38 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+    root /usr/share/nginx/html;
+
+    client_max_body_size 128M;
+    resolver 127.0.0.11 valid=10s;
+
+    # The offline guarantee. Configuration flags inside the app stop it from *trying* to
+    # reach the network; this stops it from *succeeding* if a future upstream change
+    # reintroduces a fetch. 'wasm-unsafe-eval' is required to instantiate CanvasKit.
+    # connect-src stays 'self': the embed's own fetch to /api/blob/... never leaves this
+    # origin — nginx, not the browser, makes the cross-service hop below.
+    add_header Content-Security-Policy "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors *" always;
+
+    # Proxies the embed's own same-origin fetch through to OpenMemory's Rust server,
+    # injecting the Bearer token here (server-side, via envsubst below) so the token never
+    # reaches the browser. `resolver` above is required specifically because this
+    # proxy_pass target contains variables (nginx defers hostname resolution to request
+    # time in that case, and request-time resolution needs an explicit resolver — Docker's
+    # embedded DNS at 127.0.0.11 — rather than the static resolution used for a bare
+    # hostname proxy_pass). Verified end-to-end against a live upstream during planning:
+    # GET/PUT both round-trip correctly, auth header lands, $uri elsewhere in this file is
+    # untouched by the envsubst pass since `uri` is never itself an environment variable.
+    location ~ ^/api/blob/(?<project_id>[^/]+)/(?<design_id>[^/]+)$ {
+        proxy_pass http://openmemory-server:18080/projects/$project_id/designs/$design_id/blob;
+        proxy_set_header Authorization "Bearer ${OPENMEMORY_API_TOKEN}";
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    types {
+        application/wasm wasm;
+    }
+}

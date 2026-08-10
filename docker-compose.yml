@@ -138,7 +138,14 @@ services:
     profiles: [api]
     build:
       context: ${OPEN_PENCIL_PATH:-../open-pencil}
-      dockerfile: ${PWD}/docker/open-pencil/Dockerfile
+      # dockerfile: is resolved relative to `context:` (a sibling checkout, not this repo),
+      # so it cannot be a bare relative path here — verified empirically during planning
+      # that Compose has no built-in "relative to this compose file" variable for this
+      # field specifically (unlike `context:` and `volumes:` host paths, which Compose DOES
+      # resolve against the compose file's own directory regardless of invocation cwd).
+      # OPENMEMORY_ROOT documents the real constraint (this compose file expects to be
+      # invoked from the OpenMemory repo root) instead of silently depending on $PWD.
+      dockerfile: ${OPENMEMORY_ROOT:-.}/docker/open-pencil/Dockerfile
       args:
         # Baked into the JS bundle at `vite build` time — this is the embed's
         # postMessage trust anchor, not a runtime-configurable value. Must match the
@@ -147,8 +154,26 @@ services:
         OPENMEMORY_WEB_ORIGIN: ${OPENMEMORY_WEB_ORIGIN:-http://localhost:13000}
     ports:
       - "127.0.0.1:${OPEN_PENCIL_PORT:-18082}:80"
+    environment:
+      # Injected into the nginx config by the base image's envsubst-on-templates
+      # entrypoint (see nginx.conf.template) — never reaches the browser.
+      OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
     volumes:
-      - ${PWD}/docker/open-pencil/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Bare relative path: Compose resolves this against the compose file's own
+      # directory regardless of invocation cwd (verified empirically during planning),
+      # unlike the dockerfile: path above. Mounted into /etc/nginx/templates/ (not
+      # conf.d/) so the base image's own entrypoint script performs the envsubst pass.
+      - ./docker/open-pencil/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      # proxy_pass's target contains variables (the path-rewrite captures), which makes
+      # nginx defer DNS resolution to request time via the `resolver` directive rather
+      # than resolving once at config load — but nginx still needs `openmemory-server` to
+      # exist on the network. Verified during planning: a `proxy_pass` to a completely
+      # unresolvable static hostname fails nginx startup outright; ordering after
+      # openmemory-server's healthcheck avoids that failure mode in normal `docker compose
+      # up` bring-up.
+      openmemory-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/embed.html || exit 1"]
       interval: 5s
