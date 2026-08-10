@@ -789,7 +789,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   </div>
                 )}
               </div>
-              <div className="min-h-0 flex-1 bg-slate-100 p-3 dark:bg-slate-950">
+              <div className="min-h-0 flex-1 bg-slate-100 dark:bg-slate-950">
                 <DrawioDiagram
                   ref={drawioEditorRef}
                   key={editDesign?.id ?? `new-${canvasKey}`}
