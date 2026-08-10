@@ -164,11 +164,10 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isBudgetOpen, setIsBudgetOpen] = useState(false);
 
-  // Preview fullscreen — same Fullscreen API pattern as mermaid-diagram.tsx's own toggle,
-  // applied here to the whole preview block (title/badge/Edit/Delete row + canvas) rather than
-  // just the canvas, so those controls stay reachable while fullscreen.
-  const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
-  const previewRef = useRef<HTMLDivElement>(null);
+  // In-window preview expansion. This deliberately avoids the browser Fullscreen API: the
+  // preview grows to the browser viewport while the browser's own chrome and monitor remain
+  // untouched.
+  const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
 
   // Create/edit dialog
   const [editDesign, setEditDesign] = useState<Design | null>(null); // null while creating
@@ -278,23 +277,21 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       .catch(() => setForecastProfiles([]));
   }, []);
 
-  // Keep isPreviewFullscreen in sync with the browser's actual fullscreen state — the user can
-  // exit via Esc or the browser's own UI, not just our button.
   useEffect(() => {
-    const handleChange = () => setIsPreviewFullscreen(document.fullscreenElement === previewRef.current);
-    document.addEventListener('fullscreenchange', handleChange);
-    return () => document.removeEventListener('fullscreenchange', handleChange);
-  }, []);
+    if (!isPreviewExpanded) return;
 
-  const togglePreviewFullscreen = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    } else {
-      // Can reject (e.g. Permissions-Policy denies "fullscreen" in an embedded/iframed context)
-      // — swallow rather than throw, same as mermaid-diagram.tsx's toggle.
-      previewRef.current?.requestFullscreen().catch(() => {});
-    }
-  };
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsPreviewExpanded(false);
+    };
+
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isPreviewExpanded]);
 
   const selectedDesign = useMemo(
     () => designs.find((d) => d.id === selectedId) ?? null,
@@ -609,14 +606,24 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             flex-basis resolution, so the flex-1/min-h-0 chain down to the scroll container below
             silently fails to get a bounded height and the diagram just overflows uncapped. An
             explicit height fixes this; selectedDesign ? '' handles the empty-state case where a
-            fixed tall box would look odd with no diagram to fill it.
-            In fullscreen, the browser's UA stylesheet forces this element to fill the viewport
-            regardless of the h-[70vh]/min-h classes below (same as mermaid-diagram.tsx's own
-            fullscreen root), so no separate fullscreen-specific sizing class is needed here —
-            only a background, since fullscreen otherwise renders on a transparent/black canvas. */}
+            fixed tall box would look odd with no diagram to fill it. Expanded mode is an inset
+            fixed panel inside the browser viewport, rather than monitor-level fullscreen. */}
+        {isPreviewExpanded && (
+          <button
+            type="button"
+            aria-label="Close expanded preview"
+            className="fixed inset-0 z-30 cursor-default bg-black/55 backdrop-blur-[2px]"
+            onClick={() => setIsPreviewExpanded(false)}
+          />
+        )}
         <div
-          ref={previewRef}
-          className={`rounded-md p-4 pb-6 flex flex-col gap-3 overflow-hidden ${selectedDesign ? 'h-[85vh]' : 'min-h-[300px]'} ${isPreviewFullscreen ? 'bg-background' : ''}`}
+          className={`flex flex-col gap-3 overflow-hidden rounded-md p-4 pb-6 ${
+            isPreviewExpanded
+              ? 'fixed inset-3 z-40 h-auto rounded-xl border bg-background pb-4 shadow-2xl sm:inset-6'
+              : selectedDesign
+                ? 'h-[85vh]'
+                : 'min-h-[300px]'
+          }`}
         >
           {selectedDesign ? (
             <>
@@ -649,10 +656,12 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={togglePreviewFullscreen}
-                    title={isPreviewFullscreen ? 'Exit full screen' : 'Full screen'}
+                    onClick={() => setIsPreviewExpanded((expanded) => !expanded)}
+                    aria-label={isPreviewExpanded ? 'Restore preview' : 'Expand preview in window'}
+                    aria-pressed={isPreviewExpanded}
+                    title={isPreviewExpanded ? 'Restore preview' : 'Expand in window'}
                   >
-                    {isPreviewFullscreen ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
+                    {isPreviewExpanded ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => setDeleteDesign(selectedDesign)}>
                     <Trash2 className="h-4 w-4" />
