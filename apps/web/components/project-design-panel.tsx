@@ -323,9 +323,11 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     const diagramType = (
       design.diagram_type === 'drawio'
         ? 'drawio'
-        : design.diagram_type === 'reactflow'
-          ? 'reactflow'
-          : 'mermaid'
+        : design.diagram_type === 'pen'
+          ? 'pen'
+          : design.diagram_type === 'reactflow'
+            ? 'reactflow'
+            : 'mermaid'
     ) as DesignDiagramType;
     // The textarea never shows the layout comment — a drag can't rewrite text under the user's
     // caret, and there's no edit-conflict to resolve on save (Decision 2's editor round-trip).
