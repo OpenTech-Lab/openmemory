@@ -3,6 +3,7 @@ mod budget_ai;
 mod claude_usage;
 mod crypto;
 mod design_ai;
+mod design_blobs;
 mod design_budgets;
 mod falkordb;
 mod forecasts;
@@ -1490,6 +1491,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/lessons", get(search_lessons))
         .route("/projects/:id/designs", get(list_project_designs).post(create_project_design))
         .route("/projects/:id/designs/:design_id", axum::routing::put(update_project_design).delete(delete_project_design))
+        .route(
+            "/projects/:id/designs/:design_id/blob",
+            get(design_blobs::get_design_blob).put(design_blobs::put_design_blob),
+        )
         .route("/projects/:id/designs/:design_id/budgets", get(list_design_budgets).post(create_design_budget))
         .route("/projects/:id/designs/:design_id/budgets/:budget_id", axum::routing::put(update_design_budget).delete(delete_design_budget))
         .route("/projects/:id/design-assets", get(list_project_design_assets))
@@ -1499,6 +1504,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/workflows/:id", get(get_workflow).put(update_workflow).delete(delete_workflow))
         .route("/workflows/:id/run", post(run_workflow))
         .route("/workflow-runs/:id/continue", post(continue_workflow_run))
+        .layer(axum::extract::DefaultBodyLimit::max(design_blobs::MAX_DESIGN_BLOB_BYTES))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {
