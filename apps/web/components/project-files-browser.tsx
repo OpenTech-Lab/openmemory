@@ -79,7 +79,7 @@ export function ProjectFilesBrowser({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex items-center gap-1 px-6 py-3 shrink-0 text-sm">
+      <div className="flex items-center gap-1 p-6 shrink-0 text-sm">
         <button className="text-muted-foreground hover:text-foreground" onClick={() => setPath('')}>
           root
         </button>
