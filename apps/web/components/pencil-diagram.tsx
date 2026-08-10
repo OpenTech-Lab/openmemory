@@ -2,7 +2,6 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, LoaderCircle } from 'lucide-react';
-import { useTheme } from 'next-themes';
 import { parsePencilMessage, pencilEmbedSrc, serializePencilRef } from '@/lib/pencil';
 
 interface PencilDiagramProps {
@@ -17,8 +16,6 @@ export interface PencilDiagramHandle {
 
 export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>(
   function PencilDiagram({ projectId, designId, title = 'OpenPencil design' }, ref) {
-    const { resolvedTheme } = useTheme();
-    const isDark = resolvedTheme === 'dark';
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const pendingSaveRef = useRef<{
       resolve: (source: string) => void;
@@ -28,7 +25,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
     const [isReady, setIsReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const src = useMemo(() => pencilEmbedSrc(isDark), [isDark]);
+    const src = useMemo(() => pencilEmbedSrc(), []);
     const targetOrigin = useMemo(() => new URL(src).origin, [src]);
 
     useImperativeHandle(

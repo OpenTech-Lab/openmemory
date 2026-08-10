@@ -37,11 +37,9 @@ test('malformed refs parse to null rather than throwing', () => {
   assert.equal(parsePencilRef('42'), null);
 });
 
-test('embed src carries the embed path and theme', () => {
-  const dark = pencilEmbedSrc(true);
-  assert.equal(dark.includes('/embed.html'), true);
-  assert.equal(dark.includes('dark=1'), true);
-  assert.equal(pencilEmbedSrc(false).includes('dark=0'), true);
+test('embed src carries the embed path', () => {
+  const src = pencilEmbedSrc();
+  assert.equal(src.includes('/embed.html'), true);
 });
 
 test('message parsing tolerates hostile input', () => {

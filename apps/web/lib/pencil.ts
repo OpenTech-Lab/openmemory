@@ -39,9 +39,8 @@ export function blankPencilSource(): string {
   return serializePencilRef({ providerId: 'openmemory' });
 }
 
-export function pencilEmbedSrc(darkMode = false): string {
-  const params = new URLSearchParams({ dark: darkMode ? '1' : '0' });
-  return `${PENCIL_EMBED_URL}/embed.html?${params.toString()}`;
+export function pencilEmbedSrc(): string {
+  return `${PENCIL_EMBED_URL}/embed.html`;
 }
 
 export interface PencilMessage {
