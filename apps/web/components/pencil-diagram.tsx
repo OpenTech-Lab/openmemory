@@ -1,13 +1,14 @@
 'use client';
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, LoaderCircle } from 'lucide-react';
+import { AlertTriangle, Eye, LoaderCircle } from 'lucide-react';
 import { parsePencilMessage, pencilEmbedSrc, serializePencilRef } from '@/lib/pencil';
 
 interface PencilDiagramProps {
   projectId: string;
   designId: string;
   title?: string;
+  mode?: 'editor' | 'viewer';
 }
 
 export interface PencilDiagramHandle {
@@ -15,7 +16,10 @@ export interface PencilDiagramHandle {
 }
 
 export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>(
-  function PencilDiagram({ projectId, designId, title = 'OpenPencil design' }, ref) {
+  function PencilDiagram(
+    { projectId, designId, title = 'OpenPencil design', mode = 'editor' },
+    ref,
+  ) {
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const pendingSaveRef = useRef<{
       resolve: (source: string) => void;
@@ -27,6 +31,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
 
     const src = useMemo(() => pencilEmbedSrc(), []);
     const targetOrigin = useMemo(() => new URL(src).origin, [src]);
+    const isViewer = mode === 'viewer';
 
     useImperativeHandle(
       ref,
@@ -118,7 +123,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/95 text-muted-foreground">
             <div className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm text-card-foreground shadow-sm">
               <LoaderCircle className="h-4 w-4 animate-spin text-sky-600" />
-              Loading design studio…
+              {isViewer ? 'Loading design preview…' : 'Loading design studio…'}
             </div>
           </div>
         )}
@@ -126,18 +131,27 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-background p-6 text-center text-sm text-red-700 dark:text-red-300">
             <div className="max-w-md rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
               <AlertTriangle className="mx-auto mb-2 h-6 w-6" />
-              <p className="font-semibold">Couldn&apos;t load the design editor</p>
+              <p className="font-semibold">
+                Couldn&apos;t load the design {isViewer ? 'preview' : 'editor'}
+              </p>
               <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>
             </div>
+          </div>
+        )}
+        {isViewer && isReady && !error && (
+          <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-full border border-white/70 bg-white/90 px-2.5 py-1 text-[11px] font-medium tracking-wide text-slate-600 shadow-sm backdrop-blur dark:border-white/10 dark:bg-slate-950/80 dark:text-slate-300">
+            <Eye className="h-3 w-3" />
+            Preview
           </div>
         )}
         <iframe
           ref={iframeRef}
           src={src}
-          title={`Edit ${title}`}
-          className="h-full w-full border-0 bg-background"
-          allow="clipboard-read; clipboard-write; fullscreen"
+          title={`${isViewer ? 'View' : 'Edit'} ${title}`}
+          className={`h-full w-full border-0 bg-background ${isViewer ? 'pointer-events-none select-none' : ''}`}
+          allow={isViewer ? 'fullscreen' : 'clipboard-read; clipboard-write; fullscreen'}
           allowFullScreen
+          tabIndex={isViewer ? -1 : 0}
           onError={() => setError('The configured OpenPencil service could not be reached.')}
         />
       </div>

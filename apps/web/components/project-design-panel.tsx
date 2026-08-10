@@ -673,20 +673,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                     );
                   }
                   if (selectedDesign.diagram_type === 'pen') {
-                    // PencilDiagram has no viewer-only mode (unlike DrawioDiagram's mode="viewer"),
-                    // and building one is explicitly out of scope for this pass. Rather than feed
-                    // the pen design's small JSON marker into MermaidDiagram — which would render
-                    // it as an "invalid diagram" error — show a static placeholder that sends the
-                    // user straight to the real editor.
                     return (
-                      <div className="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground text-sm">
-                        <Pencil className="h-8 w-8" />
-                        <p>Open in Edit to view this OpenPencil design.</p>
-                        <Button variant="outline" size="sm" onClick={() => openEdit(selectedDesign)}>
-                          <Pencil className="h-4 w-4 mr-2" />
-                          Edit
-                        </Button>
-                      </div>
+                      <PencilDiagram
+                        key={selectedDesign.id}
+                        projectId={projectId}
+                        designId={selectedDesign.id}
+                        title={selectedDesign.title}
+                        mode="viewer"
+                      />
                     );
                   }
                   const previewMode = computeEditorMode(
