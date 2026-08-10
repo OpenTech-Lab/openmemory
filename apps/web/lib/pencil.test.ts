@@ -37,11 +37,17 @@ test('malformed refs parse to null rather than throwing', () => {
   assert.equal(parsePencilRef('42'), null);
 });
 
-test('embed src carries a versioned embed path to avoid stale response metadata', () => {
+test('embed src carries a versioned editor mode to avoid stale response metadata', () => {
   const src = pencilEmbedSrc();
   const url = new URL(src);
   assert.equal(url.pathname, '/embed.html');
-  assert.equal(url.searchParams.get('openmemoryEmbed'), '2');
+  assert.equal(url.searchParams.get('openmemoryEmbed'), '3');
+  assert.equal(url.searchParams.get('mode'), 'editor');
+});
+
+test('embed src identifies read-only viewers', () => {
+  const url = new URL(pencilEmbedSrc('viewer'));
+  assert.equal(url.searchParams.get('mode'), 'viewer');
 });
 
 test('message parsing tolerates hostile input', () => {

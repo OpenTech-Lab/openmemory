@@ -29,7 +29,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
     const [isReady, setIsReady] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const src = useMemo(() => pencilEmbedSrc(), []);
+    const src = useMemo(() => pencilEmbedSrc(mode), [mode]);
     const targetOrigin = useMemo(() => new URL(src).origin, [src]);
     const isViewer = mode === 'viewer';
 

@@ -5,7 +5,9 @@ export const PENCIL_EMBED_URL =
 // embed.html as application/octet-stream, and browsers can retain that response metadata
 // even after nginx is fixed. A versioned navigation bypasses that poisoned cache entry;
 // nginx also serves the entry document with revalidation headers going forward.
-const PENCIL_EMBED_REVISION = '2';
+const PENCIL_EMBED_REVISION = '3';
+
+export type PencilEmbedMode = 'editor' | 'viewer';
 
 /**
  * A `pen` design stores only a marker in `project_designs.source`. The `.fig` bytes live
@@ -45,8 +47,8 @@ export function blankPencilSource(): string {
   return serializePencilRef({ providerId: 'openmemory' });
 }
 
-export function pencilEmbedSrc(): string {
-  return `${PENCIL_EMBED_URL}/embed.html?openmemoryEmbed=${PENCIL_EMBED_REVISION}`;
+export function pencilEmbedSrc(mode: PencilEmbedMode = 'editor'): string {
+  return `${PENCIL_EMBED_URL}/embed.html?openmemoryEmbed=${PENCIL_EMBED_REVISION}&mode=${mode}`;
 }
 
 export interface PencilMessage {
