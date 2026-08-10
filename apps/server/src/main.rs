@@ -1493,7 +1493,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/designs/:design_id", axum::routing::put(update_project_design).delete(delete_project_design))
         .route(
             "/projects/:id/designs/:design_id/blob",
-            get(design_blobs::get_design_blob).put(design_blobs::put_design_blob),
+            get(design_blobs::get_design_blob)
+                .put(design_blobs::put_design_blob)
+                // Scoped to this route only (not the whole router): a little above
+                // MAX_DESIGN_BLOB_BYTES so axum only rejects truly oversized bodies,
+                // leaving the handler's own check to return the documented JSON error
+                // for anything between the two thresholds.
+                .layer(axum::extract::DefaultBodyLimit::max(design_blobs::MAX_DESIGN_BLOB_BYTES + 1024)),
         )
         .route("/projects/:id/designs/:design_id/budgets", get(list_design_budgets).post(create_design_budget))
         .route("/projects/:id/designs/:design_id/budgets/:budget_id", axum::routing::put(update_design_budget).delete(delete_design_budget))
@@ -1504,7 +1510,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/workflows/:id", get(get_workflow).put(update_workflow).delete(delete_workflow))
         .route("/workflows/:id/run", post(run_workflow))
         .route("/workflow-runs/:id/continue", post(continue_workflow_run))
-        .layer(axum::extract::DefaultBodyLimit::max(design_blobs::MAX_DESIGN_BLOB_BYTES))
         .layer(TraceLayer::new_for_http())
         .layer({
             match std::env::var("OPENMEMORY_CORS_ORIGINS") {

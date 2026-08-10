@@ -28,6 +28,14 @@ pub fn blob_path(root: &Path, design_id: Uuid) -> PathBuf {
     root.join(format!("{design_id}.fig"))
 }
 
+/// Temp path for a single in-flight write. Includes a fresh UUID (not just
+/// `design_id`) so two concurrent PUTs for the same design never share a path —
+/// sharing one would let their writes interleave and let the eventual rename
+/// land a corrupted, mixed-content file.
+pub fn temp_blob_path(root: &Path, design_id: Uuid) -> PathBuf {
+    root.join(format!("{design_id}.{}.fig.tmp", Uuid::new_v4()))
+}
+
 /// Confirms the design exists and belongs to this project before any file touch,
 /// so blob URLs cannot be used to probe or write across projects.
 async fn design_exists(state: &AppState, project_id: Uuid, design_id: Uuid) -> Result<bool, sqlx::Error> {
@@ -115,15 +123,20 @@ pub async fn put_design_blob(
     }
 
     // Write to a temp file then rename, so a failed or partial write can never leave a
-    // corrupt document where a previously good one was.
+    // corrupt document where a previously good one was. The temp filename includes a
+    // fresh request-scoped UUID so two concurrent PUTs for the same design_id never
+    // share a path — sharing one would let their writes interleave and let the
+    // eventual rename land a corrupted, mixed-content file.
     let final_path = blob_path(&root, design_id);
-    let temp_path = root.join(format!("{design_id}.fig.tmp"));
+    let temp_path = temp_blob_path(&root, design_id);
     if let Err(e) = tokio::fs::write(&temp_path, &body).await {
         error!("put_design_blob write error: {e}");
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
     }
     if let Err(e) = tokio::fs::rename(&temp_path, &final_path).await {
         error!("put_design_blob rename error: {e}");
+        // Best-effort cleanup so a rename failure doesn't orphan the temp file.
+        let _ = tokio::fs::remove_file(&temp_path).await;
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
     }
 
@@ -156,5 +169,22 @@ mod tests {
         let path = blob_path(root, id);
         assert!(path.starts_with(root));
         assert!(!path.to_string_lossy().contains(".."));
+    }
+
+    #[test]
+    fn temp_paths_for_same_design_id_are_unique_per_call() {
+        // Regression test for the concurrent-write race: two PUTs for the same
+        // design_id must never compute the same temp path, or their writes could
+        // interleave and the eventual rename could land a corrupted file.
+        let root = std::path::Path::new("/data/design-blobs");
+        let design_id = Uuid::new_v4();
+        let temp_a = temp_blob_path(root, design_id);
+        let temp_b = temp_blob_path(root, design_id);
+        assert_ne!(temp_a, temp_b);
+        // Both still land under the root and stay clearly tied to the design_id.
+        assert!(temp_a.starts_with(root));
+        let file_name = temp_a.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(file_name.starts_with(&format!("{design_id}.")));
+        assert!(file_name.ends_with(".fig.tmp"));
     }
 }
