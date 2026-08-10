@@ -124,7 +124,13 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
     }, [designId, projectId, src, targetOrigin]);
 
     return (
-      <div className="relative h-full min-h-[360px] overflow-hidden rounded-lg border border-border/80 bg-background shadow-[0_18px_60px_rgba(15,23,42,0.12)] dark:shadow-[0_18px_60px_rgba(0,0,0,0.42)]">
+      <div
+        className={`relative h-full min-h-[360px] overflow-hidden bg-background ${
+          isViewer
+            ? 'rounded-lg border border-border/80 shadow-[0_18px_60px_rgba(15,23,42,0.12)] dark:shadow-[0_18px_60px_rgba(0,0,0,0.42)]'
+            : ''
+        }`}
+      >
         {!isReady && !error && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/95 text-muted-foreground">
             <div className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm text-card-foreground shadow-sm">
