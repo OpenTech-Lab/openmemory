@@ -1,6 +1,12 @@
 export const PENCIL_EMBED_URL =
   process.env.NEXT_PUBLIC_OPEN_PENCIL_URL?.replace(/\/$/, '') ?? 'http://localhost:18082';
 
+// Bump when the embed boot contract changes. The first OpenPencil deployment served
+// embed.html as application/octet-stream, and browsers can retain that response metadata
+// even after nginx is fixed. A versioned navigation bypasses that poisoned cache entry;
+// nginx also serves the entry document with revalidation headers going forward.
+const PENCIL_EMBED_REVISION = '2';
+
 /**
  * A `pen` design stores only a marker in `project_designs.source`. The `.fig` bytes live
  * on the server's blob volume — real design files reach ~82 MB and must never be inlined
@@ -40,7 +46,7 @@ export function blankPencilSource(): string {
 }
 
 export function pencilEmbedSrc(): string {
-  return `${PENCIL_EMBED_URL}/embed.html`;
+  return `${PENCIL_EMBED_URL}/embed.html?openmemoryEmbed=${PENCIL_EMBED_REVISION}`;
 }
 
 export interface PencilMessage {

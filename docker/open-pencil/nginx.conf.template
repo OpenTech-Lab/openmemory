@@ -15,6 +15,7 @@ server {
     # connect-src stays 'self': the embed's own fetch to /api/blob/... never leaves this
     # origin — nginx, not the browser, makes the cross-service hop below.
     add_header Content-Security-Policy "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors *" always;
+    add_header X-Content-Type-Options "nosniff" always;
 
     # Proxies the embed's own same-origin fetch through to OpenMemory's Rust server,
     # injecting the Bearer token here (server-side, via envsubst below) so the token never
@@ -28,6 +29,17 @@ server {
     location ~ ^/api/blob/(?<project_id>[^/]+)/(?<design_id>[^/]+)$ {
         proxy_pass http://openmemory-server:18080/projects/$project_id/designs/$design_id/blob;
         proxy_set_header Authorization "Bearer ${OPENMEMORY_API_TOKEN}";
+    }
+
+    # The entry document owns the parent-frame handshake. Never let a browser retain stale
+    # response metadata for it (an older deployment served HTML as application/octet-stream,
+    # which made browsers download the iframe instead of executing it). Hashed JS/CSS/WASM
+    # assets keep their normal caching behavior.
+    location = /embed.html {
+        etag off;
+        if_modified_since off;
+        expires epoch;
+        try_files $uri =404;
     }
 
     location / {

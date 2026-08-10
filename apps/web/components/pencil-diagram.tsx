@@ -57,8 +57,11 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
     );
 
     useEffect(() => {
-      setIsReady(false);
-      setError(null);
+      const loadTimeout = setTimeout(() => {
+        setError(
+          'OpenPencil did not start. Reload this page to retry the embedded editor.',
+        );
+      }, 30000);
 
       const handleMessage = (event: MessageEvent) => {
         const frameWindow = iframeRef.current?.contentWindow;
@@ -80,6 +83,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
         }
 
         if (message.event === 'loaded') {
+          clearTimeout(loadTimeout);
           setIsReady(true);
           return;
         }
@@ -95,6 +99,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
         }
 
         if (message.error) {
+          clearTimeout(loadTimeout);
           setError(message.error);
           const pending = pendingSaveRef.current;
           if (pending) {
@@ -107,6 +112,7 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
 
       window.addEventListener('message', handleMessage);
       return () => {
+        clearTimeout(loadTimeout);
         window.removeEventListener('message', handleMessage);
         const pending = pendingSaveRef.current;
         if (pending) {
