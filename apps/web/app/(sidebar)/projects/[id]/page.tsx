@@ -548,7 +548,7 @@ export default function ProjectDetailPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-4 px-6 py-3 border-b shrink-0">
+      <div className="flex items-center gap-4 px-6 py-3 shrink-0">
         <Button variant="ghost" size="sm" onClick={() => router.push('/projects')}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
@@ -575,42 +575,42 @@ export default function ProjectDetailPage() {
 
       {/* Tabs — always visible; Graph/Files/History tabs only for projects with a path.
           Order: Files, Design, Tasks, Routines, Lessons, Graph, History. */}
-      <div className="flex border-b shrink-0 px-6">
+      <div className="flex shrink-0 px-6">
         {hasGraph && (
           <button
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'files' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'files' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveTab('files')}
           >
             Files
           </button>
         )}
         <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'design' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'design' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('design')}
         >
           Design {designCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{designCount}</span>}
         </button>
         <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'tasks' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'tasks' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('tasks')}
         >
           Tasks {taskCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{taskCount}</span>}
         </button>
         <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'routines' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'routines' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('routines')}
         >
           Routines {routines.length > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{routines.length}</span>}
         </button>
         <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'lessons' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'lessons' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('lessons')}
         >
           Lessons {lessonCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{lessonCount}</span>}
         </button>
         {hasGraph && (
           <button
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'graph' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'graph' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveTab('graph')}
           >
             Graph
@@ -618,7 +618,7 @@ export default function ProjectDetailPage() {
         )}
         {hasGraph && (
           <button
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'history' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'history' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveTab('history')}
           >
             History
