@@ -30,5 +30,15 @@ ENV OPENMEMORY_HOST=0.0.0.0
 
 EXPOSE 18080
 
+# /data/design-blobs backs a named Docker volume (see docker-compose.yml) that
+# Docker auto-creates as root:root, mode 0755, on first mount — unwritable by
+# any non-root container user. docker-compose.yml overrides this image's
+# baked-in USER (10001:10001) with `user: "${UID:-1000}:${GID:-1000}"`, i.e.
+# the *host* user's UID:GID, which is not known at image build time and varies
+# per machine. Since we can't chown to a UID we don't know, make the directory
+# world-writable instead so it's writable under either the baked-in USER or
+# whatever UID:GID docker-compose substitutes at runtime.
+RUN mkdir -p /data/design-blobs && chmod 0777 /data/design-blobs
+
 USER 10001:10001
 CMD ["openmemory-server"]
