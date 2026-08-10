@@ -9,10 +9,12 @@ server {
 
     # The offline guarantee. Configuration flags inside the app stop it from *trying* to
     # reach the network; this stops it from *succeeding* if a future upstream change
-    # reintroduces a fetch. 'wasm-unsafe-eval' is required to instantiate CanvasKit.
+    # reintroduces a fetch. 'wasm-unsafe-eval' is required to instantiate CanvasKit;
+    # OpenPencil's bundled expression runtime also requires 'unsafe-eval'. This policy
+    # applies only to the isolated OpenPencil origin and connect-src remains self-only.
     # connect-src stays 'self': the embed's own fetch to /api/blob/... never leaves this
     # origin — nginx, not the browser, makes the cross-service hop below.
-    add_header Content-Security-Policy "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors *" always;
+    add_header Content-Security-Policy "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' data: blob:; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors *" always;
 
     # Proxies the embed's own same-origin fetch through to OpenMemory's Rust server,
     # injecting the Bearer token here (server-side, via envsubst below) so the token never
@@ -32,7 +34,7 @@ server {
         try_files $uri $uri/ =404;
     }
 
-    types {
-        application/wasm wasm;
-    }
+    # Keep nginx's complete MIME map. ES module scripts are rejected by browsers when
+    # they fall back to application/octet-stream; the stock map also includes WASM.
+    include /etc/nginx/mime.types;
 }
