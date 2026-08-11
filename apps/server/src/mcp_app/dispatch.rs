@@ -1,0 +1,82 @@
+use super::*;
+
+impl McpServer {
+    pub(super) async fn handle_tools_call(
+        &mut self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let params = params.context("missing params")?;
+        let name = params["name"].as_str().context("missing tool name")?;
+        let arguments = &params["arguments"];
+
+        match name {
+            "memory_save" => self.memory_save(arguments).await,
+            "memory_search" => self.memory_search(arguments).await,
+            "memory_graph_all" => self.memory_graph_all(arguments).await,
+            "memory_graph_data" => self.memory_graph_data(arguments).await,
+            "memory_graph_rebuild" => self.memory_graph_rebuild(arguments).await,
+            "memory_graph_neighbors" => self.memory_graph_neighbors(arguments).await,
+            "memory_graph_relate" => self.memory_graph_relate(arguments).await,
+            "graph_add_episode" => self.graph_add_episode(arguments).await,
+            "graph_add_entity" => self.graph_add_entity(arguments).await,
+            "graph_add_fact" => self.graph_add_fact(arguments).await,
+            "graph_query_facts" => self.graph_query_facts(arguments).await,
+            "graph_query_at" => self.graph_query_at(arguments).await,
+            "graph_get_entity_history" => self.graph_get_entity_history(arguments).await,
+            "graph_get_entity" => self.graph_get_entity(arguments).await,
+            "env_set" => self.env_set(arguments).await,
+            "env_get" => self.env_get(arguments).await,
+            "env_rename" => self.env_rename(arguments).await,
+            "env_list" => self.env_list(arguments).await,
+            "env_delete" => self.env_delete(arguments).await,
+            "resource_list" => self.resource_list(arguments).await,
+            "resource_tags" => self.resource_tags(arguments).await,
+            "resource_get" => self.resource_get(arguments).await,
+            "resource_add" => self.resource_add(arguments).await,
+            "resource_update" => self.resource_update(arguments).await,
+            "resource_delete" => self.resource_delete(arguments).await,
+            "workflow_list" => self.workflow_list(arguments).await,
+            "workflow_get" => self.workflow_get(arguments).await,
+            "workflow_run" => self.workflow_run(arguments).await,
+            "workflow_continue" => self.workflow_continue(arguments).await,
+            "env_http_request" => self.env_http_request(arguments).await,
+            "env_http_download" => self.env_http_download(arguments).await,
+            "env_sign_jwt" => self.env_sign_jwt(arguments).await,
+            "env_http_request_jwt" => self.env_http_request_jwt(arguments).await,
+            "env_set_file" => self.env_set_file(arguments).await,
+            "env_google_service_account_request" => {
+                self.env_google_service_account_request(arguments).await
+            }
+            "project_graph_list" => self.project_graph_list(arguments).await,
+            "project_graph_create" => self.project_graph_create(arguments).await,
+            "project_graph_query" => self.project_graph_query(arguments).await,
+            "project_graph_node_detail" => self.project_graph_node_detail(arguments).await,
+            "project_graph_shortest_path" => self.project_graph_shortest_path(arguments).await,
+            "project_graph_god_nodes" => self.project_graph_god_nodes(arguments).await,
+            "project_graph_delete" => self.project_graph_delete(arguments).await,
+            "project_graph_rebuild" => self.project_graph_rebuild(arguments).await,
+            "forecast_list" => self.forecast_list(arguments).await,
+            "forecast_create" => self.forecast_create(arguments).await,
+            "forecast_update" => self.forecast_update(arguments).await,
+            "forecast_delete" => self.forecast_delete(arguments).await,
+            "design_budget_list" => self.design_budget_list(arguments).await,
+            "design_budget_create" => self.design_budget_create(arguments).await,
+            "design_budget_update" => self.design_budget_update(arguments).await,
+            "design_budget_delete" => self.design_budget_delete(arguments).await,
+            "project_list" => self.project_list(arguments).await,
+            "project_create" => self.project_create(arguments).await,
+            "project_task_list" => self.project_task_list(arguments).await,
+            "project_task_create" => self.project_task_create(arguments).await,
+            "project_task_update" => self.project_task_update(arguments).await,
+            "project_task_delete" => self.project_task_delete(arguments).await,
+            "lesson_create" => self.lesson_create(arguments).await,
+            "lesson_list" => self.lesson_list(arguments).await,
+            "lesson_update" => self.lesson_update(arguments).await,
+            "lesson_delete" => self.lesson_delete(arguments).await,
+            "routine_check" => self.routine_check(arguments).await,
+            "routine_list" => self.routine_list(arguments).await,
+            "routine_create" => self.routine_create(arguments).await,
+            _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
+        }
+    }
+}
