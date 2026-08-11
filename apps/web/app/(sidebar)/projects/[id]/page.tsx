@@ -574,7 +574,7 @@ export default function ProjectDetailPage() {
       </div>
 
       {/* Tabs — always visible; Graph/Files/History tabs only for projects with a path.
-          Order: Files, Design, Tasks, Routines, Lessons, Graph, History. */}
+          Order: Files, Docs, Tasks, Routines, Lessons, Graph, History. */}
       <div className="flex shrink-0 px-6">
         {hasGraph && (
           <button
@@ -588,7 +588,7 @@ export default function ProjectDetailPage() {
           className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'design' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('design')}
         >
-          Design {designCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{designCount}</span>}
+          Docs {designCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{designCount}</span>}
         </button>
         <button
           className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'tasks' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}

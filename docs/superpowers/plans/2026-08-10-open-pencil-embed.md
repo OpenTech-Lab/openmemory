@@ -1462,16 +1462,8 @@ Expected: all three behave exactly as before.
 
 - [ ] **Step 7: Commit any fixes**
 
-Fixes found here may land in either repo — commit each separately, in its own repo, never as one combined commit:
-
 ```bash
-# if the fix touched OpenMemory (server, web, docker-compose):
 cd ~/projects/openmemory
-git add -A
-git commit -m "fix: address issues found in end-to-end verification"
-
-# if the fix touched OpenPencil (embed shell, bridge, storage adapter):
-cd ~/projects/open-pencil
 git add -A
 git commit -m "fix: address issues found in end-to-end verification"
 ```
