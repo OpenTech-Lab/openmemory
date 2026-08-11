@@ -189,10 +189,12 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "127.0.0.1:${OPENMEMORY_PORT:-18080}:18080"
-    # Mounts your home directory read-only so any project path under $HOME can be registered.
-    # The server is localhost-only (127.0.0.1) and auth-gated, so this is safe for personal use.
+    # Mounts your home directory so any project path under $HOME can be registered and managed
+    # through Source Control. The server is localhost-only (127.0.0.1) and auth-gated.
     volumes:
-      - ${HOME}:${HOME}:ro
+      # Source Control's Commit & Push action needs to update the registered repository's
+      # working tree and .git metadata. The API remains localhost-only and token-gated.
+      - ${HOME}:${HOME}:rw
       - design-blobs:/data/design-blobs
     environment:
       OPENMEMORY_HOST: "0.0.0.0"

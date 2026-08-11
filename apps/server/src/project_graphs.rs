@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,209 @@ pub fn count_nodes_edges(data: &serde_json::Value) -> (i32, i32) {
         .map(|a| a.len())
         .unwrap_or(0) as i32;
     (nodes, edges)
+}
+
+/// Maximum raw node count for the lightweight project-detail response. Larger
+/// graphs are reduced to one node per community until the user asks for the
+/// full graph explicitly.
+pub const GRAPH_SUMMARY_NODE_LIMIT: usize = 2_000;
+const GRAPH_SUMMARY_MEMBER_LIMIT: usize = 20;
+
+/// Build the graph used by the project's initial page load.
+///
+/// The graph editor already has a community view, but previously the browser
+/// had to download and process the complete graph before it could render that
+/// view. Keep small graphs compact and aggregate large graphs server-side so
+/// the default response contains only the nodes and edges needed for the
+/// overview. The original graph remains available through the `full` detail
+/// request.
+pub fn summary_graph_data(data: &serde_json::Value) -> serde_json::Value {
+    let Some(nodes) = data["nodes"].as_array() else {
+        return data.clone();
+    };
+
+    let visible_node_count = nodes
+        .iter()
+        .filter(|node| node["file_type"].as_str() != Some("commit"))
+        .count();
+    if visible_node_count <= GRAPH_SUMMARY_NODE_LIMIT {
+        return compact_graph_data(data, "simple");
+    }
+
+    let empty_links = Vec::new();
+    let links = data["links"]
+        .as_array()
+        .or_else(|| data["edges"].as_array())
+        .unwrap_or(&empty_links);
+
+    let visible_ids: HashSet<&str> = nodes
+        .iter()
+        .filter(|node| node["file_type"].as_str() != Some("commit"))
+        .filter_map(|node| node["id"].as_str())
+        .collect();
+    let mut degree: HashMap<String, usize> = HashMap::new();
+    for edge in links {
+        let (Some(source), Some(target)) = (edge["source"].as_str(), edge["target"].as_str()) else {
+            continue;
+        };
+        if !visible_ids.contains(source) || !visible_ids.contains(target) {
+            continue;
+        }
+        *degree.entry(source.to_owned()).or_default() += 1;
+        *degree.entry(target.to_owned()).or_default() += 1;
+    }
+
+    let mut groups: BTreeMap<i64, Vec<&serde_json::Value>> = BTreeMap::new();
+    let mut node_to_community: HashMap<String, i64> = HashMap::new();
+    for node in nodes {
+        if node["file_type"].as_str() == Some("commit") {
+            continue;
+        }
+        let Some(id) = node["id"].as_str() else { continue };
+        let community = node["community"].as_i64().unwrap_or(0);
+        node_to_community.insert(id.to_owned(), community);
+        groups.entry(community).or_default().push(node);
+    }
+
+    let mut summary_nodes = Vec::with_capacity(groups.len());
+    for (community, mut members) in groups {
+        members.sort_by(|a, b| {
+            let a_id = a["id"].as_str().unwrap_or_default();
+            let b_id = b["id"].as_str().unwrap_or_default();
+            degree
+                .get(b_id)
+                .unwrap_or(&0)
+                .cmp(degree.get(a_id).unwrap_or(&0))
+                .then_with(|| a_id.cmp(b_id))
+        });
+
+        let top_label = members
+            .first()
+            .and_then(|node| node["label"].as_str().or_else(|| node["id"].as_str()))
+            .unwrap_or("Community")
+            .to_owned();
+        let subtitle = members
+            .iter()
+            .take(3)
+            .filter_map(|node| node["label"].as_str().or_else(|| node["id"].as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut file_type_counts: HashMap<&str, usize> = HashMap::new();
+        for node in &members {
+            if let Some(file_type) = node["file_type"].as_str() {
+                *file_type_counts.entry(file_type).or_default() += 1;
+            }
+        }
+        let dominant_file_type = file_type_counts
+            .into_iter()
+            .max_by(|(a_name, a_count), (b_name, b_count)| {
+                a_count.cmp(b_count).then_with(|| b_name.cmp(a_name))
+            })
+            .map(|(file_type, _)| file_type.to_owned());
+
+        let top_members: Vec<serde_json::Value> = members
+            .iter()
+            .take(GRAPH_SUMMARY_MEMBER_LIMIT)
+            .filter_map(|node| compact_node(node))
+            .collect();
+
+        let mut summary_node = serde_json::Map::new();
+        summary_node.insert("id".to_string(), serde_json::json!(format!("community_{community}")));
+        summary_node.insert("label".to_string(), serde_json::json!(top_label));
+        summary_node.insert("community".to_string(), serde_json::json!(community));
+        summary_node.insert("_count".to_string(), serde_json::json!(members.len()));
+        summary_node.insert("_subtitle".to_string(), serde_json::json!(subtitle));
+        summary_node.insert("_members".to_string(), serde_json::json!(top_members));
+        if let Some(file_type) = dominant_file_type {
+            summary_node.insert("file_type".to_string(), serde_json::json!(file_type));
+        }
+        summary_nodes.push(serde_json::Value::Object(summary_node));
+    }
+
+    let mut summary_edges = Vec::new();
+    let mut seen_pairs = HashSet::new();
+    for edge in links {
+        let (Some(source), Some(target)) = (edge["source"].as_str(), edge["target"].as_str()) else {
+            continue;
+        };
+        let (Some(source_community), Some(target_community)) = (
+            node_to_community.get(source),
+            node_to_community.get(target),
+        ) else {
+            continue;
+        };
+        if source_community == target_community {
+            continue;
+        }
+
+        let (first, second) = if source_community < target_community {
+            (source_community, target_community)
+        } else {
+            (target_community, source_community)
+        };
+        let pair = (*first, *second);
+        if seen_pairs.insert(pair) {
+            summary_edges.push(serde_json::json!({
+                "source": format!("community_{first}"),
+                "target": format!("community_{second}"),
+                "relation": "inter-community",
+            }));
+        }
+    }
+
+    serde_json::json!({
+        "nodes": summary_nodes,
+        "links": summary_edges,
+        "truncated": data["truncated"].as_bool().unwrap_or(false),
+        "view": "community",
+    })
+}
+
+fn compact_graph_data(data: &serde_json::Value, view: &str) -> serde_json::Value {
+    let nodes = data["nodes"]
+        .as_array()
+        .map(|nodes| nodes.iter().filter_map(compact_node).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let empty_links = Vec::new();
+    let links = data["links"]
+        .as_array()
+        .or_else(|| data["edges"].as_array())
+        .unwrap_or(&empty_links);
+    let edges = links.iter().filter_map(compact_edge).collect::<Vec<_>>();
+
+    serde_json::json!({
+        "nodes": nodes,
+        "links": edges,
+        "truncated": data["truncated"].as_bool().unwrap_or(false),
+        "view": view,
+    })
+}
+
+fn compact_node(node: &serde_json::Value) -> Option<serde_json::Value> {
+    let id = node["id"].as_str()?;
+    let mut compact = serde_json::Map::new();
+    compact.insert("id".to_string(), serde_json::json!(id));
+    compact.insert(
+        "label".to_string(),
+        serde_json::json!(node["label"].as_str().unwrap_or(id)),
+    );
+    for key in ["file_type", "community", "source_file"] {
+        if let Some(value) = node.get(key) {
+            compact.insert(key.to_string(), value.clone());
+        }
+    }
+    Some(serde_json::Value::Object(compact))
+}
+
+fn compact_edge(edge: &serde_json::Value) -> Option<serde_json::Value> {
+    let source = edge["source"].as_str()?;
+    let target = edge["target"].as_str()?;
+    Some(serde_json::json!({
+        "source": source,
+        "target": target,
+        "relation": edge["relation"].as_str().unwrap_or_default(),
+    }))
 }
 
 /// Build an undirected adjacency map: node_id → [(neighbor_id, edge_value)].
@@ -542,6 +745,65 @@ mod tests {
         let (nodes, edges) = count_nodes_edges(&data);
         assert_eq!(nodes, 0);
         assert_eq!(edges, 0);
+    }
+
+    // ── summary_graph_data ───────────────────────────────────────────────
+
+    #[test]
+    fn summary_graph_data_keeps_small_graphs_simple() {
+        let data = json!({
+            "nodes": [{
+                "id": "a",
+                "label": "A",
+                "file_type": "code",
+                "community": 1,
+                "source_file": "src/a.rs",
+                "source_location": "L10"
+            }],
+            "links": [{"source": "a", "target": "a", "relation": "self", "weight": 4}],
+            "truncated": false
+        });
+
+        let summary = summary_graph_data(&data);
+        assert_eq!(summary["view"], "simple");
+        assert_eq!(summary["nodes"].as_array().unwrap().len(), 1);
+        assert!(summary["nodes"][0].get("source_location").is_none());
+        assert!(summary["links"][0].get("weight").is_none());
+    }
+
+    #[test]
+    fn summary_graph_data_aggregates_large_graphs_by_community() {
+        let nodes: Vec<serde_json::Value> = (0..=GRAPH_SUMMARY_NODE_LIMIT)
+            .map(|i| {
+                json!({
+                    "id": format!("node_{i}"),
+                    "label": format!("Node {i}"),
+                    "file_type": if i == 0 { "document" } else { "code" },
+                    "community": if i == 0 { 0 } else { 1 },
+                    "source_file": format!("src/{i}.rs")
+                })
+            })
+            .collect();
+        let data = json!({
+            "nodes": nodes,
+            "links": [{"source": "node_0", "target": "node_1", "relation": "imports"}],
+            "truncated": false
+        });
+
+        let summary = summary_graph_data(&data);
+        assert_eq!(summary["view"], "community");
+        assert_eq!(summary["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(summary["nodes"][0]["_count"], 1);
+        assert_eq!(summary["nodes"][1]["_count"], GRAPH_SUMMARY_NODE_LIMIT);
+        assert!(summary["nodes"][1]["_members"].as_array().unwrap().len() <= GRAPH_SUMMARY_MEMBER_LIMIT);
+        assert_eq!(summary["links"].as_array().unwrap().len(), 1);
+        assert_eq!(summary["links"][0]["relation"], "inter-community");
+    }
+
+    #[test]
+    fn summary_graph_data_leaves_missing_graph_data_unchanged() {
+        let data = json!({});
+        assert_eq!(summary_graph_data(&data), data);
     }
 
     // ── bfs_query ─────────────────────────────────────────────────────────

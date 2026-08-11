@@ -31,9 +31,11 @@ async function proxy(url: string, method: string, body?: unknown) {
   }
 }
 
-export async function GET(_req: Request, { params }: Params) {
+export async function GET(req: Request, { params }: Params) {
   const { id } = await params;
-  return proxy(`${API_URL}/projects/${id}`, 'GET');
+  const detail = new URL(req.url).searchParams.get('detail');
+  const query = detail ? `?detail=${encodeURIComponent(detail)}` : '';
+  return proxy(`${API_URL}/projects/${id}${query}`, 'GET');
 }
 
 export async function PUT(req: Request, { params }: Params) {

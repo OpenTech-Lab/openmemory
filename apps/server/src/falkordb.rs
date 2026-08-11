@@ -864,6 +864,36 @@ impl FalkorDbClient {
         Ok(parse_edge_rows(result))
     }
 
+    /// Return the most connected memory IDs for a compact graph overview.
+    pub async fn top_connected_memory_ids(
+        &mut self,
+        user_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Uuid>> {
+        let user_filter = match user_id {
+            Some(uid) => format!(
+                " WHERE a.user_id = \"{}\" AND b.user_id = \"{}\"",
+                escape_str(uid),
+                escape_str(uid)
+            ),
+            None => String::new(),
+        };
+        let q = format!(
+            "MATCH (a:Memory)-[:RELATED_TO|LINKED_TO]-(b:Memory){user_filter} \
+             RETURN a.id AS id, count(b) AS n ORDER BY n DESC LIMIT {limit}"
+        );
+        let result: redis::Value = redis::cmd("GRAPH.QUERY")
+            .arg(GRAPH_NAME)
+            .arg(&q)
+            .query_async(&mut self.conn)
+            .await
+            .context("FalkorDB top_connected_memory_ids failed")?;
+
+        let mut ids: Vec<(Uuid, u32)> = parse_id_count_rows(result).into_iter().collect();
+        ids.sort_unstable_by(|(_, a), (_, b)| b.cmp(a));
+        Ok(ids.into_iter().map(|(id, _)| id).collect())
+    }
+
     /// Return all Entity nodes and FACT edges for the knowledge graph visualization.
     /// Includes both current and historical (invalidated) facts so the UI can show temporal change.
     pub async fn get_graph_data(

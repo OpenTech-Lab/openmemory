@@ -1,6 +1,7 @@
 mod autofill;
 mod budget_ai;
 mod claude_usage;
+mod commit_ai;
 mod crypto;
 mod design_ai;
 mod design_blobs;
@@ -27,7 +28,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use crypto::{decrypt_value, derive_key, encrypt_value, fingerprint, EnvParamRow};
 use chrono::{DateTime, Utc};
@@ -42,6 +43,8 @@ use tower_http::{
 };
 use tracing::{info, warn, error};
 use uuid::Uuid;
+
+const MEMORY_GRAPH_SUMMARY_EDGE_LIMIT: usize = 3_000;
 
 // PostgreSQL: Index data (fast lookups, metadata)
 #[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
@@ -445,6 +448,11 @@ fn default_pg_hops() -> u8 { 2 }
 fn default_pg_limit() -> usize { 50 }
 
 #[derive(Debug, Deserialize)]
+struct GetProjectGraphParams {
+    detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ListProjectFilesParams {
     #[serde(default)]
     path: String,
@@ -456,6 +464,11 @@ struct ListProjectCommitsParams {
     limit: usize,
 }
 fn default_commit_limit() -> usize { 300 }
+
+#[derive(Debug, Deserialize)]
+struct CommitPushPayload {
+    message: String,
+}
 
 // Watcher agent config types
 #[derive(Serialize, FromRow)]
@@ -1480,7 +1493,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
         .route("/projects/:id/query", get(query_project_graph))
         .route("/projects/:id/files", get(list_project_files))
+        .route("/projects/:id/changes", get(list_project_changes))
         .route("/projects/:id/commits", get(list_project_commits))
+        .route("/projects/:id/commit-message", post(suggest_project_commit_message))
+        .route("/projects/:id/commit-push", post(commit_and_push_project))
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
         .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
         .route("/projects/:id/routines", get(list_project_routines).post(create_project_routine))
@@ -3450,12 +3466,43 @@ async fn mcp(
         }
 
         McpRequest::MemoryGraphData { user_id, limit } => {
-            // No limit → all memories (the web graph page requests everything by
-            // default). An explicit limit is still honored for callers that want a
-            // bounded page (e.g. a lighter-weight preview).
+            // A bounded request is the compact graph overview. Prefer memories with
+            // real relationships so the first render is both small and meaningful.
+            // No limit remains the explicit full-graph request.
             let limit = limit.map(|l| l.max(1) as i64).unwrap_or(i64::MAX);
+            let overview_ids = if limit == i64::MAX {
+                vec![]
+            } else {
+                match &state.falkordb {
+                    Some(fdb) => {
+                        let mut fdb = fdb.clone();
+                        fdb.top_connected_memory_ids(user_id.as_deref(), limit as usize)
+                            .await
+                            .unwrap_or_default()
+                    }
+                    None => vec![],
+                }
+            };
 
-            let mut memories: Vec<MemoryNodeInfo> = match &user_id {
+            let mut memories: Vec<MemoryNodeInfo> = if !overview_ids.is_empty() {
+                match &user_id {
+                    Some(uid) => sqlx::query_as(
+                        "SELECT id, summary, importance_score, tags, created_at FROM memory_index WHERE user_id = $1 AND id = ANY($2)"
+                    )
+                    .bind(uid)
+                    .bind(&overview_ids)
+                    .fetch_all(&state.db)
+                    .await
+                    .unwrap_or_default(),
+                    None => sqlx::query_as(
+                        "SELECT id, summary, importance_score, tags, created_at FROM memory_index WHERE id = ANY($1)"
+                    )
+                    .bind(&overview_ids)
+                    .fetch_all(&state.db)
+                    .await
+                    .unwrap_or_default(),
+                }
+            } else { match &user_id {
                 Some(uid) => sqlx::query_as(
                     "SELECT id, summary, importance_score, tags, created_at FROM memory_index WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2"
                 )
@@ -3471,7 +3518,7 @@ async fn mcp(
                 .fetch_all(&state.db)
                 .await
                 .unwrap_or_default(),
-            };
+            }};
 
             // Most memories are auto-captured (e.g. the session watcher) and never set a
             // summary — fall back to a truncated content preview so graph nodes have a label.
@@ -3491,13 +3538,45 @@ async fn mcp(
                 }
             }
 
-            let edges = match &state.falkordb {
+            let mut edges = match &state.falkordb {
                 Some(fdb) => {
                     let mut fdb = fdb.clone();
-                    fdb.get_all_edges(user_id.as_deref()).await.unwrap_or_default()
+                    if limit == i64::MAX {
+                        fdb.get_all_edges(user_id.as_deref()).await.unwrap_or_default()
+                    } else {
+                        let ids: Vec<Uuid> = memories.iter().map(|memory| memory.id).collect();
+                        fdb.edges_within(&ids, user_id.as_deref())
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|(from_id, to_id, rel_type)| falkordb::EdgeInfo {
+                                from_id: from_id.to_string(),
+                                to_id: to_id.to_string(),
+                                rel_type,
+                                relationship: None,
+                            })
+                            .collect()
+                    }
                 }
                 None => vec![],
             };
+            if limit != i64::MAX && edges.len() > MEMORY_GRAPH_SUMMARY_EDGE_LIMIT {
+                // Keep intentional links before auto-generated shared-tag links in
+                // the compact overview, then cap rendering work to a predictable size.
+                edges.sort_unstable_by_key(|edge| (edge.rel_type != "LINKED_TO") as u8);
+                edges.truncate(MEMORY_GRAPH_SUMMARY_EDGE_LIMIT);
+            }
+            // A bounded graph request is used by the interactive preview. Filter the
+            // relationship payload here as well: returning every edge would otherwise
+            // negate the node limit before the browser can render anything.
+            let memory_ids: HashSet<String> = memories
+                .iter()
+                .map(|memory| memory.id.to_string())
+                .collect();
+            let edges = edges
+                .into_iter()
+                .filter(|edge| memory_ids.contains(&edge.from_id) && memory_ids.contains(&edge.to_id))
+                .collect();
 
             Ok((
                 StatusCode::OK,
@@ -5063,6 +5142,7 @@ async fn get_project_graph(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
+    Query(params): Query<GetProjectGraphParams>,
 ) -> impl IntoResponse {
     if !is_authenticated(&headers, &state.api_token) {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
@@ -5092,8 +5172,23 @@ async fn get_project_graph(
 
     match row {
         Ok(Some(r)) => {
-            let graph_data: serde_json::Value = r.try_get("graph_data")
+            let raw_graph_data: serde_json::Value = r.try_get("graph_data")
                 .unwrap_or(serde_json::Value::Object(Default::default()));
+            let graph_detail = match params.detail.as_deref().unwrap_or("summary") {
+                "summary" => "summary",
+                "full" => "full",
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "detail must be summary or full"})),
+                    ).into_response();
+                }
+            };
+            let graph_data = if graph_detail == "full" {
+                raw_graph_data
+            } else {
+                project_graphs::summary_graph_data(&raw_graph_data)
+            };
             let project = serde_json::json!({
                 "id": r.try_get::<Uuid, _>("id").ok().map(|u| u.to_string()),
                 "name": r.try_get::<String, _>("name").unwrap_or_default(),
@@ -5103,6 +5198,7 @@ async fn get_project_graph(
                 "node_count": r.try_get::<i32, _>("node_count").unwrap_or(0),
                 "edge_count": r.try_get::<i32, _>("edge_count").unwrap_or(0),
                 "graph_data": graph_data,
+                "graph_detail": graph_detail,
                 "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
                 "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
@@ -5490,6 +5586,34 @@ async fn list_project_files(
     }
 }
 
+async fn list_project_changes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let root = match resolve_git_project_root(&state, id).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let changes = tokio::task::spawn_blocking(move || git_browser::working_tree_changes(&root)).await;
+    match changes {
+        Ok(Ok(changes)) => Json(serde_json::json!({
+            "branch": changes.branch,
+            "files": changes.files,
+        })).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => {
+            error!("list_project_changes task panicked: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
+    }
+}
+
 async fn list_project_commits(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -5512,6 +5636,87 @@ async fn list_project_commits(
         Err(e) => {
             error!("list_project_commits task panicked: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
+    }
+}
+
+async fn commit_and_push_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<CommitPushPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let root = match resolve_git_project_root(&state, id).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let message = payload.message;
+    let result = tokio::task::spawn_blocking(move || git_browser::commit_and_push(&root, &message)).await;
+    match result {
+        Ok(Ok(result)) if result.pushed => Json(serde_json::json!({
+            "branch": result.branch,
+            "commit_hash": result.commit_hash,
+            "pushed": true,
+        })).into_response(),
+        Ok(Ok(result)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "error": result.push_error.unwrap_or_else(|| "Push failed".to_string()),
+                "branch": result.branch,
+                "commit_hash": result.commit_hash,
+                "pushed": false,
+            })),
+        ).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => {
+            error!("commit_and_push_project task panicked: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+        }
+    }
+}
+
+async fn suggest_project_commit_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let root = match resolve_git_project_root(&state, id).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let changes = match tokio::task::spawn_blocking(move || git_browser::working_tree_changes(&root)).await {
+        Ok(Ok(changes)) => changes,
+        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => {
+            error!("suggest_project_commit_message task panicked: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response();
+        }
+    };
+
+    if changes.files.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "no working-tree changes to analyze"}))).into_response();
+    }
+
+    let cfg = match load_llm_config(&state.db, &state.encryption_key).await {
+        Some(cfg) => cfg,
+        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"
+        }))).into_response(),
+    };
+
+    match commit_ai::suggest(&changes, &cfg).await {
+        Ok(message) => Json(serde_json::json!({"message": message, "model": cfg.model})).into_response(),
+        Err(e) => {
+            warn!("ai.commit_message failed (provider={}): {e}", cfg.provider);
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("LLM request failed: {e}")}))).into_response()
         }
     }
 }

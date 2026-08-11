@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { RefreshCw, Boxes, LayoutGrid, GitBranch } from 'lucide-react';
 import type { MemoryNode, MemoryEdge } from '@/components/memory-graph-types';
 
+const SUMMARY_NODE_LIMIT = 500;
+
 const MemoryGraph2D = dynamic(
   () => import('@/components/memory-graph-2d').then((m) => m.MemoryGraph2D),
   { ssr: false, loading: () => null }
@@ -22,18 +24,24 @@ export default function MemoryGraphPage() {
   const [isRebuilding, setIsRebuilding] = useState(false);
   const [rebuiltCount, setRebuiltCount] = useState<number | null>(null);
   const [view, setView] = useState<'2d' | '3d'>('2d');
+  const [detail, setDetail] = useState<'summary' | 'full'>('summary');
 
-  const fetchGraphData = useCallback(async () => {
+  const fetchGraphData = useCallback(async (requestedDetail: 'summary' | 'full' = 'summary') => {
     setIsLoading(true);
     try {
       const response = await fetch('/api/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'memory.graph_data' }),
+        body: JSON.stringify({
+          type: 'memory.graph_data',
+          ...(requestedDetail === 'summary' ? { limit: SUMMARY_NODE_LIMIT } : {}),
+        }),
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       setMemories(data.memories ?? []);
       setEdges(data.edges ?? []);
+      setDetail(requestedDetail);
     } catch {
       setMemories([]);
       setEdges([]);
@@ -43,7 +51,7 @@ export default function MemoryGraphPage() {
   }, []);
 
   useEffect(() => {
-    fetchGraphData();
+    fetchGraphData('summary');
   }, [fetchGraphData]);
 
   const handleRebuild = async () => {
@@ -57,7 +65,7 @@ export default function MemoryGraphPage() {
       });
       const data = await res.json();
       setRebuiltCount(data.rebuilt ?? 0);
-      fetchGraphData();
+      fetchGraphData(detail);
     } catch {
       setRebuiltCount(null);
     } finally {
@@ -89,6 +97,27 @@ export default function MemoryGraphPage() {
         </Button>
         <div className="w-px h-4 bg-border" />
         <Button
+          variant={detail === 'summary' ? 'secondary' : 'ghost'}
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={() => fetchGraphData('summary')}
+          disabled={isLoading || detail === 'summary'}
+          title={`Load the latest ${SUMMARY_NODE_LIMIT} memories for a fast overview`}
+        >
+          Summary
+        </Button>
+        <Button
+          variant={detail === 'full' ? 'secondary' : 'ghost'}
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={() => fetchGraphData('full')}
+          disabled={isLoading || detail === 'full'}
+          title="Load every memory and relationship"
+        >
+          Full graph
+        </Button>
+        <div className="w-px h-4 bg-border" />
+        <Button
           variant="ghost"
           size="sm"
           className="h-6 px-2 text-xs"
@@ -103,7 +132,7 @@ export default function MemoryGraphPage() {
           variant="ghost"
           size="sm"
           className="h-6 px-2 text-xs"
-          onClick={fetchGraphData}
+          onClick={() => fetchGraphData(detail)}
           disabled={isLoading}
         >
           <RefreshCw className={`h-3 w-3 ${isLoading ? 'animate-spin' : ''}`} />

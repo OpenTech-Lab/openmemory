@@ -1933,6 +1933,21 @@ impl McpServer {
                 fdb.get_all_edges(user_id.as_deref()).await.unwrap_or_default()
             }
         };
+        // Keep a bounded preview bounded in both dimensions. Sending all graph
+        // edges with a limited node list still makes the first render expensive.
+        let memory_ids: std::collections::HashSet<String> = memories
+            .iter()
+            .map(|memory| memory.id.to_string())
+            .collect();
+        let edges = edges
+            .into_iter()
+            .filter(|edge| memory_ids.contains(&edge.from_id) && memory_ids.contains(&edge.to_id))
+            .collect::<Vec<_>>();
+        let mut edges = edges;
+        if limit != i64::MAX && edges.len() > 3_000 {
+            edges.sort_unstable_by_key(|edge| (edge.rel_type != "LINKED_TO") as u8);
+            edges.truncate(3_000);
+        }
 
         let nodes: Vec<serde_json::Value> = memories
             .iter()

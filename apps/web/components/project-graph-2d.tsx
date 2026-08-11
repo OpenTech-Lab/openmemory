@@ -25,9 +25,10 @@ interface Props {
   graphData: GraphifyData;
   queryResult?: GraphQueryResult | null;
   forceFullDetail?: boolean;
+  summaryView?: boolean;
 }
 
-export function ProjectGraph2D({ graphData, queryResult, forceFullDetail = false }: Props) {
+export function ProjectGraph2D({ graphData, queryResult, forceFullDetail = false, summaryView = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<SelectedNodeDetail | null>(null);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
@@ -169,7 +170,8 @@ export function ProjectGraph2D({ graphData, queryResult, forceFullDetail = false
       {/* Stats overlay (bottom-left) */}
       <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur rounded p-2 text-xs text-muted-foreground">
         {stats.nodes.toLocaleString()} nodes · {stats.edges.toLocaleString()} edges
-        {isCommunityViewActive && <span className="ml-2">(community view)</span>}
+        {summaryView && !queryResult && <span className="ml-2">(summary view)</span>}
+        {!summaryView && isCommunityViewActive && <span className="ml-2">(community view)</span>}
         {queryResult && <span className="ml-2 text-primary">— query: &quot;{queryResult.query}&quot;</span>}
         {queryResult?.truncated && <span className="ml-1 text-yellow-500">(truncated)</span>}
         <span className="ml-2 opacity-60">hover for label · click for details</span>

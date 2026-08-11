@@ -82,6 +82,8 @@ interface Project {
   version_status?: string;
 }
 
+type GraphDetail = 'summary' | 'full';
+
 interface Routine {
   id: string;
   project_id: string;
@@ -127,6 +129,9 @@ export default function ProjectDetailPage() {
   const router = useRouter();
 
   const [project, setProject] = useState<Project | null>(null);
+  const [graphData, setGraphData] = useState<GraphifyData | null>(null);
+  const [graphDetail, setGraphDetail] = useState<GraphDetail>('summary');
+  const [isLoadingGraphDetail, setIsLoadingGraphDetail] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
@@ -142,7 +147,6 @@ export default function ProjectDetailPage() {
   const [isQuerying, setIsQuerying] = useState(false);
   const queriedQueryRef = useRef<string>('');
   const [graphView, setGraphView] = useState<'2d' | '3d'>('2d');
-  const [forceFullDetail, setForceFullDetail] = useState(false);
 
   // Tasks
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -182,6 +186,8 @@ export default function ProjectDetailPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setProject(data);
+      setGraphData(data.graph_data ?? null);
+      setGraphDetail(data.graph_detail === 'full' ? 'full' : 'summary');
       // Default to tasks tab for path-less projects
       if (!data.path) setActiveTab('tasks');
     } catch (e) {
@@ -190,6 +196,22 @@ export default function ProjectDetailPage() {
       setIsLoading(false);
     }
   }, [id, router]);
+
+  const loadGraphDetail = useCallback(async (detail: GraphDetail) => {
+    if (detail === graphDetail) return;
+    setIsLoadingGraphDetail(true);
+    try {
+      const res = await fetch(`/api/projects/${id}?detail=${detail}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGraphData(data.graph_data ?? null);
+      setGraphDetail(data.graph_detail === 'full' ? 'full' : 'summary');
+    } catch {
+      toast.error(`Failed to load ${detail === 'full' ? 'full' : 'summary'} graph`);
+    } finally {
+      setIsLoadingGraphDetail(false);
+    }
+  }, [id, graphDetail]);
 
   const fetchTasks = useCallback(async () => {
     setIsLoadingTasks(true);
@@ -544,6 +566,7 @@ export default function ProjectDetailPage() {
 
   const hasGraph = !!project.path;
   const taskCount = tasks.length;
+  const graphSummaryLabel = project.node_count > MAX_NODES_FULL ? 'Community' : 'Summary';
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -631,7 +654,7 @@ export default function ProjectDetailPage() {
         {/* Graph tab */}
         {activeTab === 'graph' && hasGraph && (
           <>
-            {!project.graph_data || (project.graph_data as { nodes?: unknown }).nodes === undefined ? (
+            {!graphData || graphData.nodes === undefined ? (
               <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
                 <p>No graph data yet.</p>
                 <p className="text-sm">Click Rebuild to index this project.</p>
@@ -662,34 +685,39 @@ export default function ProjectDetailPage() {
                     <Boxes className="h-3 w-3 mr-1" />
                     3D
                   </Button>
-                  {project.node_count > MAX_NODES_FULL && (
-                    <>
-                      <div className="w-px h-4 bg-border" />
-                      <Button
-                        variant={forceFullDetail ? 'secondary' : 'ghost'}
-                        size="sm"
-                        className="h-6 px-2 text-xs"
-                        onClick={() => setForceFullDetail(v => !v)}
-                        title={forceFullDetail ? 'Showing every node — may be slow to lay out' : 'Grouped by directory for readability'}
-                      >
-                        {forceFullDetail ? <Expand className="h-3 w-3 mr-1" /> : <Layers className="h-3 w-3 mr-1" />}
-                        {forceFullDetail ? 'Full detail' : 'Community'}
-                      </Button>
-                    </>
-                  )}
+                  <div className="w-px h-4 bg-border" />
+                  <Button
+                    variant={graphDetail === 'full' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => loadGraphDetail(graphDetail === 'full' ? 'summary' : 'full')}
+                    disabled={isLoadingGraphDetail}
+                    title={graphDetail === 'full' ? `Switch to the lightweight ${graphSummaryLabel.toLowerCase()} overview` : 'Load every node and edge'}
+                  >
+                    {isLoadingGraphDetail ? (
+                      <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                    ) : graphDetail === 'full' ? (
+                      <Layers className="h-3 w-3 mr-1" />
+                    ) : (
+                      <Expand className="h-3 w-3 mr-1" />
+                    )}
+                    {graphDetail === 'full' ? graphSummaryLabel : 'Full detail'}
+                  </Button>
                 </div>
 
                 {graphView === '2d' ? (
                   <ProjectGraph2D
-                    graphData={project.graph_data as GraphifyData}
+                    graphData={graphData}
                     queryResult={queryResult}
-                    forceFullDetail={forceFullDetail}
+                    forceFullDetail={graphDetail === 'full'}
+                    summaryView={graphDetail === 'summary'}
                   />
                 ) : (
                   <ProjectGraph3D
-                    graphData={project.graph_data as GraphifyData}
+                    graphData={graphData}
                     queryResult={queryResult}
-                    forceFullDetail={forceFullDetail}
+                    forceFullDetail={graphDetail === 'full'}
+                    summaryView={graphDetail === 'summary'}
                   />
                 )}
                 <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-lg px-4">

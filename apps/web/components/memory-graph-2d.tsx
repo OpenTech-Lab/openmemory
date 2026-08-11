@@ -79,10 +79,16 @@ export function MemoryGraph2D({ memories, edges }: Props) {
     function initRenderer(container: HTMLDivElement) {
       if (renderer) return;
       if (graph.order > 1) {
-        forceAtlas2.assign(graph, {
-          iterations: 200,
-          settings: { ...forceAtlas2.inferSettings(graph), gravity: 0.5 },
-        });
+        // ForceAtlas2 in this version runs synchronously on the main thread and
+        // scales quadratically. Keep the overview responsive and avoid locking
+        // the tab when a user explicitly asks to see the full graph.
+        const iterations = graph.order <= 500 ? 40 : graph.order <= 1_500 ? 10 : 0;
+        if (iterations > 0) {
+          forceAtlas2.assign(graph, {
+            iterations,
+            settings: { ...forceAtlas2.inferSettings(graph), gravity: 0.5 },
+          });
+        }
       }
 
       // Labels only for the hovered/selected node — with thousands of nodes,
