@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { FileText, GitBranch, RefreshCw, Sparkles, Tag, Upload } from 'lucide-react';
+import { FileText, GitBranch, Minus, Plus, RefreshCw, Sparkles, Tag, Upload } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -31,6 +31,8 @@ interface ChangedFile {
 interface WorkingTreeChanges {
   branch: string;
   files: ChangedFile[];
+  ahead: number;
+  behind: number;
 }
 
 interface LaidOutCommit {
@@ -105,7 +107,7 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
   const [commitMessage, setCommitMessage] = useState('');
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
-  const [canRetryPush, setCanRetryPush] = useState(false);
+  const [excludedFiles, setExcludedFiles] = useState<Set<string>>(new Set());
 
   const fetchCommits = useCallback(async () => {
     setHistoryError(null);
@@ -141,7 +143,13 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
         return;
       }
       setNotGitRepo(false);
-      setChanges({ branch: data.branch ?? 'unknown branch', files: data.files ?? [] });
+      const files = data.files ?? [];
+      setChanges({ branch: data.branch ?? 'unknown branch', files, ahead: data.ahead ?? 0, behind: data.behind ?? 0 });
+      setExcludedFiles(current => {
+        const currentPaths = new Set(files.map((file: ChangedFile) => file.path));
+        const next = new Set([...current].filter(path => currentPaths.has(path)));
+        return next.size === current.size ? current : next;
+      });
     } catch {
       setChangesError('Failed to load working-tree changes');
     }
@@ -150,12 +158,29 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
   useEffect(() => {
     setCommits(null);
     setChanges(null);
+    setExcludedFiles(new Set());
     void fetchCommits();
     void fetchChanges();
   }, [fetchCommits, fetchChanges]);
 
+  const selectedFiles = useMemo(
+    () => changes?.files.filter(file => !excludedFiles.has(file.path)) ?? [],
+    [changes, excludedFiles],
+  );
+  const selectedFilePaths = selectedFiles.map(file => file.path);
+  const keptFileCount = (changes?.files.length ?? 0) - selectedFiles.length;
+
+  const toggleFileSelection = (path: string) => {
+    setExcludedFiles(current => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
   const suggestCommitMessage = async () => {
-    if (!changes?.files.length) return;
+    if (!selectedFiles.length) return;
     setIsSuggesting(true);
     try {
       const res = await fetch(`/api/projects/${projectId}/commit-message`, { method: 'POST' });
@@ -173,9 +198,12 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
     }
   };
 
-  const commitAndPush = async () => {
+  const runSourceControlAction = async () => {
+    const hasUnpushedCommits = Boolean(changes?.ahead);
+    const action = selectedFiles.length ? 'commit' : hasUnpushedCommits ? 'push' : null;
     const message = commitMessage.trim();
-    if (!changes?.files.length || !message) {
+    if (!action) return;
+    if (action === 'commit' && !message) {
       toast.error('Add a commit message before committing');
       return;
     }
@@ -184,25 +212,23 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/commit-push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({
+          action,
+          message: action === 'commit' ? message : undefined,
+          paths: action === 'commit' ? selectedFilePaths : undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
-        if (data.commit_hash && !data.pushed) {
-          setCanRetryPush(true);
-          toast.error(`Committed ${data.commit_hash.slice(0, 7)} locally, but push failed`);
-        } else {
-          toast.error(data.error ?? 'Failed to commit and push changes');
-        }
+        toast.error(data.error ?? `Failed to ${action}`);
         await Promise.all([fetchChanges(), fetchCommits()]);
         return;
       }
-      setCommitMessage('');
-      setCanRetryPush(false);
-      toast.success(`Committed and pushed ${data.commit_hash?.slice(0, 7) ?? 'changes'}`);
+      if (action === 'commit') setCommitMessage('');
+      toast.success(`${action === 'commit' ? 'Committed' : 'Pushed'} ${data.commit_hash?.slice(0, 7) ?? 'changes'}`);
       await Promise.all([fetchChanges(), fetchCommits()]);
     } catch {
-      toast.error('Failed to commit and push changes');
+      toast.error(`Failed to ${action}`);
     } finally {
       setIsCommitting(false);
     }
@@ -214,6 +240,9 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
     laidOut.forEach(c => m.set(c.commit.hash, c));
     return m;
   }, [laidOut]);
+
+  const hasUnpushedCommits = Boolean(changes?.ahead);
+  const sourceControlAction = selectedFiles.length ? 'commit' : hasUnpushedCommits ? 'push' : null;
 
   if (notGitRepo) {
     return (
@@ -244,7 +273,7 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
               <p className="truncate font-mono text-[11px] text-muted-foreground">{changes?.branch ?? 'loading branch…'}</p>
             </div>
             <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">
-              {changes?.files.length ?? 0}
+              {changes ? `${selectedFiles.length}/${changes.files.length}` : 0}
             </Badge>
             <Button
               variant="ghost"
@@ -259,7 +288,11 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
           </div>
           <div className="mt-3 flex items-center justify-between text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
             <span>Changes</span>
-            {changes?.files.length ? <span>{changes.files.length} file{changes.files.length === 1 ? '' : 's'}</span> : null}
+            <span className="flex items-center gap-2">
+              {changes?.files.length ? <span>{selectedFiles.length} selected</span> : null}
+              {keptFileCount > 0 ? <span className="text-muted-foreground/70">{keptFileCount} kept</span> : null}
+              {changes?.ahead ? <span className="text-amber-600 dark:text-amber-400">{changes.ahead} ahead</span> : null}
+            </span>
           </div>
         </div>
 
@@ -279,25 +312,43 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
               <p className="mt-1 text-xs leading-5 text-muted-foreground">There are no uncommitted files on this branch.</p>
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-2">
+              {selectedFiles.length === 0 ? (
+                <div className="rounded-md border border-dashed border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                  All files are kept out of this commit. Use <Plus className="mx-0.5 inline h-3 w-3" /> to add one back.
+                </div>
+              ) : null}
               {changes.files.map(file => {
                 const status = fileStatus(file);
+                const selected = !excludedFiles.has(file.path);
                 return (
-                  <button
+                  <div
                     key={`${file.status}:${file.path}`}
-                    type="button"
-                    className="group flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-accent/60"
+                    className={`group flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-accent/60 ${selected ? '' : 'bg-muted/20 opacity-65'}`}
                     title={`${file.status} ${file.path}`}
                   >
                     <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border font-mono text-[10px] font-semibold ${status.className}`}>
                       {status.label}
                     </span>
                     <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
+                    <span className={`min-w-0 flex-1 truncate font-mono text-xs ${selected ? '' : 'line-through decoration-muted-foreground/50'}`}>{file.path}</span>
                     {formatChangeCount(file) && (
                       <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatChangeCount(file)}</span>
                     )}
-                  </button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className={`h-6 w-6 shrink-0 ${selected ? 'text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400' : 'text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300'}`}
+                      aria-label={selected ? `Keep ${file.path} out of the next commit` : `Add ${file.path} to the next commit`}
+                      aria-pressed={selected}
+                      title={selected ? 'Keep this file out of the next commit' : 'Add this file to the next commit'}
+                      onClick={() => toggleFileSelection(file.path)}
+                      disabled={isCommitting}
+                    >
+                      {selected ? <Minus className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                    </Button>
+                  </div>
                 );
               })}
             </div>
@@ -316,13 +367,14 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
             onChange={event => setCommitMessage(event.target.value)}
             placeholder="Describe the changes…"
             className="resize-none font-mono text-xs leading-5"
+            disabled={!selectedFiles.length || isCommitting}
           />
           <Button
             type="button"
             variant="secondary"
             className="mt-2 w-full gap-2"
             onClick={suggestCommitMessage}
-            disabled={!changes?.files.length || isSuggesting}
+            disabled={!selectedFiles.length || isSuggesting || isCommitting}
           >
             {isSuggesting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
             {isSuggesting ? 'Analyzing changes…' : 'Suggest with AI'}
@@ -330,13 +382,21 @@ export function ProjectCommitGraph({ projectId }: { projectId: string }) {
           <Button
             type="button"
             className="mt-2 w-full gap-2"
-            onClick={commitAndPush}
-            disabled={(!changes?.files.length && !canRetryPush) || !commitMessage.trim() || isSuggesting || isCommitting}
+            onClick={runSourceControlAction}
+            disabled={!sourceControlAction || (sourceControlAction === 'commit' && !commitMessage.trim()) || isSuggesting || isCommitting}
           >
             {isCommitting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-            {isCommitting ? (canRetryPush ? 'Retrying push…' : 'Committing & pushing…') : canRetryPush ? 'Retry Push' : 'Commit & Push'}
+            {isCommitting ? `${sourceControlAction === 'commit' ? 'Committing' : 'Pushing'}…` : sourceControlAction === 'push' ? 'Push' : 'Commit'}
           </Button>
-          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">Stages all listed changes, creates the commit, and pushes the current branch.</p>
+          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+            {sourceControlAction === 'commit'
+              ? `Commits ${selectedFiles.length} selected file${selectedFiles.length === 1 ? '' : 's'}; kept files stay uncommitted.`
+              : sourceControlAction === 'push'
+                ? 'Pushes local commits on the current branch.'
+                : changes?.files.length
+                  ? 'Use + to add files to the next commit.'
+                  : 'No file changes or unpushed commits.'}
+          </p>
         </div>
       </aside>
 

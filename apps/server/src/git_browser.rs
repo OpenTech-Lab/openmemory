@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Returns true if `canonical_path` looks like the root of a git working tree.
@@ -54,6 +54,8 @@ pub struct ChangedFile {
 pub struct WorkingTreeChanges {
     pub branch: String,
     pub files: Vec<ChangedFile>,
+    pub ahead: usize,
+    pub behind: usize,
     /// The diff is used by the server-side AI suggestion flow, but is deliberately not exposed
     /// through the changes endpoint. A commit-message request should be the only path that sends
     /// project source to the configured LLM.
@@ -64,9 +66,8 @@ pub struct WorkingTreeChanges {
 #[derive(Debug, Clone, Serialize)]
 pub struct CommitPushResult {
     pub branch: String,
+    pub action: String,
     pub commit_hash: String,
-    pub pushed: bool,
-    pub push_error: Option<String>,
 }
 
 fn git_command(repo_root: &Path) -> std::process::Command {
@@ -236,6 +237,41 @@ fn branch_name(repo_root: &Path) -> String {
     }
 }
 
+fn head_hash(repo_root: &Path) -> Result<String> {
+    let output = git_command(repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("failed to read HEAD commit hash")?;
+    if !output.status.success() {
+        bail!("repository has no commits yet");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Returns (ahead, behind) relative to the configured upstream. For a branch with a remote but
+/// no upstream yet, one or more local commits means a first push is available.
+fn tracking_state(repo_root: &Path) -> (usize, usize) {
+    let output = git_command(repo_root)
+        .args(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let counts_output = String::from_utf8_lossy(&output.stdout);
+            let mut counts = counts_output.split_whitespace();
+            let behind = counts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+            let ahead = counts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+            return (ahead, behind);
+        }
+    }
+
+    let has_remote = git_command(repo_root)
+        .arg("remote")
+        .output()
+        .map(|output| output.status.success() && !output.stdout.is_empty())
+        .unwrap_or(false);
+    if has_remote && head_hash(repo_root).is_ok() { (1, 0) } else { (0, 0) }
+}
+
 fn parse_numstat(output: &[u8]) -> HashMap<String, (usize, usize)> {
     let mut stats = HashMap::new();
     for line in String::from_utf8_lossy(output).lines() {
@@ -366,15 +402,37 @@ pub fn working_tree_changes(repo_root: &Path) -> Result<WorkingTreeChanges> {
     }
 
     let diff = working_tree_diff(repo_root, &files);
-    Ok(WorkingTreeChanges { branch: branch_name(repo_root), files, diff })
+    let (ahead, behind) = tracking_state(repo_root);
+    Ok(WorkingTreeChanges { branch: branch_name(repo_root), files, ahead, behind, diff })
 }
 
-/// Stage all working-tree changes, create a commit, and push the current branch.
-///
-/// The project root comes from the server-side project registry; callers never provide a
-/// filesystem path. Push failures are returned as a partial result because the local commit
-/// may already exist and should be reported accurately to the UI.
-pub fn commit_and_push(repo_root: &Path, message: &str) -> Result<CommitPushResult> {
+fn literal_pathspecs(paths: &[String]) -> Result<Vec<String>> {
+    if paths.len() > 10_000 {
+        bail!("too many files selected for commit");
+    }
+
+    paths
+        .iter()
+        .map(|raw| {
+            let path = raw.trim();
+            if path.is_empty() {
+                bail!("selected file path must not be empty");
+            }
+            if path.contains('\0') {
+                bail!("selected file path contains an invalid character");
+            }
+            if Path::new(path).is_absolute() || path.split('/').any(|part| part == "..") {
+                bail!("selected file path must stay inside the project");
+            }
+            if path == ".git" || path.starts_with(".git/") {
+                bail!("cannot commit files inside .git");
+            }
+            Ok(format!(":(literal){path}"))
+        })
+        .collect()
+}
+
+fn commit_message(repo_root: &Path, message: &str, paths: &[String]) -> Result<String> {
     let message = message.trim();
     if message.is_empty() {
         bail!("commit message must not be empty");
@@ -385,69 +443,106 @@ pub fn commit_and_push(repo_root: &Path, message: &str) -> Result<CommitPushResu
     if !has_git_repo(repo_root) {
         bail!("not_a_git_repo");
     }
-
-    let branch = branch_name(repo_root);
+    let pathspecs = literal_pathspecs(paths)?;
+    if pathspecs.is_empty() {
+        bail!("select at least one file to commit");
+    }
 
     let staged = git_command(repo_root)
-        .args(["add", "--all"])
+        .args(["add", "--all", "--"])
+        .args(&pathspecs)
         .output()
         .context("failed to stage working-tree changes")?;
     if !staged.status.success() {
-        bail!("git add failed");
+        bail!("git add failed: {}", String::from_utf8_lossy(&staged.stderr).trim());
     }
 
+    // `--only` keeps already-staged files outside the selected path list out of this commit.
     let committed = git_command(repo_root)
-        .arg("commit")
+        .args(["commit", "--only"])
         .arg(format!("--message={message}"))
+        .arg("--")
+        .args(&pathspecs)
         .output()
         .context("failed to create git commit")?;
-    let commit_hash = if committed.status.success() {
-        let hash_output = git_command(repo_root)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .context("failed to read created commit hash")?;
-        if !hash_output.status.success() {
-            bail!("commit created, but its hash could not be read");
-        }
-        String::from_utf8_lossy(&hash_output.stdout).trim().to_string()
-    } else {
+    if !committed.status.success() {
         let output = format!(
             "{}\n{}",
             String::from_utf8_lossy(&committed.stdout),
             String::from_utf8_lossy(&committed.stderr)
         );
-        if !output.contains("nothing to commit") {
-            bail!("git commit failed");
-        }
-        // A previous click may have created the commit even though its push failed.
-        // Allow the same UI action to retry that push without creating a new commit.
-        let hash_output = git_command(repo_root)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .context("failed to read existing commit hash")?;
-        if !hash_output.status.success() {
+        if output.contains("nothing to commit") {
             bail!("no changes to commit");
         }
-        String::from_utf8_lossy(&hash_output.stdout).trim().to_string()
-    };
-
-    let pushed = git_command(repo_root)
-        .arg("push")
-        .output()
-        .context("failed to run git push")?;
-    if !pushed.status.success() {
-        return Ok(CommitPushResult {
-            branch,
-            commit_hash,
-            pushed: false,
-            push_error: Some("Commit created locally, but pushing the branch failed.".to_string()),
-        });
+        bail!("git commit failed: {}", output.trim());
     }
+    head_hash(repo_root)
+}
 
-    Ok(CommitPushResult {
-        branch,
-        commit_hash,
-        pushed: true,
-        push_error: None,
-    })
+fn push_repository(repo_root: &Path) -> Result<()> {
+    let upstream = git_command(repo_root)
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .output();
+    let mut command = git_command(repo_root);
+    if upstream.map(|output| output.status.success()).unwrap_or(false) {
+        command.arg("push");
+    } else {
+        let branch_output = git_command(repo_root)
+            .args(["branch", "--show-current"])
+            .output()
+            .context("failed to read current branch")?;
+        let branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+        if branch.is_empty() {
+            bail!("cannot push a detached HEAD");
+        }
+        let remote_output = git_command(repo_root)
+            .arg("remote")
+            .output()
+            .context("failed to list git remotes")?;
+        let remote_names = String::from_utf8_lossy(&remote_output.stdout).to_string();
+        let remote = remote_names
+            .lines()
+            .map(str::trim)
+            .find(|name| *name == "origin")
+            .or_else(|| remote_names.lines().map(str::trim).find(|name| !name.is_empty()))
+            .ok_or_else(|| anyhow::anyhow!("no git remote configured"))?;
+        command.args(["push", "--set-upstream", remote, &branch]);
+    }
+    let pushed = command.output().context("failed to run git push")?;
+    if !pushed.status.success() {
+        bail!("git push failed");
+    }
+    Ok(())
+}
+
+/// Stage all working-tree changes and create a local commit. The separate push action below
+/// lets the UI expose the natural Commit → Push progression.
+pub fn commit_changes(repo_root: &Path, message: &str, paths: &[String]) -> Result<CommitPushResult> {
+    let changes = working_tree_changes(repo_root)?;
+    let available: HashSet<&str> = changes.files.iter().map(|file| file.path.as_str()).collect();
+    let mut selected = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let path = raw.trim();
+        if !available.contains(path) {
+            bail!("file is no longer changed: {path}");
+        }
+        if !selected.iter().any(|selected_path: &String| selected_path == path) {
+            selected.push(path.to_string());
+        }
+    }
+    if selected.is_empty() {
+        bail!("select at least one file to commit");
+    }
+    let commit_hash = commit_message(repo_root, message, &selected)?;
+    Ok(CommitPushResult { branch: branch_name(repo_root), action: "commit".to_string(), commit_hash })
+}
+
+/// Push the current branch without changing the working tree.
+pub fn push_changes(repo_root: &Path) -> Result<CommitPushResult> {
+    if !has_git_repo(repo_root) {
+        bail!("not_a_git_repo");
+    }
+    let commit_hash = head_hash(repo_root)?;
+    push_repository(repo_root)?;
+    Ok(CommitPushResult { branch: branch_name(repo_root), action: "push".to_string(), commit_hash })
 }

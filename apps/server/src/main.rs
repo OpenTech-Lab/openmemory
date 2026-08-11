@@ -467,7 +467,11 @@ fn default_commit_limit() -> usize { 300 }
 
 #[derive(Debug, Deserialize)]
 struct CommitPushPayload {
-    message: String,
+    action: String,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 // Watcher agent config types
@@ -5605,6 +5609,8 @@ async fn list_project_changes(
         Ok(Ok(changes)) => Json(serde_json::json!({
             "branch": changes.branch,
             "files": changes.files,
+            "ahead": changes.ahead,
+            "behind": changes.behind,
         })).into_response(),
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
         Err(e) => {
@@ -5654,23 +5660,26 @@ async fn commit_and_push_project(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let message = payload.message;
-    let result = tokio::task::spawn_blocking(move || git_browser::commit_and_push(&root, &message)).await;
+    let action = payload.action.to_lowercase();
+    if action != "commit" && action != "push" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "action must be commit or push"}))).into_response();
+    }
+    let message = payload.message.unwrap_or_default();
+    let paths = payload.paths;
+    let result = tokio::task::spawn_blocking(move || {
+        if action == "commit" {
+            git_browser::commit_changes(&root, &message, &paths)
+        } else {
+            git_browser::push_changes(&root)
+        }
+    }).await;
     match result {
-        Ok(Ok(result)) if result.pushed => Json(serde_json::json!({
+        Ok(Ok(result)) => Json(serde_json::json!({
             "branch": result.branch,
+            "action": result.action,
             "commit_hash": result.commit_hash,
-            "pushed": true,
+            "pushed": result.action == "push",
         })).into_response(),
-        Ok(Ok(result)) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": result.push_error.unwrap_or_else(|| "Push failed".to_string()),
-                "branch": result.branch,
-                "commit_hash": result.commit_hash,
-                "pushed": false,
-            })),
-        ).into_response(),
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
         Err(e) => {
             error!("commit_and_push_project task panicked: {e}");
