@@ -47,6 +47,7 @@ import { toast } from 'sonner';
 import { isNonEmptyArray } from '@/lib/autofill-merge';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
+import { TaskNotesPanel } from '@/components/task-notes-panel';
 
 interface Project {
   id: string;
@@ -1323,13 +1324,16 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                   <Pencil className="h-4 w-4" />
                 </button>
               )}
-              <button
-                onClick={() => selectedTask && setConfirmDeleteTaskId(selectedTask.id)}
-                className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-                title="Delete task"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+              {taskSheetMode === 'edit' && (
+                <button
+                  type="button"
+                  onClick={() => selectedTask && setConfirmDeleteTaskId(selectedTask.id)}
+                  className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                  title="Delete task"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
             </div>
             {selectedTask?.project_name && (
               <p className="text-xs text-muted-foreground">{selectedTask.project_name}</p>
@@ -1389,6 +1393,9 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                   <p>Created: <span className="font-medium">{new Date(selectedTask.created_at).toLocaleString()}</span></p>
                   <p>Updated: <span className="font-medium">{new Date(selectedTask.updated_at).toLocaleString()}</span></p>
                 </div>
+              )}
+              {selectedTask && (
+                <TaskNotesPanel projectId={selectedTask.project_id} taskId={selectedTask.id} />
               )}
             </div>
           ) : (

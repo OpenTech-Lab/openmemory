@@ -46,6 +46,7 @@ const NAV_GROUPS = [
     label: 'Agents',
     items: [
       { href: '/agents', label: 'Agents', icon: Bot },
+      { href: '/agents/office', label: 'Office', icon: Boxes },
       { href: '/agents/sessions', label: 'Sessions', icon: History },
       { href: '/agents/usage', label: 'Usage', icon: Gauge },
     ],
@@ -63,7 +64,7 @@ const NAV_GROUPS = [
 ] as const;
 
 const PROJECT_LIST_EXCLUDED_ROUTES = new Set(['/projects/board', '/projects/roadmap']);
-const AGENT_LIST_EXCLUDED_ROUTES = new Set(['/agents/sessions', '/agents/usage']);
+const AGENT_LIST_EXCLUDED_ROUTES = new Set(['/agents/sessions', '/agents/usage', '/agents/office']);
 
 function isNavItemActive(pathname: string, href: string): boolean {
   if (href === '/memory' || href === '/settings') {

@@ -142,6 +142,28 @@ impl McpServer {
         .await
         .ok();
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS project_task_notes (
+                id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                task_id    UUID        NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+                content    TEXT        NOT NULL,
+                author     TEXT        NOT NULL DEFAULT 'human',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .context("failed to create project_task_notes table")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_project_task_notes_task_id_created_at ON project_task_notes(task_id, created_at)",
+        )
+        .execute(&db)
+        .await
+        .ok();
+
         // Routine templates
         sqlx::query(
             r#"

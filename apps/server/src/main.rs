@@ -214,6 +214,15 @@ struct ProjectTask {
     sort_order: i32,
 }
 
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct ProjectTaskNote {
+    id: Uuid,
+    task_id: Uuid,
+    content: String,
+    author: String,
+    created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateTaskPayload {
     title: String,
@@ -225,6 +234,12 @@ struct CreateTaskPayload {
     parent_id: Option<Uuid>,
     start_date: Option<chrono::NaiveDate>,
     due_date: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskNotePayload {
+    content: String,
+    author: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1518,6 +1533,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/commit-message", post(suggest_project_commit_message))
         .route("/projects/:id/commit-push", post(commit_and_push_project))
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
+        .route("/projects/:id/tasks/:task_id/notes", get(list_project_task_notes).post(create_project_task_note))
         .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
         .route("/projects/:id/routines", get(list_project_routines).post(create_project_routine))
         .route("/projects/:id/routines/check", post(check_project_routines))
@@ -1857,6 +1873,25 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .context("failed to create project_tasks table")?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_id ON project_tasks(project_id)")
+        .execute(db).await.ok();
+
+    // Append-only implementation notes shared by human users and AI agents.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_task_notes (
+            id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            task_id    UUID        NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+            content    TEXT        NOT NULL,
+            author     TEXT        NOT NULL DEFAULT 'human',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_task_notes table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_notes_task_id_created_at ON project_task_notes(task_id, created_at)")
         .execute(db).await.ok();
 
     // Task labels (built-in + free-text), same convention as resources.tags.
@@ -6127,6 +6162,113 @@ async fn delete_project_task(
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "task not found"}))).into_response(),
         Err(e) => {
             error!("delete_project_task error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_project_task_notes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, task_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let task_exists = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM project_tasks WHERE id = $1 AND project_id = $2",
+    )
+    .bind(task_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match task_exists {
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "task not found"}))).into_response();
+        }
+        Err(e) => {
+            error!("list_project_task_notes task lookup error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+
+    match sqlx::query_as::<_, ProjectTaskNote>(
+        "SELECT id, task_id, content, author, created_at \
+         FROM project_task_notes WHERE task_id = $1 \
+         ORDER BY created_at ASC, id ASC LIMIT 500",
+    )
+    .bind(task_id)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(notes) => Json(serde_json::json!({"notes": notes, "total": notes.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_task_notes error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_task_note(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, task_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<CreateTaskNotePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let content = payload.content.trim();
+    if content.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "content must be non-empty"}))).into_response();
+    }
+    if content.chars().count() > 20_000 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "content must be 20,000 characters or fewer"}))).into_response();
+    }
+
+    let author = payload.author.as_deref().unwrap_or("human").trim();
+    if !matches!(author, "human" | "agent") {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "author must be human or agent"}))).into_response();
+    }
+
+    let task_exists = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM project_tasks WHERE id = $1 AND project_id = $2",
+    )
+    .bind(task_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match task_exists {
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "task not found"}))).into_response();
+        }
+        Err(e) => {
+            error!("create_project_task_note task lookup error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+        Ok(Some(_)) => {}
+    }
+
+    let note = sqlx::query_as::<_, ProjectTaskNote>(
+        "INSERT INTO project_task_notes (task_id, content, author) \
+         VALUES ($1, $2, $3) \
+         RETURNING id, task_id, content, author, created_at",
+    )
+    .bind(task_id)
+    .bind(content)
+    .bind(author)
+    .fetch_one(&state.db)
+    .await;
+
+    match note {
+        Ok(note) => (StatusCode::CREATED, Json(serde_json::json!(note))).into_response(),
+        Err(e) => {
+            error!("create_project_task_note error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }

@@ -434,6 +434,117 @@ impl McpServer {
         Ok(json!({"content": [{"type": "text", "text": format!("Updated task {}.", task_id)}]}))
     }
 
+    pub(super) async fn project_task_note_list(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let task_id: Uuid = args["task_id"]
+            .as_str()
+            .context("missing task_id")?
+            .parse()
+            .context("invalid task_id UUID")?;
+        let limit: i64 = args["limit"].as_i64().unwrap_or(100).clamp(1, 200);
+
+        let task_exists = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM project_tasks WHERE id = $1 AND project_id = $2",
+        )
+        .bind(task_id)
+        .bind(project_id)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to find task")?;
+        if task_exists.is_none() {
+            return Ok(json!({"content": [{"type": "text", "text": "Task not found."}]}));
+        }
+
+        let notes = sqlx::query(
+            "SELECT id, content, author, created_at \
+             FROM project_task_notes WHERE task_id = $1 \
+             ORDER BY created_at ASC, id ASC LIMIT $2",
+        )
+        .bind(task_id)
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .context("failed to list task implementation notes")?;
+
+        if notes.is_empty() {
+            return Ok(json!({"content": [{"type": "text", "text": "No implementation notes found."}]}));
+        }
+
+        let mut text = format!("Implementation notes ({}):\n\n", notes.len());
+        for note in &notes {
+            let id: Uuid = note.try_get("id").context("invalid note id")?;
+            let content: String = note.try_get("content").context("invalid note content")?;
+            let author: String = note.try_get("author").context("invalid note author")?;
+            let created_at: DateTime<Utc> = note.try_get("created_at").context("invalid note timestamp")?;
+            text.push_str(&format!(
+                "• [{}] {}\n  {}\n  id: {}\n\n",
+                author,
+                created_at.format("%Y-%m-%d %H:%M UTC"),
+                content,
+                id
+            ));
+        }
+        Ok(json!({"content": [{"type": "text", "text": text}]}))
+    }
+
+    pub(super) async fn project_task_note_create(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let task_id: Uuid = args["task_id"]
+            .as_str()
+            .context("missing task_id")?
+            .parse()
+            .context("invalid task_id UUID")?;
+        let content = args["content"]
+            .as_str()
+            .context("missing content")?
+            .trim();
+        if content.is_empty() {
+            anyhow::bail!("content must be non-empty");
+        }
+        if content.chars().count() > 20_000 {
+            anyhow::bail!("content must be 20,000 characters or fewer");
+        }
+
+        let task_exists = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM project_tasks WHERE id = $1 AND project_id = $2",
+        )
+        .bind(task_id)
+        .bind(project_id)
+        .fetch_optional(&self.db)
+        .await
+        .context("failed to find task")?;
+        if task_exists.is_none() {
+            return Ok(json!({"content": [{"type": "text", "text": "Task not found."}]}));
+        }
+
+        let row = sqlx::query(
+            "INSERT INTO project_task_notes (task_id, content, author) \
+             VALUES ($1, $2, 'agent') RETURNING id",
+        )
+        .bind(task_id)
+        .bind(content)
+        .fetch_one(&self.db)
+        .await
+        .context("failed to create task implementation note")?;
+        let id: Uuid = row.try_get("id").context("invalid note id")?;
+
+        Ok(json!({"content": [{"type": "text", "text": format!("Added implementation note to task {} [id: {}].", task_id, id)}]}))
+    }
+
     pub(super) async fn project_task_delete(
         &mut self,
         args: &serde_json::Value,

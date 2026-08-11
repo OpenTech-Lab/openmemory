@@ -79,7 +79,7 @@ export function ProjectFilesBrowser({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex items-center gap-1 p-6 shrink-0 text-sm">
+      <div className="flex items-center gap-1 pl-10 pr-6 shrink-0 text-sm">
         <button className="text-muted-foreground hover:text-foreground" onClick={() => setPath('')}>
           root
         </button>
@@ -96,7 +96,7 @@ export function ProjectFilesBrowser({ projectId }: { projectId: string }) {
         ))}
         {isLoading && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground ml-2" />}
       </div>
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto py-6 pl-10 pr-6">
         {error ? (
           <p className="text-sm text-destructive">{error}</p>
         ) : entries.length === 0 && !isLoading ? (

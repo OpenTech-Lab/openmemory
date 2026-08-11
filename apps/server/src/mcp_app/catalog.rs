@@ -924,6 +924,32 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "project_task_note_list",
+                    "description": "List the append-only implementation notes and messages for a task, including whether each was written by a human or AI agent.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "task_id": {"type": "string", "description": "UUID of the task"},
+                            "limit": {"type": "integer", "description": "Max notes to return (default 100)"}
+                        },
+                        "required": ["project_id", "task_id"]
+                    }
+                },
+                {
+                    "name": "project_task_note_create",
+                    "description": "Add an implementation note or handoff message to a task. Notes are append-only and attributed to the AI agent.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "task_id": {"type": "string", "description": "UUID of the task"},
+                            "content": {"type": "string", "description": "Implementation detail, decision, finding, or handoff message"}
+                        },
+                        "required": ["project_id", "task_id", "content"]
+                    }
+                },
+                {
                     "name": "project_task_update",
                     "description": "Update a task's title, description, status, priority, assigned_to, parent, or dates. Only provided fields are changed; pass null for parent_id/start_date/due_date to clear them. Use status 'cancelled' (not 'done') for tasks that are being dropped/superseded rather than completed.",
                     "inputSchema": {
