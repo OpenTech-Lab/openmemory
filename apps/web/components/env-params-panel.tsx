@@ -83,6 +83,7 @@ export function EnvParamsPanel() {
 
   // Edit dialog
   const [editParam, setEditParam] = useState<EnvParam | null>(null);
+  const [editKey, setEditKey] = useState('');
   const [editValue, setEditValue] = useState('');
   const [editIsSecret, setEditIsSecret] = useState(false);
   const [editDescription, setEditDescription] = useState('');
@@ -160,19 +161,22 @@ export function EnvParamsPanel() {
 
   const handleEdit = async () => {
     if (!editParam) return;
+    const newKey = editKey.trim();
+    if (!newKey) return;
     setIsSaving(true);
     try {
       const body: Record<string, unknown> = {
-        type: 'env.set',
-        key: editParam.key,
-        value: editValue,
+        type: 'env.rename',
+        old_key: editParam.key,
+        new_key: newKey,
         is_secret: editIsSecret,
+        description: editDescription.trim() || null,
       };
-      if (editDescription.trim()) body.description = editDescription.trim();
+      if (editValue.trim()) body.value = editValue;
       const res = await callApi(body);
       const data = await res.json();
       if (data.error) { toast.error(data.error); return; }
-      toast.success(`Parameter '${editParam.key}' updated`);
+      toast.success(`Parameter '${newKey}' updated`);
       setEditParam(null);
       fetchParams();
     } catch {
@@ -220,6 +224,7 @@ export function EnvParamsPanel() {
 
   const openEdit = (param: EnvParam) => {
     setEditParam(param);
+    setEditKey(param.key);
     setEditValue('');
     setEditIsSecret(param.is_secret);
     setEditDescription(param.description ?? '');
@@ -461,27 +466,30 @@ export function EnvParamsPanel() {
           <DialogHeader>
             <DialogTitle>Edit Parameter</DialogTitle>
             <DialogDescription>
-              Update the value or settings for{' '}
-              <code className="font-mono text-sm">{editParam?.key}</code>.
-              The key name cannot be changed.
+              Update the name, value, or settings for this parameter. Existing resource links are updated automatically.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label>Key</Label>
-              <Input value={editParam?.key ?? ''} disabled className="font-mono opacity-60" />
+              <Label htmlFor="edit-key">Key <span className="text-destructive">*</span></Label>
+              <Input
+                id="edit-key"
+                value={editKey}
+                onChange={(e) => setEditKey(e.target.value)}
+                className="font-mono"
+              />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="edit-value">New Value <span className="text-destructive">*</span></Label>
+              <Label htmlFor="edit-value">New Value</Label>
               <Input
                 id="edit-value"
                 type="password"
-                placeholder="••••••••"
+                placeholder="•••••••• (leave blank to keep current value)"
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                The current value is hidden. Enter a new value to overwrite it.
+                The current value is hidden. Enter a new value to overwrite it, or leave this blank to keep it.
               </p>
             </div>
             <div className="space-y-1.5">
@@ -518,7 +526,7 @@ export function EnvParamsPanel() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditParam(null)}>Cancel</Button>
-            <Button onClick={handleEdit} disabled={isSaving || !editValue.trim()}>
+            <Button onClick={handleEdit} disabled={isSaving || !editKey.trim()}>
               {isSaving ? 'Saving…' : 'Update'}
             </Button>
           </DialogFooter>

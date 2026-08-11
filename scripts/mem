@@ -124,6 +124,7 @@ extraction — set it via LLM Settings in the web UI):
 
 Environment parameter commands:
   env-set <key> <value> [--secret] [--description TEXT]
+  env-rename <old-key> <new-key> [--value VALUE] [--secret|--normal] [--description TEXT]
   env-get <key>           (normal params only; secret params return an error)
   env-list
   env-delete <key>
@@ -288,6 +289,56 @@ case "$CMD" in
         --argjson is_secret "$IS_SECRET" \
         --argjson description "$ENV_DESC" \
         '{type:"env.set",key:$key,value:$value,is_secret:$is_secret,description:$description}')
+    _post "$PAYLOAD"
+    ;;
+
+  env-rename)
+    _require_jq
+    shift
+    OLD_ENV_KEY="${1:?error: old key required — usage: mem env-rename <old-key> <new-key> [--value VALUE] [--secret|--normal] [--description TEXT]}"
+    NEW_ENV_KEY="${2:?error: new key required — usage: mem env-rename <old-key> <new-key> [--value VALUE] [--secret|--normal] [--description TEXT]}"
+    shift 2
+    HAVE_ENV_VALUE=false
+    ENV_VALUE=""
+    HAVE_IS_SECRET=false
+    IS_SECRET="false"
+    ENV_DESC="null"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --value)
+                ENV_VALUE="$2"
+                HAVE_ENV_VALUE=true
+                shift 2
+                ;;
+            --secret)
+                IS_SECRET="true"
+                HAVE_IS_SECRET=true
+                shift
+                ;;
+            --normal)
+                IS_SECRET="false"
+                HAVE_IS_SECRET=true
+                shift
+                ;;
+            --description)
+                ENV_DESC=$(jq -n --arg v "$2" '$v')
+                shift 2
+                ;;
+            *) echo "error: unknown flag $1" >&2; exit 1 ;;
+        esac
+    done
+    PAYLOAD=$(jq -n \
+        --arg old_key "$OLD_ENV_KEY" \
+        --arg new_key "$NEW_ENV_KEY" \
+        --arg value "$ENV_VALUE" \
+        --argjson is_secret "$IS_SECRET" \
+        --argjson description "$ENV_DESC" \
+        --argjson have_value "$HAVE_ENV_VALUE" \
+        --argjson have_is_secret "$HAVE_IS_SECRET" \
+        '{type:"env.rename",old_key:$old_key,new_key:$new_key}
+         + (if $have_value then {value:$value} else {} end)
+         + (if $have_is_secret then {is_secret:$is_secret} else {} end)
+         + (if $description != null then {description:$description} else {} end)')
     _post "$PAYLOAD"
     ;;
 

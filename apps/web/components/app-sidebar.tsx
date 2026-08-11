@@ -62,6 +62,33 @@ const NAV_GROUPS = [
   },
 ] as const;
 
+const PROJECT_LIST_EXCLUDED_ROUTES = new Set(['/projects/board', '/projects/roadmap']);
+const AGENT_LIST_EXCLUDED_ROUTES = new Set(['/agents/sessions', '/agents/usage']);
+
+function isNavItemActive(pathname: string, href: string): boolean {
+  if (href === '/memory' || href === '/settings') {
+    return pathname === href;
+  }
+
+  if (href === '/projects') {
+    const segments = pathname.split('/').filter(Boolean);
+    return pathname === href
+      || (segments.length === 2
+        && segments[0] === 'projects'
+        && !PROJECT_LIST_EXCLUDED_ROUTES.has(pathname));
+  }
+
+  if (href === '/agents') {
+    const segments = pathname.split('/').filter(Boolean);
+    return pathname === href
+      || (segments.length === 2
+        && segments[0] === 'agents'
+        && !AGENT_LIST_EXCLUDED_ROUTES.has(pathname));
+  }
+
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
 export function AppSidebar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
@@ -87,18 +114,7 @@ export function AppSidebar() {
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
                 {group.items.map((item) => {
-                  // '/projects' also covers /projects/[id] detail pages, but not the
-                  // separate /projects/board route (which has its own sidebar entry).
-                  // '/agents' likewise covers /agents/[id] detail pages, but not the
-                  // separate /agents/sessions or /agents/usage routes (which have
-                  // their own sidebar entries).
-                  const isActive = item.href === '/projects'
-                    ? pathname === '/projects' || (pathname.startsWith('/projects/') && !pathname.startsWith('/projects/board'))
-                    : item.href === '/agents'
-                    ? pathname === '/agents' || (pathname.startsWith('/agents/') && !pathname.startsWith('/agents/sessions') && !pathname.startsWith('/agents/usage'))
-                    : item.href === '/settings'
-                    ? pathname === '/settings'
-                    : pathname === item.href || pathname.startsWith(`${item.href}/`);
+                  const isActive = isNavItemActive(pathname, item.href);
                   return (
                     <SidebarMenuItem key={item.href}>
                       <SidebarMenuButton

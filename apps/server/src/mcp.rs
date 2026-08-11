@@ -755,6 +755,36 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "env_rename",
+                    "description": "Rename an environment parameter while preserving its encrypted value and metadata. Optional fields can replace them in the same transaction; resource links that reference the old key are updated.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "old_key": {
+                                "type": "string",
+                                "description": "Current parameter name"
+                            },
+                            "new_key": {
+                                "type": "string",
+                                "description": "New parameter name"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "Optional replacement value; omit to preserve the current value"
+                            },
+                            "is_secret": {
+                                "type": "boolean",
+                                "description": "Optional replacement for the secret flag"
+                            },
+                            "description": {
+                                "type": ["string", "null"],
+                                "description": "Optional replacement description; null clears it"
+                            }
+                        },
+                        "required": ["old_key", "new_key"]
+                    }
+                },
+                {
                     "name": "env_list",
                     "description": "List all environment parameters. Returns key names, descriptions, and is_secret flag — never returns values.",
                     "inputSchema": {
@@ -1554,6 +1584,7 @@ impl McpServer {
             "graph_get_entity" => self.graph_get_entity(arguments).await,
             "env_set" => self.env_set(arguments).await,
             "env_get" => self.env_get(arguments).await,
+            "env_rename" => self.env_rename(arguments).await,
             "env_list" => self.env_list(arguments).await,
             "env_delete" => self.env_delete(arguments).await,
             "resource_list" => self.resource_list(arguments).await,
@@ -2133,6 +2164,40 @@ impl McpServer {
                 "type": "text",
                 "text": format!("Set {} parameter '{}'{}", type_label, key,
                     description.as_deref().map(|d| format!(" ({})", d)).unwrap_or_default())
+            }]
+        }))
+    }
+
+    async fn env_rename(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let old_key = args["old_key"]
+            .as_str()
+            .context("missing old_key")?
+            .trim()
+            .to_string();
+        let new_key = args["new_key"]
+            .as_str()
+            .context("missing new_key")?
+            .trim()
+            .to_string();
+        let value = args.get("value").and_then(|value| value.as_str());
+        let is_secret = args.get("is_secret").and_then(|value| value.as_bool());
+        let description = args.get("description").map(|value| value.as_str());
+
+        openmemory_server::env_params::rename_env_param(
+            &self.db,
+            &self.encryption_key,
+            &old_key,
+            &new_key,
+            value,
+            is_secret,
+            description,
+        )
+        .await?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Renamed environment parameter '{}' to '{}'", old_key, new_key)
             }]
         }))
     }

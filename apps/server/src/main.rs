@@ -982,6 +982,19 @@ enum McpRequest {
         description: Option<String>,
     },
 
+    #[serde(rename = "env.rename")]
+    EnvRename {
+        old_key: String,
+        new_key: String,
+        #[serde(default)]
+        value: Option<String>,
+        #[serde(default)]
+        is_secret: Option<bool>,
+        /// Omit to preserve the existing description; send null to clear it.
+        #[serde(default)]
+        description: Option<Option<String>>,
+    },
+
     // File uploads from the web UI: the browser can't hand us a server-side
     // path (unlike the MCP env_set_file tool, which reads a path on the same
     // machine as the agent), so the frontend base64-encodes the file client-side
@@ -1225,6 +1238,9 @@ enum McpResponse {
 
     #[serde(rename = "env.set.result")]
     EnvSetResult { key: String },
+
+    #[serde(rename = "env.rename.result")]
+    EnvRenameResult { old_key: String, new_key: String },
 
     #[serde(rename = "env.get.result")]
     EnvGetResult { key: String, value: String },
@@ -3921,6 +3937,54 @@ async fn mcp(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({ "error": "Failed to set parameter" })),
                     ))
+                }
+            }
+        }
+
+        McpRequest::EnvRename {
+            old_key,
+            new_key,
+            value,
+            is_secret,
+            description,
+        } => {
+            if !is_authenticated(&headers, &state.api_token) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            let old_key = old_key.trim().to_string();
+            let new_key = new_key.trim().to_string();
+            match openmemory_server::env_params::rename_env_param(
+                &state.db,
+                &state.encryption_key,
+                &old_key,
+                &new_key,
+                value.as_deref(),
+                is_secret,
+                description.as_ref().map(|value| value.as_deref()),
+            )
+            .await
+            {
+                Ok(()) => Ok((
+                    StatusCode::OK,
+                    Json(McpResponse::EnvRenameResult { old_key, new_key }),
+                )),
+                Err(e) => {
+                    let message = e.to_string();
+                    let status = if message.contains("not found") {
+                        StatusCode::NOT_FOUND
+                    } else if message.contains("already exists") {
+                        StatusCode::CONFLICT
+                    } else if message.contains("key must") {
+                        StatusCode::BAD_REQUEST
+                    } else {
+                        error!("Failed to rename env param: {message}");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
+                    Err((status, Json(serde_json::json!({ "error": message }))))
                 }
             }
         }

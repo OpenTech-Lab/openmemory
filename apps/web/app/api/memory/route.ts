@@ -17,6 +17,7 @@ export async function POST(request: Request) {
       'env.get',
       'env.set',
       'env.set_file',
+      'env.rename',
       'env.delete',
       'graph.set_llm_config',
       'graph.analyze_all',

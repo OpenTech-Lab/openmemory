@@ -259,6 +259,14 @@ Your AI now has comprehensive memory capabilities:
 }
 ```
 
+**`env_rename`** - Rename a parameter without losing its stored value
+```json
+{
+  "old_key": "DEFAULT_MODEL",
+  "new_key": "PRIMARY_MODEL"
+}
+```
+
 **🕸️ Knowledge Graph**
 
 Graph operations happen automatically as you save memories. Query via web UI or direct Cypher:
@@ -586,6 +594,9 @@ mem env-set OPENAI_API_KEY "sk-..." --secret
 # Get parameter value (only works for normal params)
 mem env-get DEFAULT_MODEL
 
+# Rename a parameter (the encrypted value is preserved)
+mem env-rename DEFAULT_MODEL PRIMARY_MODEL
+
 # Delete parameter
 mem env-delete OLD_KEY
 ```
@@ -752,7 +763,7 @@ pnpm test
 
 ### Env Parameter Auth
 
-`env.set` and `env.delete` on the HTTP API (`/mcp`) require the API bearer token —
+`env.set`, `env.rename`, and `env.delete` on the HTTP API (`/mcp`) require the API bearer token —
 same token used for `env.get` on secret params. The `mem` CLI reads it automatically
 from `OPENMEMORY_API_TOKEN` or `~/.openmemory/api_token`; no extra setup needed.
 
