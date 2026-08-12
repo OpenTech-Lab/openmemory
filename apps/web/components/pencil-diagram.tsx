@@ -160,7 +160,11 @@ export const PencilDiagram = forwardRef<PencilDiagramHandle, PencilDiagramProps>
           ref={iframeRef}
           src={src}
           title={`${isViewer ? 'View' : 'Edit'} ${title}`}
-          className={`h-full w-full border-0 bg-background ${isViewer ? 'pointer-events-none select-none' : ''}`}
+          // Viewer keeps pointer events on: the embed itself (EmbedShell.vue's
+          // `viewer` prop) restricts what those pointer events can do to
+          // HAND-tool panning only, so this no longer needs to block the
+          // iframe outright to stay read-only.
+          className={`h-full w-full border-0 bg-background ${isViewer ? 'select-none' : ''}`}
           allow={isViewer ? 'fullscreen' : 'clipboard-read; clipboard-write; fullscreen'}
           allowFullScreen
           tabIndex={isViewer ? -1 : 0}

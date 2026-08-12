@@ -6793,7 +6793,17 @@ async fn delete_project_design(
         .await;
 
     match result {
-        Ok(Some(_)) => Json(serde_json::json!({"deleted": design_id})).into_response(),
+        Ok(Some(_)) => {
+            // Best-effort: a design without a blob-backed diagram type (or one
+            // whose blob was never written) has nothing to remove here.
+            let blob = design_blobs::blob_path(&design_blobs::blob_root(), design_id);
+            if let Err(e) = tokio::fs::remove_file(&blob).await {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    error!("delete_project_design blob cleanup error: {e}");
+                }
+            }
+            Json(serde_json::json!({"deleted": design_id})).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
         Err(e) => {
             error!("delete_project_design error: {e}");
