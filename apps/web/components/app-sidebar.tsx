@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow, Gauge, TrendingUp } from 'lucide-react';
+import { Database, FolderOpen, Search, Network, Bot, History, SlidersHorizontal, Settings2, Boxes, ChevronRight, MoreHorizontal, Sun, Moon, LayoutList, Columns3, GanttChartSquare, GraduationCap, Workflow, Gauge, TrendingUp, Image } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -40,13 +40,13 @@ const NAV_GROUPS = [
       { href: '/projects/board', label: 'Board', icon: Columns3 },
       { href: '/projects/roadmap', label: 'Roadmap', icon: GanttChartSquare },
       { href: '/lessons', label: 'Lessons', icon: GraduationCap },
+      { href: '/library', label: 'Library', icon: Image },
     ],
   },
   {
     label: 'Agents',
     items: [
       { href: '/agents', label: 'Agents', icon: Bot },
-      { href: '/agents/office', label: 'Office', icon: Boxes },
       { href: '/agents/sessions', label: 'Sessions', icon: History },
       { href: '/agents/usage', label: 'Usage', icon: Gauge },
     ],
@@ -64,7 +64,7 @@ const NAV_GROUPS = [
 ] as const;
 
 const PROJECT_LIST_EXCLUDED_ROUTES = new Set(['/projects/board', '/projects/roadmap']);
-const AGENT_LIST_EXCLUDED_ROUTES = new Set(['/agents/sessions', '/agents/usage', '/agents/office']);
+const AGENT_LIST_EXCLUDED_ROUTES = new Set(['/agents/sessions', '/agents/usage']);
 
 function isNavItemActive(pathname: string, href: string): boolean {
   if (href === '/memory' || href === '/settings') {

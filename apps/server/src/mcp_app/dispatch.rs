@@ -35,6 +35,10 @@ impl McpServer {
             "resource_add" => self.resource_add(arguments).await,
             "resource_update" => self.resource_update(arguments).await,
             "resource_delete" => self.resource_delete(arguments).await,
+            "library_add" => self.library_add(arguments).await,
+            "library_list" => self.library_list(arguments).await,
+            "library_get" => self.library_get(arguments).await,
+            "library_delete" => self.library_delete(arguments).await,
             "workflow_list" => self.workflow_list(arguments).await,
             "workflow_get" => self.workflow_get(arguments).await,
             "workflow_run" => self.workflow_run(arguments).await,
@@ -47,6 +51,7 @@ impl McpServer {
             "env_google_service_account_request" => {
                 self.env_google_service_account_request(arguments).await
             }
+            "env_ssh_execute" => self.env_ssh_execute(arguments).await,
             "project_graph_list" => self.project_graph_list(arguments).await,
             "project_graph_create" => self.project_graph_create(arguments).await,
             "project_graph_query" => self.project_graph_query(arguments).await,

@@ -11,12 +11,14 @@ mod dispatch;
 mod env_tools;
 mod graph_tools;
 mod helpers;
+mod library_tools;
 mod memory;
 mod opensearch;
 mod planning_tools;
 mod project_graph_tools;
 mod protocol;
 mod resource_tools;
+mod ssh_tools;
 mod workflow_tools;
 
 #[cfg(test)]
@@ -24,7 +26,7 @@ mod tests;
 
 use crate::crypto::{decrypt_value, derive_key, encrypt_value, EnvParamRow};
 use crate::falkordb::{self, FalkorDbClient};
-use crate::{design_budgets, forecasts, indexer, project_graphs, resources, workflows};
+use crate::{design_budgets, forecasts, indexer, library, project_graphs, resources, workflows};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensearch::OpenSearchClient;

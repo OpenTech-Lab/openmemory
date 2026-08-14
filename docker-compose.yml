@@ -196,6 +196,7 @@ services:
       # working tree and .git metadata. The API remains localhost-only and token-gated.
       - ${HOME}:${HOME}:rw
       - design-blobs:/data/design-blobs
+      - library-blobs:/data/library-blobs
     environment:
       # Git uses HOME to locate the host user's configured author identity for Source Control commits.
       HOME: ${HOME}
@@ -208,6 +209,7 @@ services:
       OPENMEMORY_API_TOKEN: ${OPENMEMORY_API_TOKEN}
       OPENMEMORY_HOME_DIR: ${HOME}
       OPENMEMORY_DESIGN_BLOB_DIR: /data/design-blobs
+      OPENMEMORY_LIBRARY_BLOB_DIR: /data/library-blobs
     depends_on:
       postgres:
         condition: service_healthy
@@ -269,3 +271,4 @@ volumes:
   redis_data:
   falkordb_data:
   design-blobs:
+  library-blobs:

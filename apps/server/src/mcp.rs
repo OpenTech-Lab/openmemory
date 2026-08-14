@@ -5,6 +5,7 @@ mod design_budgets;
 mod falkordb;
 mod forecasts;
 mod indexer;
+mod library;
 mod mcp_app;
 mod project_graphs;
 mod resources;

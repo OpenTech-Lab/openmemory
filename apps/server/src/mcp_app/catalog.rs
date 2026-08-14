@@ -396,6 +396,59 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "library_add",
+                    "description": "Register a visual/media/code candidate (image, video, or live HTML/CSS/JS snippet) in the global library — e.g. a generated icon render, preview frame, or interactive prototype worth keeping around to browse and compare later. For image/video, `location` must be a file path (or URL) you've already produced. For `kind: code`, provide `code` (self-contained HTML, rendered live in a sandboxed iframe) instead of — or in addition to — `location`. This tool only catalogs the content, it does not render, copy, or validate it. Storage + listing only — there's no pending/picked/rejected review-state tracking here. `project_id` is optional — omit it to keep the entry unscoped, like a global resource.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Optional project UUID to loosely associate this entry with"},
+                            "label": {"type": "string", "description": "Short label for this candidate"},
+                            "kind": {"type": "string", "enum": ["image", "video", "code"]},
+                            "category": {"type": "string", "enum": ["ui", "design-system", "effects", "animation", "other"], "description": "Required browse category"},
+                            "location": {"type": "string", "description": "Absolute filesystem path (or URL) to the already-generated image/video/html file"},
+                            "code": {"type": "string", "description": "Self-contained HTML/CSS/JS to preview live (kind: code only)"},
+                            "description": {"type": "string"},
+                            "tags": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "required": ["label", "kind", "category"]
+                    }
+                },
+                {
+                    "name": "library_list",
+                    "description": "List library entries (visual/media/code candidates), optionally filtered to a project, a tag, and/or a category. Omit project_id to list across all projects.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Optional project UUID filter"},
+                            "tag": {"type": "string", "description": "Filter to entries containing this tag"},
+                            "category": {"type": "string", "enum": ["ui", "design-system", "effects", "animation", "other"], "description": "Filter to this category"}
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "library_get",
+                    "description": "Get one library entry by UUID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "Library entry UUID"}
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "library_delete",
+                    "description": "Delete a library entry by UUID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "Library entry UUID"}
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
                     "name": "env_http_request",
                     "description": "Make an HTTP request with a stored secret injected as the auth header (default) or as the full request URL itself. The secret value is never exposed to the agent — the server resolves it internally and forwards the request. Use auth-header mode for API keys/tokens (Cloudflare, GitHub, etc.). Use secret_target='url' for self-authenticating URLs like incoming webhooks (e.g. AWS Amplify build webhooks), where the URL itself is the credential — in that mode omit 'url' entirely. If OPENMEMORY_HTTP_ALLOWED_HOSTS is configured on the server, requests to hosts outside that allowlist are rejected before the secret is resolved.",
                     "inputSchema": {
@@ -634,6 +687,48 @@ impl McpServer {
                             }
                         },
                         "required": ["key", "scopes", "method", "url"]
+                    }
+                },
+                {
+                    "name": "env_ssh_execute",
+                    "description": "Run a shell command on a remote host over SSH, entirely server-side — the private key and username are resolved from encrypted env params and used to authenticate, but never returned to the agent. Only stdout, stderr, and the exit code come back. Requires OPENMEMORY_SSH_ALLOWED_HOSTS to be set on the openmemory-mcp process (fail-closed: unset or empty means every host is refused) and, on first use of a given key, a pinned '<ssh_key_key>.host_key_fingerprint' env param (set via env_set to the output of `ssh-keyscan -t ed25519,rsa <host> | ssh-keygen -lf -`) to prevent man-in-the-middle host substitution. Optionally scope a key to specific hosts with a '<ssh_key_key>.allowed_hosts' env param (comma-separated host or host:port entries). No PTY, no port/agent forwarding, no password auth.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "description": "Hostname or IP of the remote server"
+                            },
+                            "port": {
+                                "type": "integer",
+                                "description": "SSH port (default 22)"
+                            },
+                            "ssh_key_key": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the private key (PEM, or base64-wrapped as stored by env_set_file — auto-detected)"
+                            },
+                            "username_key": {
+                                "type": "string",
+                                "description": "Name of the env param holding the SSH username. Exactly one of username_key/username is required."
+                            },
+                            "username": {
+                                "type": "string",
+                                "description": "The SSH username directly, if not stored as an env param. Exactly one of username_key/username is required."
+                            },
+                            "passphrase_key": {
+                                "type": "string",
+                                "description": "Optional: name of the secret env param holding the private key's passphrase, if it's encrypted"
+                            },
+                            "command": {
+                                "type": "string",
+                                "description": "Shell command to run on the remote host"
+                            },
+                            "timeout_seconds": {
+                                "type": "integer",
+                                "description": "Timeout for connect+auth+exec combined. Default 30, capped at 300."
+                            }
+                        },
+                        "required": ["host", "ssh_key_key", "command"]
                     }
                 },
                 {

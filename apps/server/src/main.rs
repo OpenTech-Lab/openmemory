@@ -8,6 +8,7 @@ mod design_blobs;
 mod design_budgets;
 mod falkordb;
 mod forecasts;
+mod library;
 mod llm;
 mod resources;
 mod workflows;
@@ -22,6 +23,7 @@ use std::{cmp::Ordering, net::SocketAddr, time::Duration};
 
 use anyhow::Context;
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
@@ -90,6 +92,7 @@ struct SessionRow {
     project_name: Option<String>,
     git_branch: Option<String>,
     cwd: Option<String>,
+    agent_name: Option<String>,
     started_at: Option<DateTime<Utc>>,
     last_event_at: Option<DateTime<Utc>>,
     message_count: i32,
@@ -234,6 +237,30 @@ struct CreateTaskPayload {
     parent_id: Option<Uuid>,
     start_date: Option<chrono::NaiveDate>,
     due_date: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateLibraryEntryPayload {
+    project_id: Option<Uuid>,
+    label: String,
+    kind: String,
+    category: String,
+    location: Option<String>,
+    code: Option<String>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListLibraryParams {
+    project_id: Option<Uuid>,
+    tag: Option<String>,
+    category: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadLibraryBlobParams {
+    ext: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1535,6 +1562,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
         .route("/projects/:id/tasks/:task_id/notes", get(list_project_task_notes).post(create_project_task_note))
         .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
+        .route("/library", get(list_library_entries).post(create_library_entry))
+        .route("/library/:entry_id", get(get_library_entry).delete(delete_library_entry))
+        .route("/library/:entry_id/file", get(get_library_entry_file))
+        .route(
+            "/library/upload",
+            post(upload_library_blob)
+                // Scoped to this route only (not the whole router): a little above
+                // MAX_LIBRARY_BLOB_BYTES so axum only rejects truly oversized bodies,
+                // leaving the handler's own check to return the documented JSON error
+                // for anything between the two thresholds.
+                .layer(axum::extract::DefaultBodyLimit::max(library::MAX_LIBRARY_BLOB_BYTES + 1024)),
+        )
         .route("/projects/:id/routines", get(list_project_routines).post(create_project_routine))
         .route("/projects/:id/routines/check", post(check_project_routines))
         .route("/projects/:id/routines/:routine_id", axum::routing::put(update_project_routine).delete(delete_project_routine))
@@ -2014,6 +2053,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .execute(db).await.ok();
 
     design_budgets::ensure_table(db).await?;
+    library::ensure_library_table(db).await?;
 
     workflows::ensure_table(db).await?;
 
@@ -2028,7 +2068,7 @@ async fn list_sessions(
 ) -> impl IntoResponse {
     let limit = params.limit.clamp(1, 200);
     let rows = sqlx::query_as::<_, SessionRow>(
-        "SELECT id, project_name, git_branch, cwd, started_at, last_event_at, message_count, created_at \
+        "SELECT id, project_name, git_branch, cwd, agent_name, started_at, last_event_at, message_count, created_at \
          FROM sessions ORDER BY last_event_at DESC NULLS LAST LIMIT $1"
     )
     .bind(limit)
@@ -2052,7 +2092,7 @@ async fn get_session(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let row = sqlx::query_as::<_, SessionRow>(
-        "SELECT id, project_name, git_branch, cwd, started_at, last_event_at, message_count, created_at \
+        "SELECT id, project_name, git_branch, cwd, agent_name, started_at, last_event_at, message_count, created_at \
          FROM sessions WHERE id = $1"
     )
     .bind(&id)
@@ -5940,6 +5980,224 @@ async fn would_create_cycle(db: &PgPool, task_id: Uuid, new_parent_id: Uuid) -> 
             None => return Ok(false),
         }
     }
+}
+
+async fn list_library_entries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ListLibraryParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match library::list_entries(&state.db, params.project_id, params.tag.as_deref(), params.category.as_deref()).await {
+        Ok(entries) => Json(serde_json::json!({"entries": entries, "total": entries.len()})).into_response(),
+        Err(e) => {
+            error!("list_library_entries error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_library_entry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateLibraryEntryPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let tags = payload.tags.unwrap_or_default();
+    match library::add_entry(
+        &state.db,
+        payload.project_id,
+        &payload.label,
+        &payload.kind,
+        &payload.category,
+        payload.location.as_deref(),
+        payload.code.as_deref(),
+        payload.description.as_deref(),
+        &tags,
+    )
+    .await
+    {
+        Ok((id, warning)) => match library::get_entry(&state.db, id).await {
+            Ok(Some(entry)) => Json(serde_json::json!({"entry": entry, "warning": warning})).into_response(),
+            Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "entry vanished after insert"}))).into_response(),
+            Err(e) => {
+                error!("create_library_entry fetch error: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            }
+        },
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_library_entry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(entry_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match library::get_entry(&state.db, entry_id).await {
+        Ok(Some(entry)) => Json(serde_json::json!({"entry": entry})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "library entry not found"}))).into_response(),
+        Err(e) => {
+            error!("get_library_entry error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_library_entry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(entry_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match library::get_entry(&state.db, entry_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "library entry not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_library_entry lookup error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    }
+
+    match library::delete_entry(&state.db, entry_id).await {
+        Ok(()) => Json(serde_json::json!({"deleted": entry_id})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// Maps a library entry's file extension (falling back to its `kind` column) to a
+/// browser-renderable Content-Type, so `<img>`/`<video>`/`<iframe>` tags display it
+/// inline instead of downloading it as `application/octet-stream`.
+fn library_file_content_type(location: &str, kind: &str) -> &'static str {
+    let ext = std::path::Path::new(location)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("html") | Some("htm") => "text/html",
+        _ if kind == "video" => "video/mp4",
+        _ if kind == "code" => "text/html",
+        _ => "image/png",
+    }
+}
+
+/// Streams a library entry's underlying file so the web UI can render it in an
+/// `<img>`/`<video>`/`<iframe>` tag. `location` is either a local filesystem path
+/// (read and streamed with a Content-Type derived from its extension) or an
+/// http(s) URL (redirected to directly rather than proxied). Ownership is
+/// existence-only now that entries are global — there's no project scope to check.
+async fn get_library_entry_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(entry_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let entry = match library::get_entry(&state.db, entry_id).await {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "library entry not found"}))).into_response(),
+        Err(e) => {
+            error!("get_library_entry_file lookup error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let Some(location) = entry.location.as_deref() else {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "entry has no file (inline code entry)"}))).into_response();
+    };
+
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return axum::response::Redirect::temporary(location).into_response();
+    }
+
+    match tokio::fs::read(location).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, library_file_content_type(location, &entry.kind))],
+            bytes,
+        )
+            .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "file not found"}))).into_response()
+        }
+        Err(e) => {
+            error!("get_library_entry_file read error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// Accepts a raw-bytes file upload (image/video/html) for the library, storing
+/// it under `library::blob_root()` with a fresh UUID filename. Mirrors
+/// `design_blobs::put_design_blob` in shape: size cap, temp-file-then-rename for
+/// atomicity, fresh UUID in the temp filename to avoid concurrent-write races.
+/// Separate from entry creation — the frontend uploads first, gets `location`
+/// back, then does a normal `POST /library` create with that location.
+async fn upload_library_blob(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<UploadLibraryBlobParams>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if body.len() > library::MAX_LIBRARY_BLOB_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "error": format!("upload exceeds {} MB limit", library::MAX_LIBRARY_BLOB_BYTES / (1024 * 1024))
+            })),
+        )
+            .into_response();
+    }
+
+    let ext = library::sanitize_ext(params.ext.as_deref().unwrap_or(""));
+
+    let root = library::blob_root();
+    if let Err(e) = tokio::fs::create_dir_all(&root).await {
+        error!("upload_library_blob mkdir error: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+
+    let blob_id = Uuid::new_v4();
+    let final_path = library::blob_path(&root, blob_id, &ext);
+    let temp_path = library::temp_blob_path(&root, blob_id, &ext);
+    if let Err(e) = tokio::fs::write(&temp_path, &body).await {
+        error!("upload_library_blob write error: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+    if let Err(e) = tokio::fs::rename(&temp_path, &final_path).await {
+        error!("upload_library_blob rename error: {e}");
+        // Best-effort cleanup so a rename failure doesn't orphan the temp file.
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+
+    Json(serde_json::json!({"location": final_path.to_string_lossy()})).into_response()
 }
 
 async fn list_project_tasks(

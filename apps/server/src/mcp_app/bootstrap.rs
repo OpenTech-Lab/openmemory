@@ -113,6 +113,7 @@ impl McpServer {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_designs_project_id ON project_designs(project_id)")
             .execute(&db).await.ok();
         design_budgets::ensure_table(&db).await?;
+        library::ensure_library_table(&db).await?;
 
         // Project tasks table
         sqlx::query(

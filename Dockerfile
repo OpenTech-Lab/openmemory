@@ -39,6 +39,7 @@ EXPOSE 18080
 # world-writable instead so it's writable under either the baked-in USER or
 # whatever UID:GID docker-compose substitutes at runtime.
 RUN mkdir -p /data/design-blobs && chmod 0777 /data/design-blobs
+RUN mkdir -p /data/library-blobs && chmod 0777 /data/library-blobs
 
 USER 10001:10001
 CMD ["openmemory-server"]

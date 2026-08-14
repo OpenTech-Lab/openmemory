@@ -3,3 +3,9 @@ members = [
   "apps/server",
 ]
 resolver = "2"
+
+[patch.crates-io]
+# See vendor/tree-sitter-javascript-0.21.4/Cargo.toml for why: unblocks the
+# `russh` dependency (needs ring >=0.17.14, which needs cc ^1.2.8) without
+# bumping the whole tree-sitter-* ecosystem.
+tree-sitter-javascript = { path = "vendor/tree-sitter-javascript-0.21.4" }

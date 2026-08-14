@@ -838,4 +838,26 @@ impl McpServer {
             "isError": status >= 400
         }))
     }
+
+    // Shared secret-resolution snippet used by every proxy tool that injects a
+    // decrypted env param into some other call without ever returning it to
+    // the agent (env_http_request, env_http_download, sign_jwt_from_args,
+    // env_google_service_account_request, and env_ssh_execute in
+    // ssh_tools.rs). New callers should use this instead of re-querying
+    // env_params directly.
+    pub(super) async fn resolve_env_secret(&self, key: &str) -> Result<String> {
+        let row: Option<(Vec<u8>, bool)> =
+            sqlx::query_as("SELECT value_encrypted, is_secret FROM env_params WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&self.db)
+                .await
+                .context("failed to query env param")?;
+
+        match row {
+            None => anyhow::bail!("Secret '{}' not found in env params", key),
+            Some((encrypted, _)) => {
+                decrypt_value(&self.encryption_key, &encrypted).context("failed to decrypt secret")
+            }
+        }
+    }
 }

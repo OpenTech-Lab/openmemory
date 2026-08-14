@@ -777,6 +777,41 @@ at an arbitrary host to exfiltrate the secret. Set `OPENMEMORY_HTTP_ALLOWED_HOST
 it's allowed to call — requests to any other host are rejected before the secret is
 resolved. Unset by default (any host allowed) for backward compatibility.
 
+### `env_ssh_execute` Host Controls
+
+`env_ssh_execute` runs a shell command on a remote host over SSH, entirely
+server-side (via [`russh`](https://github.com/warp-tech/russh), a pure-Rust
+client — no key material ever touches disk or a subprocess argv). It resolves
+a private key and username from encrypted env params, authenticates, runs the
+command, and returns only stdout/stderr/exit code — the agent never sees the
+key or username. Because this is remote code execution rather than just an
+authenticated fetch, it's locked down harder than the HTTP tools above:
+
+- **`OPENMEMORY_SSH_ALLOWED_HOSTS` is fail-closed** — the opposite default
+  from `OPENMEMORY_HTTP_ALLOWED_HOSTS`. Unset or empty means *every* host is
+  refused; you must explicitly set a comma-separated allowlist (`host` or
+  `host:port` entries) on the `openmemory-mcp` process to use this tool at
+  all.
+- **Per-key host binding**: set `<ssh_key_key>.allowed_hosts` (a normal,
+  non-secret env param, same comma-separated format) to restrict a specific
+  key to a subset of the global allowlist — so one compromised/misused key
+  can't be pointed at some other allowlisted host.
+- **Host key pinning**: set `<ssh_key_key>.host_key_fingerprint` to the
+  output of `ssh-keyscan -t ed25519,rsa <host> | ssh-keygen -lf -` (the
+  `SHA256:...` line). The SSH handshake refuses to proceed if the server's
+  presented host key doesn't match — this is what stops a hijacked or
+  spoofed host from harvesting the private key on first connect. There's no
+  default: a key with no pinned fingerprint is refused unless
+  `OPENMEMORY_SSH_ALLOW_UNKNOWN_HOST_KEY=1` is set on the process (intended
+  only for first-time setup, not for routine use).
+
+All three checks run, in order, before the private key is ever used to
+authenticate to anything. Also: no PTY, no port/agent/X11 forwarding, no
+password auth fallback, a timeout wrapping connect+auth+exec (default 30s,
+capped at 300s), and stdout/stderr are each capped at 100KB with a
+truncation marker. Key material stored via `env_set_file` (base64-wrapped)
+or `env_set` (raw PEM) both work — the format is auto-detected.
+
 ### Encryption Key
 
 Env-param values are encrypted at rest with a key derived from

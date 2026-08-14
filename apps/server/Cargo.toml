@@ -43,3 +43,4 @@ tree-sitter-python = "0.21"
 ignore = "0.4"
 jsonwebtoken = "9"
 base64 = "0.22"
+russh = { version = "0.62", default-features = false, features = ["ring", "rsa", "flate2"] }
