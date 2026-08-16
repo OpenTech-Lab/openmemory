@@ -6580,7 +6580,8 @@ async fn list_project_lessons(
              WHERE project_id = $1 AND status = $2 \
                AND ($3::text IS NULL OR category = $3) \
                AND ($4::text[] IS NULL OR cardinality($4::text[]) = 0 OR tags && $4) \
-             ORDER BY severity DESC, last_seen_at DESC \
+             ORDER BY CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, \
+                      last_seen_at DESC \
              LIMIT $5 OFFSET $6",
             cols = PROJECT_LESSON_COLUMNS
         ))
@@ -6593,8 +6594,40 @@ async fn list_project_lessons(
         .fetch_all(&state.db).await
     };
 
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM project_lessons \
+         WHERE project_id = $1 AND status = $2 \
+           AND ($3::text IS NULL OR category = $3) \
+           AND ($4::text[] IS NULL OR cardinality($4::text[]) = 0 OR tags && $4)"
+    )
+    .bind(project_id)
+    .bind(status)
+    .bind(&params.category)
+    .bind(&tag_filter)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let distinct_tags: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT unnest(tags) AS tag FROM project_lessons \
+         WHERE project_id = $1 AND status = $2 \
+           AND ($3::text IS NULL OR category = $3) \
+         ORDER BY 1"
+    )
+    .bind(project_id)
+    .bind(status)
+    .bind(&params.category)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
     match rows {
-        Ok(lessons) => Json(serde_json::json!({"lessons": lessons, "total": lessons.len()})).into_response(),
+        Ok(lessons) => Json(serde_json::json!({
+            "lessons": lessons,
+            "total": lessons.len(),
+            "total_count": total_count,
+            "tags": distinct_tags,
+        })).into_response(),
         Err(e) => {
             error!("list_project_lessons error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
@@ -6784,7 +6817,8 @@ async fn search_lessons(
              WHERE status = $1 \
                AND ($2::text IS NULL OR category = $2) \
                AND ($3::text[] IS NULL OR cardinality($3::text[]) = 0 OR tags && $3) \
-             ORDER BY severity DESC, last_seen_at DESC \
+             ORDER BY CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, \
+                      last_seen_at DESC \
              LIMIT $4 OFFSET $5",
             cols = PROJECT_LESSON_COLUMNS
         ))
@@ -6796,8 +6830,38 @@ async fn search_lessons(
         .fetch_all(&state.db).await
     };
 
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM project_lessons \
+         WHERE status = $1 \
+           AND ($2::text IS NULL OR category = $2) \
+           AND ($3::text[] IS NULL OR cardinality($3::text[]) = 0 OR tags && $3)"
+    )
+    .bind(status)
+    .bind(&params.category)
+    .bind(&tag_filter)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    let distinct_tags: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT unnest(tags) AS tag FROM project_lessons \
+         WHERE status = $1 \
+           AND ($2::text IS NULL OR category = $2) \
+         ORDER BY 1"
+    )
+    .bind(status)
+    .bind(&params.category)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
     match rows {
-        Ok(lessons) => Json(serde_json::json!({"lessons": lessons, "total": lessons.len()})).into_response(),
+        Ok(lessons) => Json(serde_json::json!({
+            "lessons": lessons,
+            "total": lessons.len(),
+            "total_count": total_count,
+            "tags": distinct_tags,
+        })).into_response(),
         Err(e) => {
             error!("search_lessons error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
@@ -7392,14 +7456,35 @@ async fn check_project_routines(
     }
 }
 
-async fn list_workflows(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+#[derive(Debug, Deserialize)]
+struct ListWorkflowsParams {
+    #[serde(default = "default_workflow_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_workflow_limit() -> i64 { 50 }
+
+async fn list_workflows(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ListWorkflowsParams>,
+) -> impl IntoResponse {
     if !is_authenticated(&headers, &state.api_token) {
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
-    match workflows::list(&state.db).await {
-        Ok(items) => Json(serde_json::json!({"workflows": items, "total": items.len()})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
-    }
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.max(0);
+    let items = match workflows::list(&state.db, limit, offset).await {
+        Ok(items) => items,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+    let total_count = match workflows::count(&state.db).await {
+        Ok(count) => count,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+    Json(serde_json::json!({"workflows": items, "total": items.len(), "total_count": total_count})).into_response()
 }
 
 async fn get_workflow(

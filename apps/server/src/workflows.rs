@@ -279,12 +279,21 @@ fn validate_input(input_schema: &Value, input: &Value) -> Result<()> {
     Ok(())
 }
 
-pub async fn list(db: &PgPool) -> Result<Vec<Workflow>> {
+pub async fn list(db: &PgPool, limit: i64, offset: i64) -> Result<Vec<Workflow>> {
     Ok(sqlx::query_as(
-        "SELECT id, name, description, input_schema, steps, enabled, created_at, updated_at FROM workflows ORDER BY name",
+        "SELECT id, name, description, input_schema, steps, enabled, created_at, updated_at FROM workflows ORDER BY name LIMIT $1 OFFSET $2",
     )
+    .bind(limit)
+    .bind(offset)
     .fetch_all(db)
     .await?)
+}
+
+pub async fn count(db: &PgPool) -> Result<i64> {
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workflows")
+        .fetch_one(db)
+        .await?;
+    Ok(count)
 }
 
 pub async fn get(db: &PgPool, id_or_name: &str) -> Result<Workflow> {

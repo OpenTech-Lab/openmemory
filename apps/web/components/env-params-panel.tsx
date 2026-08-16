@@ -35,6 +35,7 @@ import {
 } from '@/components/ui/table';
 import { Plus, RefreshCw, Eye, EyeOff, Pencil, Trash2, Lock, Globe, Upload, FileText } from 'lucide-react';
 import { toast } from 'sonner';
+import { TablePagination } from '@/components/ui/table-pagination';
 
 interface EnvParam {
   id: string;
@@ -71,6 +72,8 @@ export function EnvParamsPanel() {
   const [params, setParams] = useState<EnvParam[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
 
   // Add dialog
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -151,6 +154,7 @@ export function EnvParamsPanel() {
       setIsAddOpen(false);
       setAddKey(''); setAddValue(''); setAddFile(null); setAddMode('text');
       setAddIsSecret(false); setAddDescription('');
+      setPage(0);
       fetchParams();
     } catch {
       toast.error('Failed to save parameter');
@@ -178,6 +182,7 @@ export function EnvParamsPanel() {
       if (data.error) { toast.error(data.error); return; }
       toast.success(`Parameter '${newKey}' updated`);
       setEditParam(null);
+      setPage(0);
       fetchParams();
     } catch {
       toast.error('Failed to update parameter');
@@ -216,6 +221,7 @@ export function EnvParamsPanel() {
       if (data.error) { toast.error(data.error); return; }
       toast.success(`Parameter '${deleteParam.key}' deleted`);
       setDeleteParam(null);
+      setPage(0);
       fetchParams();
     } catch {
       toast.error('Failed to delete parameter');
@@ -265,19 +271,19 @@ export function EnvParamsPanel() {
             <p className="text-xs mt-1">Add API keys, tokens, or config values for AI agents to use.</p>
           </div>
         ) : (
-          <div className="rounded-md border overflow-auto max-h-[600px]">
-          <Table>
+          <div className="space-y-4">
+          <Table containerClassName="rounded-md border overflow-auto max-h-[600px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="sticky top-0 z-10 bg-background">Key</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Type</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Description</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Created</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background text-right">Actions</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Key</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Type</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Description</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Created</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {params.map((param) => (
+              {params.slice(page * pageSize, (page + 1) * pageSize).map((param) => (
                 <TableRow key={param.id}>
                   <TableCell className="font-mono text-sm font-medium">{param.key}</TableCell>
                   <TableCell>
@@ -332,6 +338,14 @@ export function EnvParamsPanel() {
               ))}
             </TableBody>
           </Table>
+          
+          <TablePagination
+            page={page}
+            pageSize={pageSize}
+            totalRows={params.length}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
           </div>
         )}
       </div>

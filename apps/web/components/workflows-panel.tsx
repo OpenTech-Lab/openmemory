@@ -20,6 +20,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { TablePagination } from '@/components/ui/table-pagination';
 
 type JsonObject = Record<string, unknown>;
 type Point = { x: number; y: number };
@@ -206,6 +207,9 @@ function wouldCreateCycle(edges: Edge[], source: string, target: string): boolea
 
 function WorkflowPanelInner() {
   const [items, setItems] = useState<Workflow[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<Workflow | null | undefined>(undefined);
@@ -231,16 +235,18 @@ function WorkflowPanelInner() {
     setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, order: orderedIds.indexOf(node.id) + 1 } })));
   }, [orderedIds.join('|'), setNodes]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageOverride?: number) => {
+    const effectivePage = pageOverride ?? page;
     setLoading(true);
     try {
-      const response = await fetch('/api/workflows');
+      const response = await fetch(`/api/workflows?limit=${pageSize}&offset=${effectivePage * pageSize}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to load workflows');
       setItems(data.workflows ?? []);
+      setTotalCount(data.total_count ?? 0);
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to load workflows'); }
     finally { setLoading(false); }
-  }, []);
+  }, [page, pageSize]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -346,7 +352,7 @@ function WorkflowPanelInner() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to save workflow');
-      toast.success(editing ? 'Workflow updated' : 'Workflow created'); setEditing(undefined); await load();
+      toast.success(editing ? 'Workflow updated' : 'Workflow created'); setEditing(undefined); setPage(0); await load(0);
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Invalid workflow'); }
     finally { setSaving(false); }
   };
@@ -374,7 +380,7 @@ function WorkflowPanelInner() {
       const response = await fetch(`/api/workflows/${deleting.id}`, { method: 'DELETE' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to delete workflow');
-      toast.success('Workflow deleted'); setDeleting(null); await load();
+      toast.success('Workflow deleted'); setDeleting(null); setPage(0); await load(0);
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Failed to delete workflow'); }
   };
 
@@ -385,11 +391,12 @@ function WorkflowPanelInner() {
         <Button size="sm" onClick={openCreate}><Plus className="mr-1.5 h-4 w-4" />New workflow</Button>
       </div>
 
-      <div className="rounded-md border"><Table><TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Steps</TableHead><TableHead>Status</TableHead><TableHead>Updated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>
+      <Table containerClassName="rounded-md border overflow-auto max-h-[600px]"><TableHeader><TableRow><TableHead className="sticky top-0 z-10 bg-muted border-b">Name</TableHead><TableHead className="sticky top-0 z-10 bg-muted border-b">Steps</TableHead><TableHead className="sticky top-0 z-10 bg-muted border-b">Status</TableHead><TableHead className="sticky top-0 z-10 bg-muted border-b">Updated</TableHead><TableHead className="sticky top-0 z-10 bg-muted border-b text-right">Actions</TableHead></TableRow></TableHeader><TableBody>
         {loading ? <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">Loading…</TableCell></TableRow> : items.length === 0 ? <TableRow><TableCell colSpan={5} className="h-28 text-center text-muted-foreground"><WorkflowIcon className="mx-auto mb-2 h-5 w-5" />No workflows configured.</TableCell></TableRow> : items.map((workflow) => <TableRow key={workflow.id}>
           <TableCell><div className="font-mono font-medium">{workflow.name}</div><div className="max-w-md truncate text-xs text-muted-foreground">{workflow.description}</div></TableCell><TableCell>{workflow.steps.length}</TableCell><TableCell><Badge variant={workflow.enabled ? 'default' : 'secondary'}>{workflow.enabled ? 'Enabled' : 'Disabled'}</Badge></TableCell><TableCell className="text-xs text-muted-foreground">{new Date(workflow.updated_at).toLocaleString()}</TableCell>
           <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="icon" disabled={!workflow.enabled} onClick={() => { setRunning(workflow); setRunInput('{}'); setRunResult(null); }}><Play className="h-4 w-4" /></Button><Button variant="ghost" size="icon" onClick={() => openEdit(workflow)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" onClick={() => setDeleting(workflow)}><Trash2 className="h-4 w-4" /></Button></div></TableCell>
-        </TableRow>)}</TableBody></Table></div>
+        </TableRow>)}</TableBody></Table>
+      <TablePagination page={page} pageSize={pageSize} totalRows={totalCount} onPageChange={setPage} onPageSizeChange={setPageSize} />
 
       <Dialog open={editing !== undefined} onOpenChange={(open) => { if (!open) setEditing(undefined); }}>
         <DialogContent className="flex h-[92vh] w-[96vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]">

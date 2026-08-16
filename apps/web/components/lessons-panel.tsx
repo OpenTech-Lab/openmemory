@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -52,8 +52,8 @@ import {
   LESSON_SEVERITIES,
   categoryColor,
   severityColor,
-  severityRank,
 } from '@/lib/lesson-meta';
+import { TablePagination } from '@/components/ui/table-pagination';
 
 interface Lesson {
   id: string;
@@ -116,6 +116,10 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<'active' | 'archived'>('active');
   const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
+  const [distinctTags, setDistinctTags] = useState<string[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
 
   // Add dialog
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -139,14 +143,17 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  const fetchLessons = useCallback(async () => {
+  const fetchLessons = useCallback(async (pageOverride?: number) => {
+    const effectivePage = pageOverride ?? page;
     setIsLoading(true);
     try {
       const params = new URLSearchParams();
       if (debouncedQuery) params.set('query', debouncedQuery);
       if (categoryFilter !== 'all') params.set('category', categoryFilter);
       params.set('status', statusFilter);
-      params.set('limit', '200');
+      if (activeTags.size > 0) params.set('tags', Array.from(activeTags).join(','));
+      params.set('limit', String(pageSize));
+      params.set('offset', String(effectivePage * pageSize));
       const url = projectId
         ? `/api/projects/${projectId}/lessons?${params}`
         : `/api/lessons?${params}`;
@@ -157,21 +164,26 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
         return;
       }
       setLessons(data.lessons ?? []);
+      setTotalCount(data.total_count ?? 0);
+      setDistinctTags(data.tags ?? []);
     } catch {
       toast.error('Failed to connect to server');
     } finally {
       setIsLoading(false);
     }
-  }, [projectId, debouncedQuery, categoryFilter, statusFilter]);
+  }, [projectId, debouncedQuery, categoryFilter, statusFilter, activeTags, page, pageSize]);
 
   useEffect(() => {
     fetchLessons();
   }, [fetchLessons]);
 
-  const distinctTags = useMemo(
-    () => Array.from(new Set(lessons.flatMap((l) => l.tags))).sort(),
-    [lessons]
-  );
+  // Server already applies query/category/status/tags/severity ordering — no
+  // client-side re-filtering or re-sorting needed.
+  const sortedLessons = lessons;
+
+  useEffect(() => {
+    setPage(0);
+  }, [debouncedQuery, categoryFilter, statusFilter, activeTags]);
 
   const toggleTag = (tag: string) => {
     setActiveTags((prev) => {
@@ -181,21 +193,6 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
       return next;
     });
   };
-
-  // Server already applies query/category/status. Client-side: tag filter,
-  // then sort — the backend's `ORDER BY severity DESC` sorts the raw text
-  // column wrong (medium/low/high alphabetically), so re-rank here.
-  const sortedLessons = useMemo(() => {
-    let result = lessons;
-    if (activeTags.size > 0) {
-      result = result.filter((l) => l.tags.some((t) => activeTags.has(t)));
-    }
-    return [...result].sort((a, b) => {
-      const rankDiff = severityRank(b.severity) - severityRank(a.severity);
-      if (rankDiff !== 0) return rankDiff;
-      return new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime();
-    });
-  }, [lessons, activeTags]);
 
   const showProjectColumn = projectId === null;
   const showStatusColumn = statusFilter === 'archived' || lessons.some((l) => l.status === 'archived');
@@ -247,7 +244,8 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
       }
       setIsAddOpen(false);
       resetAddForm();
-      fetchLessons();
+      setPage(0);
+      fetchLessons(0);
     } catch {
       toast.error('Failed to add lesson');
     } finally {
@@ -291,7 +289,8 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
       }
       toast.success(`Lesson "${editTitle.trim()}" updated`);
       setEditLesson(null);
-      fetchLessons();
+      setPage(0);
+      fetchLessons(0);
     } catch {
       toast.error('Failed to update lesson');
     } finally {
@@ -313,7 +312,8 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
         return;
       }
       toast.success(nextStatus === 'archived' ? 'Lesson archived' : 'Lesson restored');
-      fetchLessons();
+      setPage(0);
+      fetchLessons(0);
     } catch {
       toast.error('Failed to update lesson');
     }
@@ -332,7 +332,8 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
       }
       toast.success(`Lesson "${deleteLesson.title}" deleted`);
       setDeleteLesson(null);
-      fetchLessons();
+      setPage(0);
+      fetchLessons(0);
     } catch {
       toast.error('Failed to delete lesson');
     }
@@ -347,7 +348,7 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
       </datalist>
       <div className="flex items-center justify-between pb-3 gap-3 flex-wrap">
         <div>
-          <h2 className="text-base font-semibold">Lessons ({lessons.length})</h2>
+          <h2 className="text-base font-semibold">Lessons ({totalCount})</h2>
           <p className="text-sm text-muted-foreground">
             Corrections and patterns learned from past sessions.
           </p>
@@ -381,7 +382,7 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
               <SelectItem value="archived">Archived</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={fetchLessons} disabled={isLoading}>
+          <Button variant="outline" size="sm" onClick={() => fetchLessons()} disabled={isLoading}>
             <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
@@ -451,23 +452,23 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
                 <p className="text-sm">No lessons match your filters.</p>
               </div>
             ) : (
-              <div className="rounded-md border overflow-auto max-h-[600px]">
-                <Table>
+              <div className="space-y-4">
+              <Table containerClassName="rounded-md border overflow-auto max-h-[600px]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="sticky top-0 z-10 bg-background">Title</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b">Title</TableHead>
                       {showProjectColumn && (
-                        <TableHead className="sticky top-0 z-10 bg-background">Project</TableHead>
+                        <TableHead className="sticky top-0 z-10 bg-muted border-b">Project</TableHead>
                       )}
-                      <TableHead className="sticky top-0 z-10 bg-background">Category</TableHead>
-                      <TableHead className="sticky top-0 z-10 bg-background">Severity</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b">Category</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b">Severity</TableHead>
                       {showStatusColumn && (
-                        <TableHead className="sticky top-0 z-10 bg-background">Status</TableHead>
+                        <TableHead className="sticky top-0 z-10 bg-muted border-b">Status</TableHead>
                       )}
-                      <TableHead className="sticky top-0 z-10 bg-background">Tags</TableHead>
-                      <TableHead className="sticky top-0 z-10 bg-background">Rule</TableHead>
-                      <TableHead className="sticky top-0 z-10 bg-background">Last seen</TableHead>
-                      <TableHead className="sticky top-0 z-10 bg-background text-right">Actions</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b">Tags</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b">Rule</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b">Last seen</TableHead>
+                      <TableHead className="sticky top-0 z-10 bg-muted border-b text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -569,6 +570,14 @@ export function LessonsPanel({ projectId, projects = [] }: LessonsPanelProps) {
                     ))}
                   </TableBody>
                 </Table>
+              
+              <TablePagination
+                page={page}
+                pageSize={pageSize}
+                totalRows={totalCount}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+              />
               </div>
             )}
           </>

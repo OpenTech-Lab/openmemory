@@ -5,7 +5,7 @@ impl McpServer {
         &mut self,
         _args: &serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let items = workflows::list(&self.db).await?;
+        let items = workflows::list(&self.db, 200, 0).await?;
         let summaries: Vec<serde_json::Value> = items
             .into_iter()
             .map(|workflow| {

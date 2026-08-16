@@ -1,12 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { resolveApiToken } from '@/lib/api-token';
 
 const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:18080';
 const API_TOKEN = resolveApiToken();
 
-async function proxy(method: string, body?: unknown) {
+async function proxy(url: string, method: string, body?: unknown) {
   try {
-    const response = await fetch(`${API_URL}/workflows`, {
+    const response = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_TOKEN}` },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -18,5 +18,10 @@ async function proxy(method: string, body?: unknown) {
   }
 }
 
-export function GET() { return proxy('GET'); }
-export async function POST(request: Request) { return proxy('POST', await request.json()); }
+export function GET(req: NextRequest) {
+  const search = req.nextUrl.search;
+  return proxy(`${API_URL}/workflows${search}`, 'GET');
+}
+export async function POST(request: Request) {
+  return proxy(`${API_URL}/workflows`, 'POST', await request.json());
+}

@@ -58,6 +58,7 @@ import {
 import { Plus, RefreshCw, Pencil, Trash2, FolderOpen, Link2, Boxes, Lock, ChevronDown, X, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
+import { TablePagination } from '@/components/ui/table-pagination';
 
 interface Resource {
   id: string | null;
@@ -246,6 +247,10 @@ export function ResourcesPanel() {
   // Keyword search
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Pagination
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
+
   const distinctTags = useMemo(
     () => Array.from(new Set(resources.flatMap((r) => r.tags))).sort(),
     [resources]
@@ -266,6 +271,15 @@ export function ResourcesPanel() {
     }
     return result;
   }, [resources, activeTags, searchQuery]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [searchQuery, activeTags]);
+
+  const pagedResources = useMemo(
+    () => filteredResources.slice(page * pageSize, (page + 1) * pageSize),
+    [filteredResources, page, pageSize]
+  );
 
   const toggleTag = (tag: string) => {
     setActiveTags((prev) => {
@@ -338,6 +352,7 @@ export function ResourcesPanel() {
       setAddName(''); setAddKind('path'); setAddLocation('');
       setAddDescription(''); setAddTags(''); setAddEnvKeys([]);
       setAddDescriptionTouched(false); setAddTagsTouched(false);
+      setPage(0);
       fetchResources();
     } catch {
       toast.error('Failed to add resource');
@@ -400,6 +415,7 @@ export function ResourcesPanel() {
       toast.success(`Resource '${editName.trim()}' updated`);
       if (data.warning) toast.warning(data.warning);
       setEditResource(null);
+      setPage(0);
       fetchResources();
     } catch {
       toast.error('Failed to update resource');
@@ -416,6 +432,7 @@ export function ResourcesPanel() {
       if (data.error) { toast.error(data.error); return; }
       toast.success(`Resource '${deleteResource.name}' deleted`);
       setDeleteResource(null);
+      setPage(0);
       fetchResources();
     } catch {
       toast.error('Failed to delete resource');
@@ -518,23 +535,23 @@ export function ResourcesPanel() {
               <p className="text-sm">No resources match your search.</p>
             </div>
           ) : (
-          <div className="rounded-md border overflow-auto max-h-[600px]">
-          <Table>
+          <div className="space-y-4">
+          <Table containerClassName="rounded-md border overflow-auto max-h-[600px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="sticky top-0 z-10 bg-background">Name</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Category</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Location</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Source</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Tags</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Credentials</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Description</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background">Created</TableHead>
-                <TableHead className="sticky top-0 z-10 bg-background text-right">Actions</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Name</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Category</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Location</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Source</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Tags</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Credentials</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Description</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b">Created</TableHead>
+                <TableHead className="sticky top-0 z-10 bg-muted border-b text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredResources.map((r) => (
+              {pagedResources.map((r) => (
                 <TableRow key={r.id ?? r.env_key ?? r.name}>
                   <TableCell className="font-medium text-sm max-w-[140px] whitespace-normal break-words">{r.name}</TableCell>
                   <TableCell>
@@ -625,6 +642,14 @@ export function ResourcesPanel() {
               ))}
             </TableBody>
           </Table>
+          
+          <TablePagination
+            page={page}
+            pageSize={pageSize}
+            totalRows={filteredResources.length}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
           </div>
           )}
           </>
