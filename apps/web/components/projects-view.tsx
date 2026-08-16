@@ -165,6 +165,19 @@ function timeAgo(iso: string): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
+function matchesBoardKeyword(item: Task | Routine, query: string): boolean {
+  if (!query) return true;
+  return [
+    item.title,
+    item.description ?? '',
+    item.project_name ?? '',
+    ...item.labels,
+    'status' in item ? STATUS_LABELS[item.status] ?? item.status : '',
+    'priority' in item ? item.priority : '',
+    'frequency' in item ? item.frequency : '',
+  ].some((field) => field.toLowerCase().includes(query));
+}
+
 export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const router = useRouter();
 
@@ -175,6 +188,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [boardFilter, setBoardFilter] = useState<string>('all');
+  const [boardSearchQuery, setBoardSearchQuery] = useState('');
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskSheetMode, setTaskSheetMode] = useState<'view' | 'edit'>('view');
@@ -847,9 +861,16 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     },
   ];
 
-  const filteredTasks = boardFilter === 'all' ? tasks : tasks.filter(t => t.project_id === boardFilter);
+  const boardQuery = boardSearchQuery.trim().toLowerCase();
+  const filteredTasks = useMemo(
+    () => tasks.filter((task) => (boardFilter === 'all' || task.project_id === boardFilter) && matchesBoardKeyword(task, boardQuery)),
+    [tasks, boardFilter, boardQuery]
+  );
   const taskTitleById = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
-  const filteredRoutines = boardFilter === 'all' ? routines : routines.filter(r => r.project_id === boardFilter);
+  const filteredRoutines = useMemo(
+    () => routines.filter((routine) => (boardFilter === 'all' || routine.project_id === boardFilter) && matchesBoardKeyword(routine, boardQuery)),
+    [routines, boardFilter, boardQuery]
+  );
   const boardColumns = [
     { key: 'scheduled', label: 'Scheduled' },
     { key: 'todo', label: 'Todo' },
@@ -921,7 +942,12 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                     <Plus className="h-4 w-4 mr-1" /> Project
                   </Button>
                 </div>
-                <DataTable columns={columns} data={projects} />
+                <DataTable
+                  columns={columns}
+                  data={projects}
+                  searchKey="name"
+                  searchPlaceholder="Search projects..."
+                />
               </div>
             )}
           </div>
@@ -942,6 +968,13 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                   ))}
                 </SelectContent>
               </Select>
+              <Input
+                value={boardSearchQuery}
+                onChange={(event) => setBoardSearchQuery(event.target.value)}
+                placeholder="Search tasks and routines..."
+                aria-label="Search board tasks and routines"
+                className="h-8 w-[240px] max-w-full"
+              />
               {isLoadingTasks && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
               <div className="ml-auto">
                 <Button size="sm" onClick={() => setShowTaskDialog(true)}>
@@ -951,6 +984,11 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             </div>
 
             {/* Kanban — takes remaining height, scrolls x only here */}
+            {boardQuery && filteredTasks.length === 0 && filteredRoutines.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center px-6 py-4 text-sm text-muted-foreground">
+                No tasks or routines match &quot;{boardSearchQuery.trim()}&quot;.
+              </div>
+            ) : (
             <div className="flex-1 min-h-0 min-w-0 overflow-x-auto overflow-y-auto px-6 py-4">
               {/* min-w-max forces the row to declare its real width so overflow-x-auto fires */}
               <div className="flex gap-3 min-w-max h-full">
@@ -1008,6 +1046,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               })}
               </div>
             </div>
+            )}
           </div>
         )}
       </div>

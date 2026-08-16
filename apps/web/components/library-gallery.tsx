@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trash2, ImageOff, Plus, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -112,6 +112,7 @@ export function LibraryGallery({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const fetchEntries = useCallback(async () => {
     setIsLoading(true);
@@ -134,6 +135,22 @@ export function LibraryGallery({
   }, [category]);
 
   useEffect(() => { fetchEntries(); }, [fetchEntries]);
+
+  const projectNameById = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects]);
+  const filteredEntries = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return entries;
+    return entries.filter((entry) => [
+      entry.label,
+      entry.kind,
+      CATEGORY_LABELS[entry.category],
+      entry.location ?? '',
+      entry.code ?? '',
+      entry.description ?? '',
+      projectNameById.get(entry.project_id ?? '') ?? '',
+      ...entry.tags,
+    ].some((field) => field.toLowerCase().includes(query)));
+  }, [entries, projectNameById, searchQuery]);
 
   const handleDelete = useCallback(async (entry: LibraryEntry) => {
     try {
@@ -161,7 +178,15 @@ export function LibraryGallery({
 
   return (
     <div className="flex flex-col gap-4 px-6 py-6">
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <Input
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="Search library..."
+          aria-label="Search library entries by keyword"
+          className="h-8 w-[240px] max-w-full"
+        />
+        <div className="flex justify-end gap-2">
         <Button
           size="sm"
           variant="outline"
@@ -188,6 +213,7 @@ export function LibraryGallery({
             />
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {isLoading ? (
@@ -199,9 +225,14 @@ export function LibraryGallery({
           <ImageOff className="h-8 w-8" />
           <p>No library entries yet.</p>
         </div>
+      ) : filteredEntries.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2 py-16">
+          <ImageOff className="h-8 w-8" />
+          <p>No library entries match your search.</p>
+        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {entries.map(entry => (
+          {filteredEntries.map(entry => (
             <div key={entry.id} className="flex flex-col rounded-lg border bg-card overflow-hidden">
               <div className="aspect-video bg-muted flex items-center justify-center overflow-hidden">
                 {entry.kind === 'video' ? (
@@ -280,12 +311,6 @@ function AddEntryForm({
   const [category, setCategory] = useState<string>(defaultCategory ?? NO_CATEGORY_VALUE);
   const [entryProjectId, setEntryProjectId] = useState<string>(NO_PROJECT_VALUE);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Clear the picked file whenever kind/source changes so a stale file from a
-  // different tab can't get submitted under the new kind.
-  useEffect(() => {
-    setFile(null);
-  }, [kind, source]);
 
   const handleSubmit = useCallback(async () => {
     if (!label.trim()) {
@@ -378,7 +403,7 @@ function AddEntryForm({
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <Label>Kind</Label>
-          <Tabs value={kind} onValueChange={(v) => { setKind(v as Kind); setSource('upload'); }}>
+          <Tabs value={kind} onValueChange={(v) => { setKind(v as Kind); setSource('upload'); setFile(null); }}>
             <TabsList className="w-full">
               <TabsTrigger value="image" className="flex-1">Image</TabsTrigger>
               <TabsTrigger value="video" className="flex-1">Video</TabsTrigger>
@@ -389,7 +414,7 @@ function AddEntryForm({
 
         <div className="flex flex-col gap-1.5">
           <Label>Source</Label>
-          <Tabs value={source} onValueChange={(v) => setSource(v as Source)}>
+          <Tabs value={source} onValueChange={(v) => { setSource(v as Source); setFile(null); }}>
             <TabsList className="w-full">
               <TabsTrigger value="upload" className="flex-1">
                 {kind === 'code' ? 'Upload .html file' : 'Upload file'}

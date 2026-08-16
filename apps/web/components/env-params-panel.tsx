@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -72,6 +72,7 @@ export function EnvParamsPanel() {
   const [params, setParams] = useState<EnvParam[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(10);
 
@@ -120,6 +121,20 @@ export function EnvParamsPanel() {
   useEffect(() => {
     fetchParams();
   }, [fetchParams]);
+
+  const filteredParams = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return params;
+    return params.filter((param) =>
+      [param.key, param.description ?? '', param.is_secret ? 'secret' : 'normal'].some((field) =>
+        field.toLowerCase().includes(query)
+      )
+    );
+  }, [params, searchQuery]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [searchQuery]);
 
   // Cleanup reveal timer on unmount
   useEffect(() => {
@@ -249,6 +264,15 @@ export function EnvParamsPanel() {
           </p>
         </div>
         <div className="flex gap-2">
+          {params.length > 0 && (
+            <Input
+              placeholder="Search parameters..."
+              aria-label="Search environment parameters"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 w-[220px]"
+            />
+          )}
           <Button variant="outline" size="sm" onClick={fetchParams} disabled={isLoading}>
             <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
             Refresh
@@ -270,6 +294,11 @@ export function EnvParamsPanel() {
             <p className="text-sm">No environment parameters configured.</p>
             <p className="text-xs mt-1">Add API keys, tokens, or config values for AI agents to use.</p>
           </div>
+        ) : filteredParams.length === 0 ? (
+          <div className="text-center py-16 text-muted-foreground">
+            <Lock className="h-10 w-10 mx-auto mb-3 opacity-30" />
+            <p className="text-sm">No parameters match your search.</p>
+          </div>
         ) : (
           <div className="space-y-4">
           <Table containerClassName="rounded-md border overflow-auto max-h-[600px]">
@@ -283,7 +312,7 @@ export function EnvParamsPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {params.slice(page * pageSize, (page + 1) * pageSize).map((param) => (
+              {filteredParams.slice(page * pageSize, (page + 1) * pageSize).map((param) => (
                 <TableRow key={param.id}>
                   <TableCell className="font-mono text-sm font-medium">{param.key}</TableCell>
                   <TableCell>
@@ -342,7 +371,7 @@ export function EnvParamsPanel() {
           <TablePagination
             page={page}
             pageSize={pageSize}
-            totalRows={params.length}
+            totalRows={filteredParams.length}
             onPageChange={setPage}
             onPageSizeChange={setPageSize}
           />

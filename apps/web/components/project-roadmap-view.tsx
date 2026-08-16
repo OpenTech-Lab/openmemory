@@ -263,6 +263,7 @@ export function ProjectRoadmapView() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [zoom, setZoom] = useState<ZoomKey>('day');
   const [hideDone, setHideDone] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [leftWidth, setLeftWidth] = useState(380);
   const [showDialog, setShowDialog] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -338,9 +339,20 @@ export function ProjectRoadmapView() {
       .filter((p) => byProject.has(p.id))
       .flatMap((p) => buildTree(byProject.get(p.id)!));
   }, [tasks, projects]);
+  const searchTree = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return fullTree;
+    return pruneTree(fullTree, (task) => [
+      task.title,
+      task.description ?? '',
+      projectNameById.get(task.project_id) ?? '',
+      STATUS_LABELS[task.status] ?? task.status,
+      task.priority,
+    ].some((field) => field.toLowerCase().includes(query)));
+  }, [fullTree, projectNameById, searchQuery]);
   const tree = useMemo(
-    () => (hideDone ? pruneTree(fullTree, (t) => !DONE_STATUSES.has(t.status)) : fullTree),
-    [fullTree, hideDone]
+    () => (hideDone ? pruneTree(searchTree, (t) => !DONE_STATUSES.has(t.status)) : searchTree),
+    [searchTree, hideDone]
   );
   const flat = useMemo(() => flatten(tree), [tree]);
   const nodeById = useMemo(() => new Map(flatten(fullTree).map((n) => [n.id, n])), [fullTree]);
@@ -348,6 +360,7 @@ export function ProjectRoadmapView() {
 
   const rows = useMemo(() => {
     const isVisible = (node: TaskNode): boolean => {
+      if (searchQuery.trim()) return true;
       let p = node.parent_id;
       while (p) {
         if (collapsed.has(p)) return false;
@@ -356,7 +369,7 @@ export function ProjectRoadmapView() {
       return true;
     };
     return flat.filter(isVisible);
-  }, [flat, collapsed, nodeById]);
+  }, [flat, collapsed, nodeById, searchQuery]);
 
   // Base range: covers every dated task and today, padded generously so there is always
   // empty canvas to scroll into. `extraDays` then bolts more on whichever edge you hit,
@@ -700,6 +713,13 @@ export function ProjectRoadmapView() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          <Input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search tasks..."
+            aria-label="Search roadmap tasks"
+            className="h-9 w-52"
+          />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="w-52 justify-between font-normal min-w-0 h-9">
@@ -821,8 +841,10 @@ export function ProjectRoadmapView() {
           </div>
         ) : rows.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm gap-2">
-            <p>{hideDone ? 'No open tasks — everything here is done.' : 'No tasks yet.'}</p>
-            {hideDone ? (
+            <p>{searchQuery.trim() ? `No tasks match "${searchQuery.trim()}".` : hideDone ? 'No open tasks — everything here is done.' : 'No tasks yet.'}</p>
+            {searchQuery.trim() ? (
+              <Button size="sm" variant="outline" onClick={() => setSearchQuery('')}>Clear search</Button>
+            ) : hideDone ? (
               <Button size="sm" variant="outline" onClick={() => setHideDone(false)}>Show completed</Button>
             ) : (
               <Button size="sm" onClick={() => openCreate(null)}><Plus className="h-4 w-4 mr-1" /> New task</Button>

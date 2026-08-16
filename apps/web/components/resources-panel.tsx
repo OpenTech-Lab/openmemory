@@ -264,7 +264,16 @@ export function ResourcesPanel() {
     const query = searchQuery.trim().toLowerCase();
     if (query) {
       result = result.filter((r) =>
-        [r.name, r.location, r.description ?? '', ...r.tags].some((field) =>
+        [
+          r.name,
+          r.kind,
+          r.location,
+          r.description ?? '',
+          r.source,
+          r.env_key ?? '',
+          ...r.tags,
+          ...r.env_param_keys,
+        ].some((field) =>
           field.toLowerCase().includes(query)
         )
       );
@@ -460,6 +469,7 @@ export function ResourcesPanel() {
           {resources.length > 0 && (
             <Input
               placeholder="Search resources..."
+              aria-label="Search resources by keyword"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="h-8 w-[220px]"
