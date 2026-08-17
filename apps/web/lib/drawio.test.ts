@@ -6,9 +6,18 @@ import {
   drawioEditorSrc,
   drawioStarterSource,
   drawioViewerSrc,
+  normalizeAws4ResourceIcons,
   isDrawioSource,
   parseDrawioMessage,
 } from './drawio.ts';
+
+test('adds the missing AWS4 resource background while preserving explicit colours', () => {
+  const legacy = '<mxCell style="strokeColor=#ffffff;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" />';
+  assert.match(normalizeAws4ResourceIcons(legacy), /fillColor=#ED7100;/);
+
+  const authored = '<mxCell style="fillColor=#123456;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" />';
+  assert.equal(normalizeAws4ResourceIcons(authored), authored);
+});
 
 test('starter sources are valid draw.io XML documents', () => {
   assert.equal(isDrawioSource(DRAWIO_BLANK_SOURCE), true);
@@ -52,6 +61,8 @@ test('embed URLs enable JSON autosave and read-only client protocols', () => {
   assert.equal(viewer.searchParams.get('client'), '1');
   assert.equal(viewer.searchParams.get('lightbox'), '1');
   assert.equal(viewer.searchParams.get('nav'), '1');
+  assert.equal(viewer.searchParams.get('libraries'), '1');
+  assert.equal(viewer.searchParams.get('libs')?.includes('aws4'), true);
   assert.equal(viewer.searchParams.get('offline'), '1');
   assert.equal(viewer.searchParams.get('dark'), '0');
   assert.equal(viewer.origin, 'http://localhost:18081');

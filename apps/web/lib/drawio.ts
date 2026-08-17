@@ -73,8 +73,46 @@ export function isDrawioSource(source: string): boolean {
   return /^<mxfile(?:\s|>)/.test(trimmed) || /^<mxGraphModel(?:\s|>)/.test(trimmed);
 }
 
+const AWS4_RESOURCE_COLORS: Record<string, string> = {
+  appsync: '#E7157B',
+  athena: '#8C4FFF',
+  aurora: '#C925D1',
+  cognito: '#DD344C',
+  dynamodb: '#C925D1',
+  eventbridge: '#E7157B',
+  lambda: '#ED7100',
+  pinpoint: '#3334B9',
+  s3: '#7AA116',
+  sagemaker: '#01A88D',
+  sagemaker_2: '#01A88D',
+  step_functions: '#E7157B',
+  timestream: '#C925D1',
+};
+
+/**
+ * Older/imported AWS4 resource icons can contain a white stencil foreground without the
+ * category-coloured background expected by mxAWS4.js. Draw.io then faithfully paints a
+ * white icon on a white square. Supply only the missing background, preserving authored
+ * colours and the persisted XML itself.
+ */
+export function normalizeAws4ResourceIcons(source: string): string {
+  return source.replace(/style="([^"]*shape=mxgraph\.aws4\.resourceIcon;[^"]*)"/g, (attribute, style: string) => {
+    if (/(?:^|;)fillColor=/.test(style)) return attribute;
+
+    const icon = /(?:^|;)resIcon=mxgraph\.aws4\.([^;]+)/.exec(style)?.[1];
+    if (!icon) return attribute;
+
+    const color = AWS4_RESOURCE_COLORS[icon]
+      ?? (icon.startsWith('iot_') ? '#7AA116' : undefined)
+      ?? (icon.startsWith('kinesis_') ? '#8C4FFF' : undefined)
+      ?? '#232F3E';
+
+    return `style="${style}fillColor=${color};"`;
+  });
+}
+
 export function normalizeDrawioSource(source: string, kind = ''): string {
-  return isDrawioSource(source) ? source : drawioStarterSource(kind);
+  return isDrawioSource(source) ? normalizeAws4ResourceIcons(source) : drawioStarterSource(kind);
 }
 
 export interface DrawioMessage {
@@ -129,6 +167,8 @@ export function drawioViewerSrc(darkMode = false): string {
     nav: '1',
     layers: '1',
     zoom: '1',
+    libraries: '1',
+    libs: DRAWIO_LIBRARIES.join(';'),
     offline: '1',
     stealth: '1',
     dark: darkMode ? '1' : '0',
