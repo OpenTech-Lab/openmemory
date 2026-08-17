@@ -49,6 +49,10 @@ import {
   Network,
   PenTool,
   FileText,
+  Folder,
+  FolderOpen,
+  ChevronDown,
+  ChevronRight,
   ArrowUpRight,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
@@ -188,7 +192,6 @@ const DOCUMENT_CREATION_OPTIONS: Array<{
   detail: string;
   icon: typeof Network;
   iconClass: string;
-  surfaceClass: string;
 }> = [
   {
     type: 'diagram',
@@ -196,7 +199,6 @@ const DOCUMENT_CREATION_OPTIONS: Array<{
     detail: 'draw.io · Mermaid · canvas',
     icon: Network,
     iconClass: 'bg-sky-100 text-sky-700 dark:bg-sky-950/70 dark:text-sky-300',
-    surfaceClass: 'hover:border-sky-300 hover:bg-sky-50/70 dark:hover:border-sky-800 dark:hover:bg-sky-950/30',
   },
   {
     type: 'ui',
@@ -204,7 +206,6 @@ const DOCUMENT_CREATION_OPTIONS: Array<{
     detail: 'OpenPencil · freeform canvas',
     icon: PenTool,
     iconClass: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950/70 dark:text-fuchsia-300',
-    surfaceClass: 'hover:border-fuchsia-300 hover:bg-fuchsia-50/70 dark:hover:border-fuchsia-800 dark:hover:bg-fuchsia-950/30',
   },
   {
     type: 'text',
@@ -212,7 +213,6 @@ const DOCUMENT_CREATION_OPTIONS: Array<{
     detail: 'Plain text · Markdown preview',
     icon: FileText,
     iconClass: 'bg-amber-100 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300',
-    surfaceClass: 'hover:border-amber-300 hover:bg-amber-50/70 dark:hover:border-amber-800 dark:hover:bg-amber-950/30',
   },
 ];
 
@@ -259,6 +259,11 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const [isLoading, setIsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isBudgetOpen, setIsBudgetOpen] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
+    diagrams: true,
+    designs: true,
+    notes: true,
+  });
 
   // In-window preview expansion. This deliberately avoids the browser Fullscreen API: the
   // preview grows to the browser viewport while the browser's own chrome and monitor remain
@@ -396,6 +401,30 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     () => designs.find((d) => d.id === selectedId) ?? null,
     [designs, selectedId]
   );
+
+  // Documents stay in the single designs API, but the explorer presents them as a small,
+  // familiar project tree. These folders are intentionally virtual: changing a document's
+  // format immediately moves it to the matching group without adding another persistence model.
+  const documentFolders = useMemo(() => {
+    const folders = [
+      {
+        key: 'diagrams',
+        label: 'Diagrams',
+        items: designs.filter((design) => design.diagram_type !== 'text' && design.diagram_type !== 'pen'),
+      },
+      {
+        key: 'designs',
+        label: 'UI designs',
+        items: designs.filter((design) => design.diagram_type === 'pen'),
+      },
+      {
+        key: 'notes',
+        label: 'Notes & docs',
+        items: designs.filter((design) => design.diagram_type === 'text'),
+      },
+    ];
+    return folders.filter((folder) => folder.items.length > 0);
+  }, [designs]);
 
   const openCreate = (type: DocumentCreationType = 'diagram') => {
     setEditDesign(null);
@@ -679,80 +708,146 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   ) : null;
 
   return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          {designs.length > 0 && (
-            <Select value={selectedId ?? undefined} onValueChange={setSelectedId}>
-              <SelectTrigger className="w-full max-w-[420px]">
-                <SelectValue placeholder="Select a document" />
-              </SelectTrigger>
-              <SelectContent>
-                {designs.map((d) => {
-                  const meta = designKindMeta(d.kind);
-                  const Icon = meta.icon;
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 md:grid md:grid-cols-[250px_minmax(0,1fr)]">
+        <aside className="flex max-h-[300px] min-h-0 flex-col overflow-hidden rounded-lg border bg-card/30 md:h-full md:max-h-none">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
+              <span className="truncate text-sm font-medium">Documents</span>
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                {designs.length}
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                onClick={fetchDesigns}
+                disabled={isLoading}
+                title="Refresh documents"
+                aria-label="Refresh documents"
+              >
+                <RefreshCw className={`size-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                onClick={() => openCreate('diagram')}
+                title="New document"
+                aria-label="New document"
+              >
+                <Plus className="size-4" />
+              </Button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            {isLoading && designs.length === 0 ? (
+              <div className="flex items-center justify-center py-10">
+                <RefreshCw className="size-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : designs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-muted-foreground">
+                <Palette className="size-5 opacity-50" />
+                <p className="text-xs">No documents yet.</p>
+                <button
+                  type="button"
+                  className="text-xs text-primary underline-offset-4 hover:underline"
+                  onClick={() => openCreate('text')}
+                >
+                  Create a note
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1" role="tree" aria-label="Project documents">
+                {documentFolders.map((folder) => {
+                  const isExpanded = expandedFolders[folder.key] ?? true;
                   return (
-                    <SelectItem key={d.id} value={d.id}>
-                      <span className="flex items-center gap-2">
-                        {d.diagram_type === 'text' ? <FileText className="size-4 shrink-0 text-muted-foreground" /> : <Icon className="size-4 shrink-0 text-muted-foreground" />}
-                        <span className="break-words">{d.title}</span>
-                        <span className="ml-1 text-[10px] text-muted-foreground">{documentTypeLabel(d.diagram_type)}</span>
-                      </span>
-                    </SelectItem>
+                    <div key={folder.key}>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                        onClick={() => setExpandedFolders((current) => ({ ...current, [folder.key]: !isExpanded }))}
+                        aria-expanded={isExpanded}
+                        aria-selected={false}
+                        role="treeitem"
+                      >
+                        {isExpanded ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
+                        {isExpanded ? <FolderOpen className="size-3.5 shrink-0 text-amber-500" /> : <Folder className="size-3.5 shrink-0 text-amber-500" />}
+                        <span className="truncate">{folder.label}</span>
+                        <span className="ml-auto tabular-nums text-[10px] text-muted-foreground/70">{folder.items.length}</span>
+                      </button>
+                      {isExpanded && (
+                        <div className="mt-0.5 space-y-0.5 pl-4">
+                          {folder.items.map((design) => {
+                            const meta = designKindMeta(design.kind);
+                            const Icon = design.diagram_type === 'text'
+                              ? FileText
+                              : design.diagram_type === 'pen'
+                                ? PenTool
+                                : meta.icon;
+                            const typeLabel = design.diagram_type === 'text'
+                              ? textDocumentKindLabel(design.kind)
+                              : documentTypeLabel(design.diagram_type);
+                            const isSelected = selectedId === design.id;
+                            return (
+                              <button
+                                key={design.id}
+                                type="button"
+                                className={`group flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
+                                  isSelected
+                                    ? 'bg-primary/10 text-foreground'
+                                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                                }`}
+                                onClick={() => setSelectedId(design.id)}
+                                aria-current={isSelected ? 'page' : undefined}
+                                aria-selected={isSelected}
+                                role="treeitem"
+                                title={`${design.title} · ${typeLabel}`}
+                              >
+                                <Icon className={`size-3.5 shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground/80'}`} />
+                                <span className="min-w-0 flex-1 truncate">{design.title}</span>
+                                <span className="max-w-16 shrink-0 truncate text-[10px] text-muted-foreground/60">{typeLabel}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="outline" size="sm" onClick={fetchDesigns} disabled={isLoading}>
-            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
-          <Button size="sm" onClick={() => openCreate('diagram')}>
-            <Plus className="h-4 w-4" />
-            New document
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        {DOCUMENT_CREATION_OPTIONS.map((option) => (
-          <button
-            key={option.type}
-            type="button"
-            onClick={() => openCreate(option.type)}
-            className={`group relative flex h-12 min-h-12 items-center gap-2 overflow-hidden rounded-lg border border-border/80 bg-card p-2.5 pr-9 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${option.surfaceClass}`}
-          >
-            <span className={`flex size-7 shrink-0 items-center justify-center rounded-md ${option.iconClass}`}>
-              <option.icon className="size-3.5" />
-            </span>
-            <div className="flex min-w-0 items-center gap-2">
-              <p className="truncate text-sm font-medium leading-5">{option.label}</p>
-              <p className="hidden truncate font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70 sm:block">{option.detail}</p>
-            </div>
-            <ArrowUpRight className="absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50 transition-transform group-hover:-translate-y-[calc(50%+2px)] group-hover:translate-x-0.5 group-hover:text-foreground" />
-          </button>
-        ))}
-      </div>
-
-      <div className="flex flex-col gap-4 min-h-[400px]">
-        {isLoading && designs.length === 0 ? (
-          <div className="flex items-center justify-center h-[80px] border rounded-md">
-            <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            )}
           </div>
-        ) : designs.length === 0 ? (
-          <div className="flex items-center gap-3 rounded-xl border border-dashed border-border/80 bg-muted/20 px-4 py-4 text-muted-foreground">
-            <Palette className="size-5 shrink-0 opacity-50" />
-            <div>
-              <p className="text-sm font-medium text-foreground">Your document shelf is empty.</p>
-              <p className="mt-0.5 text-xs">Pick a creation path above to start shaping this project.</p>
+
+          <div className="shrink-0 border-t p-2">
+            <p className="px-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Create</p>
+            <div className="space-y-0.5">
+              {DOCUMENT_CREATION_OPTIONS.map((option) => (
+                <button
+                  key={option.type}
+                  type="button"
+                  onClick={() => openCreate(option.type)}
+                  className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+                  title={`${option.label} — ${option.detail}`}
+                >
+                  <span className={`flex size-5 shrink-0 items-center justify-center rounded ${option.iconClass}`}>
+                    <option.icon className="size-3" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  <ArrowUpRight className="size-3 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                </button>
+              ))}
             </div>
           </div>
-        ) : null}
+        </aside>
 
-        {/* Preview — now full width. h-[70vh] (not max-h) is load-bearing: a flex column with
+        <div className="min-w-0">
+          <div className="flex flex-col gap-4 min-h-[400px]">
+        {/* Preview — h-[85vh] (not max-h) is load-bearing: a flex column with
             only max-height caps its own growth but never becomes a "definite size" for CSS
             flex-basis resolution, so the flex-1/min-h-0 chain down to the scroll container below
             silently fails to get a bounded height and the diagram just overflows uncapped. An
@@ -878,6 +973,8 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
               Select or create a document.
             </div>
           )}
+        </div>
+      </div>
         </div>
       </div>
 

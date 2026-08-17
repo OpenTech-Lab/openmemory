@@ -22,7 +22,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { RefreshCw, ArrowLeft, Search, Plus, Bot, User, Repeat2, LayoutGrid, Boxes, Layers, Expand, Pencil, Sparkles } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { ArrowDownUp, ArrowLeft, Boxes, Download, Expand, Layers, LayoutGrid, Pencil, Plus, RefreshCw, Repeat2, Search, Sparkles, Upload, User, Bot } from 'lucide-react';
 import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
 import { toast } from 'sonner';
 import { MAX_NODES_FULL, type GraphifyData, type GraphQueryResult } from '@/components/project-graph-types';
@@ -135,6 +143,8 @@ export default function ProjectDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRebuilding, setIsRebuilding] = useState(false);
+  const [isSyncingProject, setIsSyncingProject] = useState<'import' | 'export' | null>(null);
+  const [syncVersion, setSyncVersion] = useState(0);
   // Files is the landing tab now (see tab order below). Files/Graph/History all require the
   // project to have a filesystem path (`hasGraph`, computed once `project` loads below) — for a
   // path-less project those three panes render nothing, so a separate effect further down falls
@@ -292,6 +302,41 @@ export default function ProjectDetailPage() {
       toast.error('Rebuild failed — check your connection');
     } finally {
       setIsRebuilding(false);
+    }
+  };
+
+  const handleProjectSync = async (action: 'import' | 'export') => {
+    setIsSyncingProject(action);
+    try {
+      const res = await fetch(`/api/projects/${id}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? `${action === 'export' ? 'Export' : 'Import'} failed`);
+        return;
+      }
+
+      const verb = action === 'export' ? 'Exported' : 'Imported';
+      toast.success(
+        `${verb} ${data.documents ?? 0} docs, ${data.tasks ?? 0} tasks, ${data.routines ?? 0} routines, and ${data.lessons ?? 0} lessons ${action === 'export' ? 'to' : 'from'} .openmemory/`,
+      );
+      if (data.warnings?.length) {
+        toast.warning(data.warnings[0]);
+      }
+
+      if (action === 'import') {
+        await Promise.all([fetchProject(), fetchTasks(), fetchRoutines(), fetchDesignCount(), fetchLessonCount()]);
+      }
+      // Remount the file browser after either direction so a newly-created .openmemory/
+      // directory appears immediately when the Files tab is already open.
+      setSyncVersion((version) => version + 1);
+    } catch {
+      toast.error(`${action === 'export' ? 'Export' : 'Import'} failed — check your connection`);
+    } finally {
+      setIsSyncingProject(null);
     }
   };
 
@@ -590,9 +635,41 @@ export default function ProjectDetailPage() {
           )}
         </div>
         {hasGraph && (
-          <Button variant="outline" size="sm" onClick={handleRebuild} disabled={isRebuilding}>
-            {isRebuilding ? <RefreshCw className="h-4 w-4 animate-spin" /> : <><RefreshCw className="h-4 w-4 mr-1" />Rebuild</>}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={isSyncingProject !== null}>
+                  {isSyncingProject ? <RefreshCw className="mr-1 size-4 animate-spin" /> : <ArrowDownUp className="mr-1 size-4" />}
+                  <span className="hidden sm:inline">Import / Export</span>
+                  <span className="sm:hidden">Sync</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel>Git-managed project data</DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => handleProjectSync('export')}>
+                  <Upload className="size-4" />
+                  <span>
+                    <span className="block">Export to repository</span>
+                    <span className="block text-xs text-muted-foreground">Write database data into .openmemory/</span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleProjectSync('import')}>
+                  <Download className="size-4" />
+                  <span>
+                    <span className="block">Import from repository</span>
+                    <span className="block text-xs text-muted-foreground">Merge checked-out files by stable ID</span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <p className="px-2 py-1 text-[11px] leading-4 text-muted-foreground">
+                  Files are stored in the project folder so Git can version and review them.
+                </p>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button variant="outline" size="sm" onClick={handleRebuild} disabled={isRebuilding || isSyncingProject !== null}>
+              {isRebuilding ? <RefreshCw className="size-4 animate-spin" /> : <><RefreshCw className="mr-1 size-4" />Rebuild</>}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -925,19 +1002,19 @@ export default function ProjectDetailPage() {
         {/* Lessons tab */}
         {activeTab === 'lessons' && (
           <div className="flex flex-col h-full p-6 overflow-auto">
-            <LessonsPanel projectId={id} />
+            <LessonsPanel key={`${id}-${syncVersion}`} projectId={id} />
           </div>
         )}
 
         {activeTab === 'design' && (
           <div className="flex flex-col h-full p-6 overflow-auto">
-            <ProjectDesignPanel projectId={id} projectPath={project.path} />
+            <ProjectDesignPanel key={`${id}-${syncVersion}`} projectId={id} projectPath={project.path} />
           </div>
         )}
 
         {/* Files tab */}
         {activeTab === 'files' && hasGraph && (
-          <ProjectFilesBrowser projectId={project.id} />
+          <ProjectFilesBrowser key={`${id}-${syncVersion}`} projectId={project.id} />
         )}
 
         {/* History tab */}

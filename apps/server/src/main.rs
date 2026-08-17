@@ -12,6 +12,7 @@ mod library;
 mod llm;
 mod resources;
 mod workflows;
+mod project_sync;
 
 use openmemory_server::run_session_migrations;
 use openmemory_server::project_graphs;
@@ -215,6 +216,7 @@ struct ProjectTask {
     start_date: Option<chrono::NaiveDate>,
     due_date: Option<chrono::NaiveDate>,
     sort_order: i32,
+    has_open_decision: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -224,6 +226,12 @@ struct ProjectTaskNote {
     content: String,
     author: String,
     created_at: DateTime<Utc>,
+    note_type: String,
+    decision_options: serde_json::Value,
+    decision_status: String,
+    decision_choice: Option<String>,
+    decision_resolved_by: Option<String>,
+    decision_resolved_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,6 +274,15 @@ struct UploadLibraryBlobParams {
 #[derive(Debug, Deserialize)]
 struct CreateTaskNotePayload {
     content: String,
+    author: Option<String>,
+    #[serde(default, alias = "kind")]
+    note_type: Option<String>,
+    decision_options: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveTaskDecisionPayload {
+    option: String,
     author: Option<String>,
 }
 
@@ -1553,6 +1570,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects", get(list_project_graphs).post(create_project_graph))
         .route("/projects/:id", get(get_project_graph).put(update_project_graph).delete(delete_project_graph))
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
+        .route("/projects/:id/sync", post(project_sync::sync_project))
         .route("/projects/:id/query", get(query_project_graph))
         .route("/projects/:id/files", get(list_project_files))
         .route("/projects/:id/changes", get(list_project_changes))
@@ -1561,6 +1579,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/commit-push", post(commit_and_push_project))
         .route("/projects/:id/tasks", get(list_project_tasks).post(create_project_task))
         .route("/projects/:id/tasks/:task_id/notes", get(list_project_task_notes).post(create_project_task_note))
+        .route("/projects/:id/tasks/:task_id/notes/:note_id/decision", post(resolve_project_task_decision))
         .route("/projects/:id/tasks/:task_id", axum::routing::put(update_project_task).delete(delete_project_task))
         .route("/library", get(list_library_entries).post(create_library_entry))
         .route("/library/:entry_id", get(get_library_entry).delete(delete_library_entry))
@@ -1929,6 +1948,21 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .context("failed to create project_task_notes table")?;
+
+    // Decision checkpoints live in the same append-only thread as ordinary notes. Existing
+    // notes keep the message defaults; new decision rows carry their options and resolution.
+    sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS note_type TEXT NOT NULL DEFAULT 'message'")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_options JSONB NOT NULL DEFAULT '[]'::jsonb")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_status TEXT NOT NULL DEFAULT 'open'")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_choice TEXT")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_by TEXT")
+        .execute(db).await.ok();
+    sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_at TIMESTAMPTZ")
+        .execute(db).await.ok();
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_notes_task_id_created_at ON project_task_notes(task_id, created_at)")
         .execute(db).await.ok();
@@ -6215,7 +6249,8 @@ async fn list_project_tasks(
     let rows = match (&params.status, &params.routine_id) {
         (Some(status), Some(routine_id)) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order, \
+                 EXISTS (SELECT 1 FROM project_task_notes n WHERE n.task_id = project_tasks.id AND n.note_type = 'decision' AND n.decision_status = 'open') AS has_open_decision \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 AND routine_id = $3 \
                  ORDER BY sort_order ASC, created_at DESC LIMIT $4 OFFSET $5"
             )
@@ -6224,7 +6259,8 @@ async fn list_project_tasks(
         }
         (Some(status), None) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order, \
+                 EXISTS (SELECT 1 FROM project_task_notes n WHERE n.task_id = project_tasks.id AND n.note_type = 'decision' AND n.decision_status = 'open') AS has_open_decision \
                  FROM project_tasks WHERE project_id = $1 AND status = $2 \
                  ORDER BY sort_order ASC, created_at DESC LIMIT $3 OFFSET $4"
             )
@@ -6233,7 +6269,8 @@ async fn list_project_tasks(
         }
         (None, Some(routine_id)) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order, \
+                 EXISTS (SELECT 1 FROM project_task_notes n WHERE n.task_id = project_tasks.id AND n.note_type = 'decision' AND n.decision_status = 'open') AS has_open_decision \
                  FROM project_tasks WHERE project_id = $1 AND routine_id = $2 \
                  ORDER BY sort_order ASC, created_at DESC LIMIT $3 OFFSET $4"
             )
@@ -6242,7 +6279,8 @@ async fn list_project_tasks(
         }
         (None, None) => {
             sqlx::query_as::<_, ProjectTask>(
-                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order \
+                "SELECT id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order, \
+                 EXISTS (SELECT 1 FROM project_task_notes n WHERE n.task_id = project_tasks.id AND n.note_type = 'decision' AND n.decision_status = 'open') AS has_open_decision \
                  FROM project_tasks WHERE project_id = $1 \
                  ORDER BY sort_order ASC, created_at DESC LIMIT $2 OFFSET $3"
             )
@@ -6292,7 +6330,8 @@ async fn create_project_task(
     let row = sqlx::query_as::<_, ProjectTask>(
         "INSERT INTO project_tasks (project_id, title, description, status, priority, assigned_to, labels, created_by, parent_id, start_date, due_date) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'human', $8, $9, $10) \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order"
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order, \
+                   EXISTS (SELECT 1 FROM project_task_notes n WHERE n.task_id = project_tasks.id AND n.note_type = 'decision' AND n.decision_status = 'open') AS has_open_decision"
     )
     .bind(project_id)
     .bind(&payload.title)
@@ -6370,7 +6409,8 @@ async fn update_project_task(
          due_date = CASE WHEN $13 THEN $14 ELSE due_date END, \
          updated_at = NOW() \
          WHERE id = $7 AND project_id = $8 \
-         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order"
+         RETURNING id, project_id, title, description, status, priority, assigned_to, created_by, routine_id, created_at, updated_at, labels, parent_id, start_date, due_date, sort_order, \
+                   EXISTS (SELECT 1 FROM project_task_notes n WHERE n.task_id = project_tasks.id AND n.note_type = 'decision' AND n.decision_status = 'open') AS has_open_decision"
     )
     .bind(&payload.title)
     .bind(&payload.description)
@@ -6454,6 +6494,7 @@ async fn list_project_task_notes(
 
     match sqlx::query_as::<_, ProjectTaskNote>(
         "SELECT id, task_id, content, author, created_at \
+                , note_type, decision_options, decision_status, decision_choice, decision_resolved_by, decision_resolved_at \
          FROM project_task_notes WHERE task_id = $1 \
          ORDER BY created_at ASC, id ASC LIMIT 500",
     )
@@ -6492,6 +6533,16 @@ async fn create_project_task_note(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "author must be human or agent"}))).into_response();
     }
 
+    let note_type = payload.note_type.as_deref().unwrap_or("message").trim();
+    if !matches!(note_type, "message" | "decision") {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "note_type must be message or decision"}))).into_response();
+    }
+    let decision_options = match normalize_decision_options(payload.decision_options.as_deref(), note_type) {
+        Ok(options) => options,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": error}))).into_response(),
+    };
+    let decision_options_json = serde_json::to_value(&decision_options).unwrap_or_else(|_| serde_json::json!([]));
+
     let task_exists = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM project_tasks WHERE id = $1 AND project_id = $2",
     )
@@ -6512,13 +6563,15 @@ async fn create_project_task_note(
     }
 
     let note = sqlx::query_as::<_, ProjectTaskNote>(
-        "INSERT INTO project_task_notes (task_id, content, author) \
-         VALUES ($1, $2, $3) \
-         RETURNING id, task_id, content, author, created_at",
+        "INSERT INTO project_task_notes (task_id, content, author, note_type, decision_options) \
+         VALUES ($1, $2, $3, $4, $5) \
+         RETURNING id, task_id, content, author, created_at, note_type, decision_options, decision_status, decision_choice, decision_resolved_by, decision_resolved_at",
     )
     .bind(task_id)
     .bind(content)
     .bind(author)
+    .bind(note_type)
+    .bind(decision_options_json)
     .fetch_one(&state.db)
     .await;
 
@@ -6527,6 +6580,112 @@ async fn create_project_task_note(
         Err(e) => {
             error!("create_project_task_note error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+fn normalize_decision_options(raw: Option<&[String]>, note_type: &str) -> Result<Vec<String>, String> {
+    let Some(raw_options) = raw else {
+        if note_type == "decision" {
+            return Err("decision_options must contain at least two choices".to_string());
+        }
+        return Ok(Vec::new());
+    };
+
+    let mut options = Vec::with_capacity(raw_options.len());
+    for option in raw_options {
+        let option = option.trim();
+        if option.is_empty() {
+            return Err("decision options must not be empty".to_string());
+        }
+        if option.chars().count() > 120 {
+            return Err("decision options must be 120 characters or fewer".to_string());
+        }
+        if options.iter().any(|existing: &String| existing.eq_ignore_ascii_case(option)) {
+            return Err("decision options must be unique".to_string());
+        }
+        options.push(option.to_string());
+    }
+
+    if note_type == "decision" && !(2..=6).contains(&options.len()) {
+        return Err("decisions must have between two and six choices".to_string());
+    }
+    if note_type == "message" && !options.is_empty() {
+        return Err("decision_options are only valid for decision notes".to_string());
+    }
+    Ok(options)
+}
+
+async fn resolve_project_task_decision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, task_id, note_id)): Path<(Uuid, Uuid, Uuid)>,
+    Json(payload): Json<ResolveTaskDecisionPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let option = payload.option.trim();
+    if option.is_empty() || option.chars().count() > 120 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "option must be between 1 and 120 characters"}))).into_response();
+    }
+    let author = payload.author.as_deref().unwrap_or("human").trim();
+    if !matches!(author, "human" | "agent") {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "author must be human or agent"}))).into_response();
+    }
+
+    let options = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT n.decision_options FROM project_task_notes n \
+         JOIN project_tasks t ON t.id = n.task_id \
+         WHERE n.id = $1 AND n.task_id = $2 AND t.project_id = $3 \
+           AND n.note_type = 'decision' AND n.decision_status = 'open'",
+    )
+    .bind(note_id)
+    .bind(task_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let options = match options {
+        Ok(Some(options)) => options,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "open decision not found"}))).into_response();
+        }
+        Err(error) => {
+            error!("resolve_project_task_decision lookup error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    };
+
+    let valid_option = options
+        .as_array()
+        .map(|values| values.iter().filter_map(serde_json::Value::as_str).any(|value| value == option))
+        .unwrap_or(false);
+    if !valid_option {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "option is not one of the decision choices"}))).into_response();
+    }
+
+    let note = sqlx::query_as::<_, ProjectTaskNote>(
+        "UPDATE project_task_notes SET decision_status = 'resolved', decision_choice = $1, \
+                decision_resolved_by = $2, decision_resolved_at = NOW() \
+         WHERE id = $3 AND task_id = $4 AND note_type = 'decision' AND decision_status = 'open' \
+         RETURNING id, task_id, content, author, created_at, note_type, decision_options, decision_status, \
+                   decision_choice, decision_resolved_by, decision_resolved_at",
+    )
+    .bind(option)
+    .bind(author)
+    .bind(note_id)
+    .bind(task_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match note {
+        Ok(Some(note)) => Json(serde_json::json!(note)).into_response(),
+        Ok(None) => (StatusCode::CONFLICT, Json(serde_json::json!({"error": "decision was already resolved"}))).into_response(),
+        Err(error) => {
+            error!("resolve_project_task_decision update error: {error}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response()
         }
     }
 }

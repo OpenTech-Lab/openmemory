@@ -463,7 +463,7 @@ impl McpServer {
         }
 
         let notes = sqlx::query(
-            "SELECT id, content, author, created_at \
+            "SELECT id, content, author, created_at, note_type, decision_options, decision_status, decision_choice, decision_resolved_by \
              FROM project_task_notes WHERE task_id = $1 \
              ORDER BY created_at ASC, id ASC LIMIT $2",
         )
@@ -490,6 +490,18 @@ impl McpServer {
                 content,
                 id
             ));
+            let note_type: String = note.try_get("note_type").unwrap_or_else(|_| "message".to_string());
+            if note_type == "decision" {
+                let options: serde_json::Value = note.try_get("decision_options").unwrap_or_else(|_| json!([]));
+                let status: String = note.try_get("decision_status").unwrap_or_else(|_| "open".to_string());
+                let choice: Option<String> = note.try_get("decision_choice").unwrap_or(None);
+                text.push_str(&format!(
+                    "  decision: {} | choices: {}{}\n\n",
+                    status,
+                    options,
+                    choice.map(|value| format!(" | selected: {value}")).unwrap_or_default()
+                ));
+            }
         }
         Ok(json!({"content": [{"type": "text", "text": text}]}))
     }
@@ -519,6 +531,26 @@ impl McpServer {
             anyhow::bail!("content must be 20,000 characters or fewer");
         }
 
+        let note_type = args["note_type"].as_str().unwrap_or("message").trim();
+        if !matches!(note_type, "message" | "decision") {
+            anyhow::bail!("note_type must be message or decision");
+        }
+        let options: Vec<String> = args["decision_options"]
+            .as_array()
+            .map(|values| values.iter().filter_map(|value| value.as_str().map(str::trim)).filter(|value| !value.is_empty()).map(ToOwned::to_owned).collect())
+            .unwrap_or_default();
+        if note_type == "decision" && !(2..=6).contains(&options.len()) {
+            anyhow::bail!("decisions must have between two and six choices");
+        }
+        if note_type == "message" && !options.is_empty() {
+            anyhow::bail!("decision_options are only valid for decision notes");
+        }
+        if options.iter().any(|option| option.chars().count() > 120)
+            || options.iter().enumerate().any(|(index, option)| options[..index].iter().any(|previous| previous.eq_ignore_ascii_case(option)))
+        {
+            anyhow::bail!("decision options must be unique and 120 characters or fewer");
+        }
+
         let task_exists = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM project_tasks WHERE id = $1 AND project_id = $2",
         )
@@ -532,17 +564,80 @@ impl McpServer {
         }
 
         let row = sqlx::query(
-            "INSERT INTO project_task_notes (task_id, content, author) \
-             VALUES ($1, $2, 'agent') RETURNING id",
+            "INSERT INTO project_task_notes (task_id, content, author, note_type, decision_options) \
+             VALUES ($1, $2, 'agent', $3, $4) RETURNING id",
         )
         .bind(task_id)
         .bind(content)
+        .bind(note_type)
+        .bind(json!(options))
         .fetch_one(&self.db)
         .await
         .context("failed to create task implementation note")?;
         let id: Uuid = row.try_get("id").context("invalid note id")?;
 
         Ok(json!({"content": [{"type": "text", "text": format!("Added implementation note to task {} [id: {}].", task_id, id)}]}))
+    }
+
+    pub(super) async fn project_task_note_decide(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let task_id: Uuid = args["task_id"]
+            .as_str()
+            .context("missing task_id")?
+            .parse()
+            .context("invalid task_id UUID")?;
+        let note_id: Uuid = args["note_id"]
+            .as_str()
+            .context("missing note_id")?
+            .parse()
+            .context("invalid note_id UUID")?;
+        let option = args["option"].as_str().context("missing option")?.trim();
+        if option.is_empty() || option.chars().count() > 120 {
+            anyhow::bail!("option must be between 1 and 120 characters");
+        }
+
+        let options: serde_json::Value = sqlx::query_scalar(
+            "SELECT n.decision_options FROM project_task_notes n \
+             JOIN project_tasks t ON t.id = n.task_id \
+             WHERE n.id = $1 AND n.task_id = $2 AND t.project_id = $3 \
+               AND n.note_type = 'decision' AND n.decision_status = 'open'",
+        )
+        .bind(note_id)
+        .bind(task_id)
+        .bind(project_id)
+        .fetch_optional(&self.db)
+        .await?
+        .context("open decision not found")?;
+        let valid = options.as_array().map(|values| values.iter().filter_map(|value| value.as_str()).any(|value| value == option)).unwrap_or(false);
+        if !valid {
+            anyhow::bail!("option is not one of the decision choices");
+        }
+
+        let actor = args["author"].as_str().unwrap_or("agent");
+        if !matches!(actor, "human" | "agent") {
+            anyhow::bail!("author must be human or agent");
+        }
+        let updated = sqlx::query(
+            "UPDATE project_task_notes SET decision_status = 'resolved', decision_choice = $1, decision_resolved_by = $2, decision_resolved_at = NOW() \
+             WHERE id = $3 AND task_id = $4 AND note_type = 'decision' AND decision_status = 'open' RETURNING id",
+        )
+        .bind(option)
+        .bind(actor)
+        .bind(note_id)
+        .bind(task_id)
+        .fetch_optional(&self.db)
+        .await?;
+        if updated.is_none() {
+            anyhow::bail!("decision was already resolved");
+        }
+        Ok(json!({"content": [{"type": "text", "text": format!("Resolved decision {} with '{}'.", note_id, option)}]}))
     }
 
     pub(super) async fn project_task_delete(

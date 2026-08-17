@@ -158,6 +158,19 @@ impl McpServer {
         .await
         .context("failed to create project_task_notes table")?;
 
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS note_type TEXT NOT NULL DEFAULT 'message'")
+            .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_options JSONB NOT NULL DEFAULT '[]'::jsonb")
+            .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_status TEXT NOT NULL DEFAULT 'open'")
+            .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_choice TEXT")
+            .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_by TEXT")
+            .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_at TIMESTAMPTZ")
+            .execute(&db).await.ok();
+
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_project_task_notes_task_id_created_at ON project_task_notes(task_id, created_at)",
         )

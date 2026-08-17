@@ -1020,7 +1020,7 @@ impl McpServer {
                 },
                 {
                     "name": "project_task_note_list",
-                    "description": "List the append-only implementation notes and messages for a task, including whether each was written by a human or AI agent.",
+                    "description": "List the append-only implementation notes, handoffs, and open/resolved decision checkpoints for a task.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -1033,15 +1033,32 @@ impl McpServer {
                 },
                 {
                     "name": "project_task_note_create",
-                    "description": "Add an implementation note or handoff message to a task. Notes are append-only and attributed to the AI agent.",
+                    "description": "Add an implementation note, handoff message, or decision checkpoint to a task. Notes are append-only and attributed to the AI agent.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "task_id": {"type": "string", "description": "UUID of the task"},
-                            "content": {"type": "string", "description": "Implementation detail, decision, finding, or handoff message"}
+                            "content": {"type": "string", "description": "Implementation detail, decision question, finding, or handoff message"},
+                            "note_type": {"type": "string", "description": "message (default) or decision"},
+                            "decision_options": {"type": "array", "items": {"type": "string"}, "description": "Two to six choices when note_type is decision (for example [\"Yes\", \"No\"] )"}
                         },
                         "required": ["project_id", "task_id", "content"]
+                    }
+                },
+                {
+                    "name": "project_task_note_decide",
+                    "description": "Resolve an open task decision checkpoint with one of its choices.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "task_id": {"type": "string", "description": "UUID of the task"},
+                            "note_id": {"type": "string", "description": "UUID of the decision note"},
+                            "option": {"type": "string", "description": "Exact choice to select"},
+                            "author": {"type": "string", "description": "human or agent (default: agent)"}
+                        },
+                        "required": ["project_id", "task_id", "note_id", "option"]
                     }
                 },
                 {

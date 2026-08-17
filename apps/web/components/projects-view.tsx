@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/select';
 import { DataTable } from '@/components/ui/data-table';
 import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History, Sparkles, CornerDownRight } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History, Sparkles, CornerDownRight, ListChecks } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -83,6 +83,7 @@ interface Task {
   start_date: string | null;
   due_date: string | null;
   sort_order: number;
+  has_open_decision?: boolean;
 }
 
 interface Routine {
@@ -602,6 +603,15 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       toast.error('Failed to move task');
     }
   };
+
+  const handleTaskDecisionStateChange = useCallback((taskId: string, hasOpenDecision: boolean) => {
+    setTasks(previous => previous.map(task => (
+      task.id === taskId ? { ...task, has_open_decision: hasOpenDecision } : task
+    )));
+    setSelectedTask(previous => (
+      previous?.id === taskId ? { ...previous, has_open_decision: hasOpenDecision } : previous
+    ));
+  }, []);
 
   const openTaskSheet = (task: Task, mode: 'view' | 'edit' = 'view') => {
     setSelectedTask(task);
@@ -1434,7 +1444,11 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                 </div>
               )}
               {selectedTask && (
-                <TaskNotesPanel projectId={selectedTask.project_id} taskId={selectedTask.id} />
+                <TaskNotesPanel
+                  projectId={selectedTask.project_id}
+                  taskId={selectedTask.id}
+                  onOpenDecisionChange={handleTaskDecisionStateChange}
+                />
               )}
             </div>
           ) : (
@@ -1844,12 +1858,17 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
   const labels = isTask ? task!.labels : routine!.labels;
   const assignedTo = isTask ? task!.assigned_to : routine!.assigned_to;
   const projectName = isTask ? task!.project_name : routine!.project_name;
+  const hasOpenDecision = isTask && task?.has_open_decision === true;
+  const cardTone = hasOpenDecision
+    ? 'border-amber-300/90 bg-amber-50/80 hover:border-amber-500 dark:border-amber-700/80 dark:bg-amber-950/30 dark:hover:border-amber-400'
+    : isTask
+    ? 'border bg-background hover:border-primary/30'
+    : 'border bg-background border-purple-200/60 dark:border-purple-800/40 hover:border-purple-400/60 dark:hover:border-purple-600/60';
 
   return (
     <div
-      className={`group flex items-start gap-1.5 bg-background border rounded-md shadow-sm transition-colors ${
-        isTask ? 'hover:border-primary/30' : 'border-purple-200/60 dark:border-purple-800/40 hover:border-purple-400/60 dark:hover:border-purple-600/60'
-      } ${isCancelled ? 'opacity-50' : ''}`}
+      className={`group flex items-start gap-1.5 rounded-md shadow-sm transition-colors ${cardTone} ${isCancelled ? 'opacity-50' : ''}`}
+      title={hasOpenDecision ? 'Waiting for a decision' : undefined}
     >
       {showDragHandle ? (
         <div
@@ -1891,6 +1910,11 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
           <span className={`text-xs ${PRIORITY_COLORS[priority] ?? 'text-muted-foreground'}`}>
             {priority}
           </span>
+          {hasOpenDecision && (
+            <span className="inline-flex items-center gap-1 rounded border border-amber-300/80 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:border-amber-700/70 dark:text-amber-300" aria-label="Decision requested">
+              <ListChecks className="h-2.5 w-2.5" />Decision
+            </span>
+          )}
           {labels?.map(l => (
             <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
               {l}

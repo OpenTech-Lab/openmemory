@@ -75,6 +75,7 @@ impl McpServer {
             "project_task_update" => self.project_task_update(arguments).await,
             "project_task_note_list" => self.project_task_note_list(arguments).await,
             "project_task_note_create" => self.project_task_note_create(arguments).await,
+            "project_task_note_decide" => self.project_task_note_decide(arguments).await,
             "project_task_delete" => self.project_task_delete(arguments).await,
             "lesson_create" => self.lesson_create(arguments).await,
             "lesson_list" => self.lesson_list(arguments).await,
