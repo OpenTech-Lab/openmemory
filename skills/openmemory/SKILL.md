@@ -89,13 +89,13 @@ Use append-only task notes for implementation findings, handoffs, and decisions:
 
 ### Check routines
 
-Routines do not run on a timer. `routine_check` materializes due routines as dated tasks:
+The API server checks routines in the background every five minutes by default. `routine_check` can also materialize due routines as dated tasks explicitly or preview them with `dry_run: true`:
 
 - daily: no task created today;
 - weekly: no task created in the last seven days;
 - monthly: no task created in the current calendar month.
 
-Use `dry_run: true` to preview. Use `routine_list` and `routine_create` to inspect and define templates.
+Use `routine_list` and `routine_create` to inspect and define templates. MCP-only operation has no independent scheduler, so call `routine_check` when the API server is not running.
 
 ### Record lessons
 
