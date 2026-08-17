@@ -189,6 +189,8 @@ struct TaskDecisionAnswerRow {
     id: Uuid,
     note_id: Uuid,
     selected_options: serde_json::Value,
+    #[serde(default)]
+    reply: Option<String>,
     answered_by: String,
     answered_at: DateTime<Utc>,
 }
@@ -361,7 +363,7 @@ async fn export_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
     .collect();
 
     let decision_answers = sqlx::query_as::<_, TaskDecisionAnswerRow>(
-        "SELECT a.id, a.note_id, a.selected_options, a.answered_by, a.answered_at \
+        "SELECT a.id, a.note_id, a.selected_options, a.reply, a.answered_by, a.answered_at \
          FROM project_task_decision_answers a \
          JOIN project_task_notes n ON n.id = a.note_id \
          JOIN project_tasks t ON t.id = n.task_id \
@@ -840,12 +842,13 @@ async fn upsert_task_note(
         .context("clearing task decision answer history")?;
     for answer in &note.decision_answers {
         sqlx::query(
-            "INSERT INTO project_task_decision_answers (id, note_id, selected_options, answered_by, answered_at) \
-             VALUES ($1,$2,$3,$4,$5)",
+            "INSERT INTO project_task_decision_answers (id, note_id, selected_options, reply, answered_by, answered_at) \
+             VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(answer.id)
         .bind(note.id)
         .bind(&answer.selected_options)
+        .bind(&answer.reply)
         .bind(&answer.answered_by)
         .bind(answer.answered_at)
         .execute(&mut **tx)

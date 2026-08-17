@@ -181,6 +181,7 @@ impl McpServer {
                 id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 note_id          UUID        NOT NULL REFERENCES project_task_notes(id) ON DELETE CASCADE,
                 selected_options JSONB       NOT NULL,
+                reply            TEXT,
                 answered_by      TEXT        NOT NULL DEFAULT 'human',
                 answered_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
@@ -189,6 +190,8 @@ impl McpServer {
         .execute(&db)
         .await
         .context("failed to create project_task_decision_answers table")?;
+        sqlx::query("ALTER TABLE project_task_decision_answers ADD COLUMN IF NOT EXISTS reply TEXT")
+            .execute(&db).await.ok();
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_decision_answers_note_id_answered_at ON project_task_decision_answers(note_id, answered_at)")
             .execute(&db).await.ok();
 

@@ -464,7 +464,7 @@ impl McpServer {
 
         let notes = sqlx::query(
             "SELECT n.id, n.content, n.author, n.created_at, n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, \
-                    COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, \
+                    COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, 'reply', a.reply, \
                         'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
                         FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
              FROM project_task_notes n WHERE n.task_id = $1 \
@@ -503,12 +503,19 @@ impl McpServer {
                     .and_then(|entry| entry.get("options"))
                     .map(|value| format!(" | latest: {value}"))
                     .unwrap_or_default();
+                let latest_reply = latest
+                    .and_then(|entry| entry.get("reply"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| format!(" | reply: {value}"))
+                    .unwrap_or_default();
                 let history_count = answers.as_array().map(|values| values.len()).unwrap_or(0);
                 text.push_str(&format!(
-                    "  decision: {} | choices: {}{} | answers so far: {}\n\n",
+                    "  decision: {} | choices: {}{}{} | answers so far: {}\n\n",
                     status,
                     options,
                     latest_summary,
+                    latest_reply,
                     history_count
                 ));
             }
@@ -549,8 +556,8 @@ impl McpServer {
             .as_array()
             .map(|values| values.iter().filter_map(|value| value.as_str().map(str::trim)).filter(|value| !value.is_empty()).map(ToOwned::to_owned).collect())
             .unwrap_or_default();
-        if note_type == "decision" && !(2..=6).contains(&options.len()) {
-            anyhow::bail!("decisions must have between two and six choices");
+        if note_type == "decision" && options.len() > 6 {
+            anyhow::bail!("decisions may have up to six choices");
         }
         if note_type == "message" && !options.is_empty() {
             anyhow::bail!("decision_options are only valid for decision notes");
@@ -610,12 +617,21 @@ impl McpServer {
             .context("invalid note_id UUID")?;
         let raw_options: Vec<String> = args["options"]
             .as_array()
-            .context("missing options")?
+            .map(|values| values
             .iter()
             .map(|value| value.as_str().map(str::trim).map(ToOwned::to_owned).context("options must be strings"))
-            .collect::<Result<Vec<String>>>()?;
-        if raw_options.is_empty() || raw_options.len() > 6 {
-            anyhow::bail!("options must contain between 1 and 6 choices");
+            .collect::<Result<Vec<String>>>())
+            .transpose()?
+            .unwrap_or_default();
+        let reply = args["reply"].as_str().map(str::trim).unwrap_or("").to_string();
+        if reply.chars().count() > 20_000 {
+            anyhow::bail!("reply must be 20,000 characters or fewer");
+        }
+        if raw_options.is_empty() && reply.is_empty() {
+            anyhow::bail!("select at least one choice or provide a reply");
+        }
+        if raw_options.len() > 6 {
+            anyhow::bail!("options must contain at most 6 choices");
         }
         let mut options: Vec<String> = Vec::with_capacity(raw_options.len());
         for option in raw_options {
@@ -657,10 +673,11 @@ impl McpServer {
 
         let mut tx = self.db.begin().await.context("failed to start transaction")?;
         sqlx::query(
-            "INSERT INTO project_task_decision_answers (note_id, selected_options, answered_by) VALUES ($1, $2, $3)",
+            "INSERT INTO project_task_decision_answers (note_id, selected_options, reply, answered_by) VALUES ($1, $2, $3, $4)",
         )
         .bind(note_id)
         .bind(json!(options))
+        .bind(if reply.is_empty() { None } else { Some(reply.as_str()) })
         .bind(actor)
         .execute(&mut *tx)
         .await
@@ -677,7 +694,11 @@ impl McpServer {
         .context("failed to update decision status")?;
         tx.commit().await.context("failed to commit decision answer")?;
 
-        Ok(json!({"content": [{"type": "text", "text": format!("Recorded answer for decision {}: {}.", note_id, options.join(", "))}]}))
+        let summary = [
+            (!options.is_empty()).then(|| options.join(", ")),
+            (!reply.is_empty()).then(|| reply.clone()),
+        ].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        Ok(json!({"content": [{"type": "text", "text": format!("Recorded answer for decision {}: {}.", note_id, summary)}]}))
     }
 
     pub(super) async fn project_task_delete(

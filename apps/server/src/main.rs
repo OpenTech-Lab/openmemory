@@ -298,7 +298,10 @@ struct CreateTaskNotePayload {
 
 #[derive(Debug, Deserialize)]
 struct ResolveTaskDecisionPayload {
+    #[serde(default)]
     options: Vec<String>,
+    #[serde(default)]
+    reply: Option<String>,
     author: Option<String>,
 }
 
@@ -1990,6 +1993,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
             id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
             note_id          UUID        NOT NULL REFERENCES project_task_notes(id) ON DELETE CASCADE,
             selected_options JSONB       NOT NULL,
+            reply            TEXT,
             answered_by      TEXT        NOT NULL DEFAULT 'human',
             answered_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
@@ -1998,6 +2002,8 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .context("failed to create project_task_decision_answers table")?;
+    sqlx::query("ALTER TABLE project_task_decision_answers ADD COLUMN IF NOT EXISTS reply TEXT")
+        .execute(db).await.ok();
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_decision_answers_note_id_answered_at ON project_task_decision_answers(note_id, answered_at)")
         .execute(db).await.ok();
 
@@ -6532,7 +6538,7 @@ async fn list_project_task_notes(
     match sqlx::query_as::<_, ProjectTaskNote>(
         "SELECT n.id, n.task_id, n.content, n.author, n.created_at \
                 , n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, n.decision_resolved_at, \
-                COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, \
+                COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, 'reply', a.reply, \
                     'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
                     FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
          FROM project_task_notes n WHERE n.task_id = $1 \
@@ -6631,12 +6637,7 @@ async fn create_project_task_note(
 }
 
 fn normalize_decision_options(raw: Option<&[String]>, note_type: &str) -> Result<Vec<String>, String> {
-    let Some(raw_options) = raw else {
-        if note_type == "decision" {
-            return Err("decision_options must contain at least two choices".to_string());
-        }
-        return Ok(Vec::new());
-    };
+    let Some(raw_options) = raw else { return Ok(Vec::new()); };
 
     let mut options = Vec::with_capacity(raw_options.len());
     for option in raw_options {
@@ -6653,8 +6654,8 @@ fn normalize_decision_options(raw: Option<&[String]>, note_type: &str) -> Result
         options.push(option.to_string());
     }
 
-    if note_type == "decision" && !(2..=6).contains(&options.len()) {
-        return Err("decisions must have between two and six choices".to_string());
+    if note_type == "decision" && options.len() > 6 {
+        return Err("decisions may have up to six choices".to_string());
     }
     if note_type == "message" && !options.is_empty() {
         return Err("decision_options are only valid for decision notes".to_string());
@@ -6672,8 +6673,15 @@ async fn resolve_project_task_decision(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    if payload.options.is_empty() || payload.options.len() > 6 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "options must contain between 1 and 6 choices"}))).into_response();
+    let reply = payload.reply.as_deref().unwrap_or("").trim().to_string();
+    if reply.chars().count() > 20_000 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "reply must be 20,000 characters or fewer"}))).into_response();
+    }
+    if payload.options.len() > 6 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "options must contain at most 6 choices"}))).into_response();
+    }
+    if payload.options.is_empty() && reply.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "select at least one choice or provide a reply"}))).into_response();
     }
     let mut options: Vec<String> = Vec::with_capacity(payload.options.len());
     for raw in &payload.options {
@@ -6735,10 +6743,11 @@ async fn resolve_project_task_decision(
     };
 
     if let Err(error) = sqlx::query(
-        "INSERT INTO project_task_decision_answers (note_id, selected_options, answered_by) VALUES ($1, $2, $3)",
+        "INSERT INTO project_task_decision_answers (note_id, selected_options, reply, answered_by) VALUES ($1, $2, $3, $4)",
     )
     .bind(note_id)
     .bind(selected_options_json)
+    .bind(if reply.is_empty() { None } else { Some(reply.as_str()) })
     .bind(author)
     .execute(&mut *tx)
     .await
@@ -6770,7 +6779,7 @@ async fn resolve_project_task_decision(
     let note = sqlx::query_as::<_, ProjectTaskNote>(
         "SELECT n.id, n.task_id, n.content, n.author, n.created_at \
                 , n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, n.decision_resolved_at, \
-                COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, \
+                COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, 'reply', a.reply, \
                     'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
                     FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
          FROM project_task_notes n WHERE n.id = $1",

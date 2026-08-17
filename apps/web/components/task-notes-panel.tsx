@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 
 interface TaskDecisionAnswer {
   options: string[];
+  reply?: string | null;
   answered_by: string;
   answered_at: string;
 }
@@ -61,12 +62,13 @@ export function TaskNotesPanel({
   const [isSaving, setIsSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [decisionOpen, setDecisionOpen] = useState(false);
-  const [decisionMode, setDecisionMode] = useState<'yes_no' | 'options'>('yes_no');
+  const [decisionMode, setDecisionMode] = useState<'yes_no' | 'options' | 'question'>('yes_no');
   const [decisionQuestion, setDecisionQuestion] = useState('');
   const [decisionOptions, setDecisionOptions] = useState(['Yes', 'No']);
   const [isSavingDecision, setIsSavingDecision] = useState(false);
   const [submittingDecisionId, setSubmittingDecisionId] = useState<string | null>(null);
   const [draftSelections, setDraftSelections] = useState<Record<string, string[]>>({});
+  const [draftReplies, setDraftReplies] = useState<Record<string, string>>({});
   const [historyOpenIds, setHistoryOpenIds] = useState<Record<string, boolean>>({});
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -87,6 +89,14 @@ export function TaskNotesPanel({
         }
         return next;
       });
+      setDraftReplies(previous => {
+        const next = { ...previous };
+        for (const note of nextNotes) {
+          if (note.note_type !== 'decision' || next[note.id] !== undefined) continue;
+          next[note.id] = note.decision_answers?.at(-1)?.reply ?? '';
+        }
+        return next;
+      });
       onOpenDecisionChange?.(
         taskId,
         nextNotes.some(note => note.note_type === 'decision' && note.decision_status !== 'resolved'),
@@ -102,6 +112,7 @@ export function TaskNotesPanel({
     setNotes([]);
     setDraft('');
     setDraftSelections({});
+    setDraftReplies({});
     setHistoryOpenIds({});
     void loadNotes();
   }, [loadNotes]);
@@ -151,8 +162,12 @@ export function TaskNotesPanel({
       toast.error('Add the decision question first');
       return;
     }
-    if (options.length < 2 || options.length > 6) {
-      toast.error('Add between two and six choices');
+    if (options.length > 6) {
+      toast.error('Add no more than six choices');
+      return;
+    }
+    if (decisionMode !== 'question' && options.length < 1) {
+      toast.error('Add at least one choice, or select Open question');
       return;
     }
     if (new Set(options.map(option => option.toLowerCase())).size !== options.length) {
@@ -171,6 +186,7 @@ export function TaskNotesPanel({
       if (!response.ok) throw new Error(data.error || 'Failed to add decision checkpoint');
       setNotes(previous => [...previous, data]);
       setDraftSelections(previous => ({ ...previous, [data.id]: [] }));
+      setDraftReplies(previous => ({ ...previous, [data.id]: '' }));
       onOpenDecisionChange?.(taskId, true);
       setDecisionOpen(false);
       toast.success('Decision checkpoint added');
@@ -181,24 +197,26 @@ export function TaskNotesPanel({
     }
   };
 
-  const handleSubmitDecisionAnswer = async (note: TaskNote, options: string[]) => {
-    if (options.length === 0 || submittingDecisionId) return;
+  const handleSubmitDecisionAnswer = async (note: TaskNote, options: string[], reply: string) => {
+    const trimmedReply = reply.trim();
+    if ((options.length === 0 && !trimmedReply) || submittingDecisionId) return;
     setSubmittingDecisionId(note.id);
     try {
       const response = await fetch(`/api/projects/${projectId}/tasks/${taskId}/notes/${note.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ options, author: 'human' }),
+        body: JSON.stringify({ options, reply: trimmedReply || undefined, author: 'human' }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to record decision');
       setNotes(previous => previous.map(current => current.id === note.id ? data : current));
       setDraftSelections(previous => ({ ...previous, [note.id]: data.decision_answers?.at(-1)?.options ?? options }));
+      setDraftReplies(previous => ({ ...previous, [note.id]: data.decision_answers?.at(-1)?.reply ?? trimmedReply }));
       onOpenDecisionChange?.(
         taskId,
         notes.some(current => current.id !== note.id && current.note_type === 'decision' && current.decision_status !== 'resolved'),
       );
-      toast.success(`Answer recorded: ${options.join(', ')}`);
+      toast.success(`Answer recorded: ${[...options, ...(trimmedReply ? [trimmedReply] : [])].join(' · ')}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to record decision');
     } finally {
@@ -295,46 +313,62 @@ export function TaskNotesPanel({
                       const answers = decisionAnswers(note);
                       const latest = answers.at(-1);
                       const draft = draftSelections[note.id] ?? [];
+                      const reply = draftReplies[note.id] ?? '';
                       const isSubmitting = submittingDecisionId === note.id;
                       const historyOpen = historyOpenIds[note.id] ?? false;
                       return (
                         <div className="mt-3 border-t border-amber-300/60 pt-2.5 dark:border-amber-800/60">
                           {latest && (
-                            <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                            <div className="mb-2.5 flex flex-wrap items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
                               <CheckCircle2 className="size-3.5" />
-                              Current: {latest.options.join(', ')}
+                              Current: {latest.options.length > 0 ? latest.options.join(', ') : 'Custom reply'}
+                              {latest.reply && <span className="min-w-0 break-words font-normal text-foreground">{latest.reply}</span>}
                               <span className="font-normal text-muted-foreground">
                                 · {authorLabel(latest.answered_by)} · {formatTimestamp(latest.answered_at)}
                               </span>
                             </div>
                           )}
-                          <div className="flex flex-col gap-1.5">
-                            {decisionChoices(note).map(option => {
-                              const inputId = `decision-${note.id}-${option}`;
-                              return (
-                                <label
-                                  key={option}
-                                  htmlFor={inputId}
-                                  className="flex cursor-pointer items-center gap-2 text-xs text-foreground"
-                                >
-                                  <Checkbox
-                                    id={inputId}
-                                    checked={draft.includes(option)}
-                                    onCheckedChange={() => toggleDraftOption(note.id, option)}
-                                    disabled={isSubmitting}
-                                  />
-                                  {option}
-                                </label>
-                              );
-                            })}
-                          </div>
+                          {decisionChoices(note).length > 0 ? (
+                            <div className="flex flex-col gap-1.5">
+                              {decisionChoices(note).map(option => {
+                                const inputId = `decision-${note.id}-${option}`;
+                                return (
+                                  <label
+                                    key={option}
+                                    htmlFor={inputId}
+                                    className="flex cursor-pointer items-center gap-2 text-xs text-foreground"
+                                  >
+                                    <Checkbox
+                                      id={inputId}
+                                      checked={draft.includes(option)}
+                                      onCheckedChange={() => toggleDraftOption(note.id, option)}
+                                      disabled={isSubmitting}
+                                    />
+                                    {option}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">Open question — add a custom reply below.</p>
+                          )}
+                          <Textarea
+                            value={reply}
+                            onChange={event => setDraftReplies(previous => ({ ...previous, [note.id]: event.target.value }))}
+                            placeholder={decisionChoices(note).length > 0 ? 'Optional custom reply...' : 'Write a reply...'}
+                            aria-label="Custom decision reply"
+                            maxLength={20000}
+                            rows={2}
+                            className="mt-2 resize-none bg-background/70 text-xs"
+                            disabled={isSubmitting}
+                          />
                           <Button
                             type="button"
                             size="sm"
                             variant="outline"
                             className="mt-2.5 h-7 border-amber-300/80 bg-background/70 px-2.5 text-xs hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700/70 dark:hover:bg-amber-950/50"
-                            onClick={() => void handleSubmitDecisionAnswer(note, draft)}
-                            disabled={draft.length === 0 || isSubmitting}
+                            onClick={() => void handleSubmitDecisionAnswer(note, draft, reply)}
+                            disabled={(draft.length === 0 && !reply.trim()) || isSubmitting}
                           >
                             {isSubmitting && <RefreshCw className="mr-1 size-3 animate-spin" />}
                             {answers.length > 0 ? 'Update answer' : 'Submit answer'}
@@ -354,8 +388,9 @@ export function TaskNotesPanel({
                               </summary>
                               <ul className="mt-1.5 space-y-1 border-l border-amber-300/60 pl-2.5 dark:border-amber-800/60">
                                 {[...answers].reverse().map((answer, index) => (
-                                  <li key={`${answer.answered_at}-${index}`} className="text-[11px] text-muted-foreground">
-                                    {answer.options.join(', ')}
+                                  <li key={`${answer.answered_at}-${index}`} className="break-words text-[11px] text-muted-foreground">
+                                    <span>{answer.options.length > 0 ? answer.options.join(', ') : 'Custom reply'}</span>
+                                    {answer.reply && <span> · {answer.reply}</span>}
                                     <span> · {authorLabel(answer.answered_by)} · {formatTimestamp(answer.answered_at)}</span>
                                   </li>
                                 ))}
@@ -454,44 +489,51 @@ export function TaskNotesPanel({
             <div className="space-y-2">
               <Label>Response format</Label>
               <Select value={decisionMode} onValueChange={value => {
-                const mode = value as 'yes_no' | 'options';
+                const mode = value as 'yes_no' | 'options' | 'question';
                 setDecisionMode(mode);
-                setDecisionOptions(mode === 'yes_no' ? ['Yes', 'No'] : ['Option A', 'Option B']);
+                setDecisionOptions(mode === 'yes_no' ? ['Yes', 'No'] : mode === 'options' ? ['Option A', 'Option B'] : []);
               }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="yes_no">Yes / No</SelectItem>
                   <SelectItem value="options">Custom options</SelectItem>
+                  <SelectItem value="question">Open question / custom reply</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label>Choices</Label>
-                {decisionMode === 'options' && decisionOptions.length < 6 && (
-                  <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={() => setDecisionOptions(options => [...options, `Option ${String.fromCharCode(65 + options.length)}`])}>
-                    <Plus className="size-3.5" /> Add choice
-                  </Button>
-                )}
-              </div>
+            {decisionMode === 'question' ? (
+              <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                The reviewer can answer this question with any custom text.
+              </p>
+            ) : (
               <div className="space-y-2">
-                {decisionOptions.map((option, index) => (
-                  <div key={`${index}-${option}`} className="flex items-center gap-2">
-                    <Input
-                      value={option}
-                      onChange={event => setDecisionOptions(options => options.map((current, currentIndex) => currentIndex === index ? event.target.value : current))}
-                      disabled={decisionMode === 'yes_no'}
-                      aria-label={`Choice ${index + 1}`}
-                    />
-                    {decisionMode === 'options' && decisionOptions.length > 2 && (
-                      <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" onClick={() => setDecisionOptions(options => options.filter((_, currentIndex) => currentIndex !== index))} aria-label={`Remove choice ${index + 1}`}>
-                        <X className="size-3.5" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
+                <div className="flex items-center justify-between">
+                  <Label>Choices</Label>
+                  {decisionMode === 'options' && decisionOptions.length < 6 && (
+                    <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={() => setDecisionOptions(options => [...options, `Option ${String.fromCharCode(65 + options.length)}`])}>
+                      <Plus className="size-3.5" /> Add choice
+                    </Button>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {decisionOptions.map((option, index) => (
+                    <div key={`${index}-${option}`} className="flex items-center gap-2">
+                      <Input
+                        value={option}
+                        onChange={event => setDecisionOptions(options => options.map((current, currentIndex) => currentIndex === index ? event.target.value : current))}
+                        disabled={decisionMode === 'yes_no'}
+                        aria-label={`Choice ${index + 1}`}
+                      />
+                      {decisionMode === 'options' && decisionOptions.length > 1 && (
+                        <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" onClick={() => setDecisionOptions(options => options.filter((_, currentIndex) => currentIndex !== index))} aria-label={`Remove choice ${index + 1}`}>
+                          <X className="size-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDecisionOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={isSavingDecision || !decisionQuestion.trim()}>

@@ -1041,24 +1041,25 @@ impl McpServer {
                             "task_id": {"type": "string", "description": "UUID of the task"},
                             "content": {"type": "string", "description": "Implementation detail, decision question, finding, or handoff message"},
                             "note_type": {"type": "string", "description": "message (default) or decision"},
-                            "decision_options": {"type": "array", "items": {"type": "string"}, "description": "Two to six choices when note_type is decision (for example [\"Yes\", \"No\"] )"}
+                            "decision_options": {"type": "array", "items": {"type": "string"}, "description": "Optional: zero to six choices when note_type is decision; omit or use [] for an open question, or provide one choice for a single-choice checkpoint"}
                         },
                         "required": ["project_id", "task_id", "content"]
                     }
                 },
                 {
                     "name": "project_task_note_decide",
-                    "description": "Answer a task decision checkpoint by selecting one or more of its choices. Calling this again on the same decision records a new answer (with the previous answer kept in history) rather than failing.",
+                    "description": "Answer a task decision checkpoint by selecting one or more choices and/or providing a custom reply. Calling this again records a new answer while keeping the previous answer in history.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "task_id": {"type": "string", "description": "UUID of the task"},
                             "note_id": {"type": "string", "description": "UUID of the decision note"},
-                            "options": {"type": "array", "items": {"type": "string"}, "description": "One or more exact choices to select"},
+                            "options": {"type": "array", "items": {"type": "string"}, "description": "Optional exact choices to select; may be empty when providing a custom reply"},
+                            "reply": {"type": "string", "description": "Optional custom reply text; required when the decision has no choices and no option is selected"},
                             "author": {"type": "string", "description": "human or agent (default: agent)"}
                         },
-                        "required": ["project_id", "task_id", "note_id", "options"]
+                        "required": ["project_id", "task_id", "note_id"]
                     }
                 },
                 {
