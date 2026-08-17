@@ -1,13 +1,12 @@
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
-import { AppSidebar } from '@/components/app-sidebar';
+import { AppHeader } from '@/components/app-header';
 
-export default function SidebarLayout({ children }: { children: React.ReactNode }) {
+export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   return (
-    <SidebarProvider className="h-svh overflow-hidden">
-      <AppSidebar />
-      <SidebarInset className="min-w-0 h-full overflow-hidden">
+    <div className="flex h-svh min-w-0 flex-col overflow-hidden">
+      <AppHeader />
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {children}
-      </SidebarInset>
-    </SidebarProvider>
+      </main>
+    </div>
   );
 }
