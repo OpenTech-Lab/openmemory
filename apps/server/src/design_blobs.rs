@@ -192,7 +192,7 @@ mod tests {
     fn pen_is_an_accepted_diagram_type() {
         assert!(crate::VALID_DIAGRAM_TYPES.contains(&"pen"));
         // The pre-existing types must keep working.
-        for existing in ["drawio", "mermaid", "reactflow"] {
+        for existing in ["drawio", "mermaid", "reactflow", "text"] {
             assert!(crate::VALID_DIAGRAM_TYPES.contains(&existing));
         }
     }

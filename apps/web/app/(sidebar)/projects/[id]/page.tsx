@@ -138,7 +138,7 @@ export default function ProjectDetailPage() {
   // Files is the landing tab now (see tab order below). Files/Graph/History all require the
   // project to have a filesystem path (`hasGraph`, computed once `project` loads below) — for a
   // path-less project those three panes render nothing, so a separate effect further down falls
-  // back to Design (the next tab that works without a path) once we know which case we're in.
+  // back to Docs (the next tab that works without a path) once we know which case we're in.
   const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'design' | 'files' | 'history'>('files');
 
   // Graph query
@@ -171,7 +171,7 @@ export default function ProjectDetailPage() {
   const [isCreatingRoutine, setIsCreatingRoutine] = useState(false);
   const [isCheckingRoutines, setIsCheckingRoutines] = useState(false);
 
-  // Design/Lessons tab counts — ProjectDesignPanel and LessonsPanel own their own data and
+  // Docs/Lessons tab counts — ProjectDesignPanel and LessonsPanel own their own data and
   // fetching, so these are lightweight count-only fetches (same pattern as tasks/routines above)
   // purely to feed the tab badges without lifting those panels' full state up to this page.
   const [designCount, setDesignCount] = useState(0);
@@ -270,7 +270,7 @@ export default function ProjectDetailPage() {
 
   // The Files/Graph/History tabs only render content for a project with a filesystem path
   // (hasGraph below) — a path-less project landing on the Files default would otherwise show a
-  // blank pane. Falls back to Design, the next tab in order that works with no path.
+  // blank pane. Falls back to Docs, the next tab in order that works with no path.
   useEffect(() => {
     if (project && !project.path && (activeTab === 'files' || activeTab === 'graph' || activeTab === 'history')) {
       setActiveTab('design');

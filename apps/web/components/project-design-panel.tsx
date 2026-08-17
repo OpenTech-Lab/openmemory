@@ -35,7 +35,24 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, RefreshCw, Pencil, Trash2, Palette, Sparkles, Expand, Shrink, WalletCards, Info } from 'lucide-react';
+import {
+  Plus,
+  RefreshCw,
+  Pencil,
+  Trash2,
+  Palette,
+  Sparkles,
+  Expand,
+  Shrink,
+  WalletCards,
+  Info,
+  Network,
+  PenTool,
+  FileText,
+  ArrowUpRight,
+} from 'lucide-react';
+import DOMPurify from 'dompurify';
+import { marked } from 'marked';
 import { toast } from 'sonner';
 import { MermaidDiagram } from '@/components/mermaid-diagram';
 import { DesignCanvas } from '@/components/design-canvas';
@@ -43,7 +60,6 @@ import { DrawioDiagram, type DrawioDiagramHandle } from '@/components/drawio-dia
 import { PencilDiagram, type PencilDiagramHandle } from '@/components/pencil-diagram';
 import { blankPencilSource } from '@/lib/pencil';
 import {
-  DESIGN_KINDS,
   DESIGN_KIND_GROUPS,
   designKindMeta,
   STARTER_TEMPLATES,
@@ -79,11 +95,12 @@ import { DesignBudgetSheet } from '@/components/design-budget-sheet';
 // mermaid designs split further by content, since architecture-beta is the one starter kind whose
 // text can drive the same draggable canvas the reactflow format uses. Detected from content, not
 // a stored flag.
-type DesignEditorMode = 'drawio' | 'pencil' | 'canvas' | 'arch' | 'mermaid';
+type DesignEditorMode = 'drawio' | 'pencil' | 'canvas' | 'arch' | 'mermaid' | 'text';
 
 function computeEditorMode(diagramType: DesignDiagramType, source: string): DesignEditorMode {
   if (diagramType === 'drawio') return 'drawio';
   if (diagramType === 'pen') return 'pencil';
+  if (diagramType === 'text') return 'text';
   if (diagramType === 'reactflow') return 'canvas';
   return isArchitectureSource(source) ? 'arch' : 'mermaid';
 }
@@ -122,6 +139,8 @@ interface ProjectDesignPanelProps {
   projectPath: string | null;
 }
 
+type DocumentCreationType = 'diagram' | 'ui' | 'text';
+
 const EMPTY_EDIT_FORM = {
   title: '',
   kind: 'aws' as string,
@@ -129,6 +148,28 @@ const EMPTY_EDIT_FORM = {
   notes: '',
   diagramType: 'drawio' as DesignDiagramType,
 };
+
+function createEditForm(type: DocumentCreationType) {
+  if (type === 'ui') {
+    return {
+      ...EMPTY_EDIT_FORM,
+      kind: 'ui',
+      source: blankPencilSource(),
+      diagramType: 'pen' as DesignDiagramType,
+    };
+  }
+
+  if (type === 'text') {
+    return {
+      ...EMPTY_EDIT_FORM,
+      kind: 'document',
+      source: '',
+      diagramType: 'text' as DesignDiagramType,
+    };
+  }
+
+  return { ...EMPTY_EDIT_FORM, source: drawioStarterSource('aws') };
+}
 
 const DIAGRAM_TYPE_LABELS: Record<DesignDiagramType, string> = {
   drawio: 'Diagram studio (draw.io)',
@@ -138,7 +179,60 @@ const DIAGRAM_TYPE_LABELS: Record<DesignDiagramType, string> = {
   mermaid: 'Mermaid text',
   reactflow: 'React Flow canvas',
   pen: 'OpenPencil',
+  text: 'Text document',
 };
+
+const DOCUMENT_CREATION_OPTIONS: Array<{
+  type: DocumentCreationType;
+  label: string;
+  detail: string;
+  icon: typeof Network;
+  iconClass: string;
+  surfaceClass: string;
+}> = [
+  {
+    type: 'diagram',
+    label: 'Diagram',
+    detail: 'draw.io · Mermaid · canvas',
+    icon: Network,
+    iconClass: 'bg-sky-100 text-sky-700 dark:bg-sky-950/70 dark:text-sky-300',
+    surfaceClass: 'hover:border-sky-300 hover:bg-sky-50/70 dark:hover:border-sky-800 dark:hover:bg-sky-950/30',
+  },
+  {
+    type: 'ui',
+    label: 'UI/UX design',
+    detail: 'OpenPencil · freeform canvas',
+    icon: PenTool,
+    iconClass: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950/70 dark:text-fuchsia-300',
+    surfaceClass: 'hover:border-fuchsia-300 hover:bg-fuchsia-50/70 dark:hover:border-fuchsia-800 dark:hover:bg-fuchsia-950/30',
+  },
+  {
+    type: 'text',
+    label: 'Text document',
+    detail: 'Plain text · Markdown preview',
+    icon: FileText,
+    iconClass: 'bg-amber-100 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300',
+    surfaceClass: 'hover:border-amber-300 hover:bg-amber-50/70 dark:hover:border-amber-800 dark:hover:bg-amber-950/30',
+  },
+];
+
+const TEXT_KIND_OPTIONS = [
+  { value: 'document', label: 'General document' },
+  { value: 'spec', label: 'Specification' },
+  { value: 'readme', label: 'README' },
+  { value: 'notes', label: 'Notes' },
+  { value: 'markdown', label: 'Markdown' },
+] as const;
+
+function textDocumentKindLabel(kind: string): string {
+  return TEXT_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? designKindMeta(kind).label;
+}
+
+function documentTypeLabel(diagramType: string): string {
+  if (diagramType === 'pen') return 'UI/UX design';
+  if (diagramType === 'text') return 'Text document';
+  return 'Diagram';
+}
 
 // True when `graph` is still exactly the auto-generated starter for `kind` — mirrors the
 // mermaid-side "sourceIsUntouched" check so switching kind on a fresh reactflow doc doesn't
@@ -214,6 +308,9 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   }, [editForm.source]);
 
   const editorMode = computeEditorMode(editForm.diagramType, editForm.source);
+  // New documents can switch formats before they are saved. Keep this available in the text
+  // editor too, so choosing Text document does not strand the user in that editor.
+  const showFormatMenu = !editDesign;
   const archParse = useMemo(() => parseArchitectureDiagram(debouncedArchSource), [debouncedArchSource]);
   const archGraph = useMemo(() => architectureToDesignGraph(archParse), [archParse]);
   const archLaidOut = useMemo(() => applyNestedLayout(archGraph.nodes, archGraph.edges), [archGraph]);
@@ -298,13 +395,12 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     [designs, selectedId]
   );
 
-  const openCreate = () => {
+  const openCreate = (type: DocumentCreationType = 'diagram') => {
     setEditDesign(null);
-    const kind = EMPTY_EDIT_FORM.kind;
-    const source = drawioStarterSource(kind);
-    setEditForm({ ...EMPTY_EDIT_FORM, source });
-    setGraphState(blankDesignGraph(kind));
-    setDebouncedArchSource(source);
+    const form = createEditForm(type);
+    setEditForm(form);
+    setGraphState(form.diagramType === 'reactflow' ? blankDesignGraph(form.kind) : { nodes: [], edges: [] });
+    setDebouncedArchSource(form.source);
     setArchOverrides({});
     setArchGraphState(null);
     setArchResetNonce(0);
@@ -324,7 +420,9 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
           ? 'pen'
           : design.diagram_type === 'reactflow'
             ? 'reactflow'
-            : 'mermaid'
+            : design.diagram_type === 'text'
+              ? 'text'
+              : 'mermaid'
     ) as DesignDiagramType;
     // The textarea never shows the layout comment — a drag can't rewrite text under the user's
     // caret, and there's no edit-conflict to resolve on save (Decision 2's editor round-trip).
@@ -336,7 +434,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       notes: design.notes ?? '',
       diagramType,
     });
-    if (diagramType === 'reactflow') setGraphState(parseDesignGraph(design.source));
+    setGraphState(diagramType === 'reactflow' ? parseDesignGraph(design.source) : { nodes: [], edges: [] });
     setDebouncedArchSource(source);
     setArchOverrides(diagramType === 'mermaid' ? parseLayoutComment(design.source) : {});
     setArchGraphState(null);
@@ -348,8 +446,10 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   };
 
   const handleGenerateDiagram = async () => {
-    if (editForm.diagramType === 'drawio') {
-      toast.error('AI generation for Diagram studio documents is not available yet.');
+    if (editForm.diagramType === 'drawio' || editForm.diagramType === 'text') {
+      toast.error(editForm.diagramType === 'text'
+        ? 'AI generation is available for diagram documents.'
+        : 'AI generation for Diagram studio documents is not available yet.');
       return;
     }
     const prompt = aiPrompt.trim();
@@ -444,8 +544,22 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         ? (STARTER_TEMPLATES[editForm.kind as DesignKind] ?? '')
         : diagramType === 'pen'
           ? blankPencilSource()
-          : '';
-    setEditForm((prev) => ({ ...prev, diagramType, source: nextSource }));
+          : diagramType === 'text'
+            ? ''
+            : '';
+    const nextKind = diagramType === 'text'
+      ? 'document'
+      : diagramType === 'pen'
+        ? 'ui'
+        : TEXT_KIND_OPTIONS.some((option) => option.value === editForm.kind)
+          ? 'aws'
+          : editForm.kind;
+    setEditForm((prev) => ({
+      ...prev,
+      diagramType,
+      source: nextSource,
+      kind: nextKind,
+    }));
     setDebouncedArchSource(nextSource);
     setArchOverrides({});
     setArchGraphState(null);
@@ -542,64 +656,99 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
     }
   };
 
+  const formatSelector = showFormatMenu ? (
+    <div className="flex shrink-0 items-center gap-2 sm:pt-0.5">
+      <Label htmlFor="design-format" className="text-xs text-muted-foreground">
+        Format
+      </Label>
+      <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
+        <SelectTrigger id="design-format" className="h-9 w-full sm:w-[220px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {DESIGN_DIAGRAM_TYPES.map((type) => (
+            <SelectItem key={type} value={type}>
+              {DIAGRAM_TYPE_LABELS[type]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  ) : null;
+
   return (
-    <div className="flex flex-col gap-6 h-full">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h2 className="text-base font-semibold">Design ({designs.length})</h2>
-          <p className="text-sm text-muted-foreground">
-            WYSIWYG diagram studio, Mermaid text, or React Flow canvases for architectures and workflows.
-          </p>
+    <div className="flex h-full flex-col gap-3">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          {designs.length > 0 && (
+            <Select value={selectedId ?? undefined} onValueChange={setSelectedId}>
+              <SelectTrigger className="w-full max-w-[420px]">
+                <SelectValue placeholder="Select a document" />
+              </SelectTrigger>
+              <SelectContent>
+                {designs.map((d) => {
+                  const meta = designKindMeta(d.kind);
+                  const Icon = meta.icon;
+                  return (
+                    <SelectItem key={d.id} value={d.id}>
+                      <span className="flex items-center gap-2">
+                        {d.diagram_type === 'text' ? <FileText className="size-4 shrink-0 text-muted-foreground" /> : <Icon className="size-4 shrink-0 text-muted-foreground" />}
+                        <span className="break-words">{d.title}</span>
+                        <span className="ml-1 text-[10px] text-muted-foreground">{documentTypeLabel(d.diagram_type)}</span>
+                      </span>
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+          )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           <Button variant="outline" size="sm" onClick={fetchDesigns} disabled={isLoading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-            Refresh
+            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Refresh</span>
           </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4 mr-2" />
-            New Diagram
+          <Button size="sm" onClick={() => openCreate('diagram')}>
+            <Plus className="h-4 w-4" />
+            New document
           </Button>
         </div>
       </div>
 
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {DOCUMENT_CREATION_OPTIONS.map((option) => (
+          <button
+            key={option.type}
+            type="button"
+            onClick={() => openCreate(option.type)}
+            className={`group relative flex h-12 min-h-12 items-center gap-2 overflow-hidden rounded-lg border border-border/80 bg-card p-2.5 pr-9 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${option.surfaceClass}`}
+          >
+            <span className={`flex size-7 shrink-0 items-center justify-center rounded-md ${option.iconClass}`}>
+              <option.icon className="size-3.5" />
+            </span>
+            <div className="flex min-w-0 items-center gap-2">
+              <p className="truncate text-sm font-medium leading-5">{option.label}</p>
+              <p className="hidden truncate font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70 sm:block">{option.detail}</p>
+            </div>
+            <ArrowUpRight className="absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50 transition-transform group-hover:-translate-y-[calc(50%+2px)] group-hover:translate-x-0.5 group-hover:text-foreground" />
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-col gap-4 min-h-[400px]">
-        {/* Diagram switcher — a dropdown rather than the old fixed-width sidebar list, so the
-            structure/canvas block below gets the full panel width instead of losing 280px to a
-            list that only ever shows one thing at a time anyway. */}
         {isLoading && designs.length === 0 ? (
           <div className="flex items-center justify-center h-[80px] border rounded-md">
             <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : designs.length === 0 ? (
-          <div className="text-center py-10 px-4 border rounded-md text-muted-foreground">
-            <Palette className="h-8 w-8 mx-auto mb-2 opacity-30" />
-            <p className="text-sm">No diagrams yet.</p>
+          <div className="flex items-center gap-3 rounded-xl border border-dashed border-border/80 bg-muted/20 px-4 py-4 text-muted-foreground">
+            <Palette className="size-5 shrink-0 opacity-50" />
+            <div>
+              <p className="text-sm font-medium text-foreground">Your document shelf is empty.</p>
+              <p className="mt-0.5 text-xs">Pick a creation path above to start shaping this project.</p>
+            </div>
           </div>
-        ) : (
-          <Select value={selectedId ?? undefined} onValueChange={setSelectedId}>
-            <SelectTrigger className="w-full sm:w-[420px]">
-              <SelectValue placeholder="Select a diagram" />
-            </SelectTrigger>
-            <SelectContent>
-              {designs.map((d) => {
-                const meta = designKindMeta(d.kind);
-                const Icon = meta.icon;
-                return (
-                  <SelectItem key={d.id} value={d.id}>
-                    <span className="flex items-center gap-2">
-                      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      {/* Full titles here too (see design-node.tsx / this file's earlier fix for
-                          the same ellipsis problem) — `break-words` since the dropdown list has
-                          room to wrap, unlike the closed trigger's single-line `SelectValue`. */}
-                      <span className="break-words">{d.title}</span>
-                    </span>
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
-        )}
+        ) : null}
 
         {/* Preview — now full width. h-[70vh] (not max-h) is load-bearing: a flex column with
             only max-height caps its own growth but never becomes a "definite size" for CSS
@@ -630,8 +779,13 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold">{selectedDesign.title}</h3>
+                  <Badge variant="secondary" className="text-xs">
+                    {documentTypeLabel(selectedDesign.diagram_type)}
+                  </Badge>
                   <Badge variant="outline" className={`text-xs ${designKindMeta(selectedDesign.kind).color}`}>
-                    {designKindMeta(selectedDesign.kind).label}
+                    {selectedDesign.diagram_type === 'text'
+                      ? textDocumentKindLabel(selectedDesign.kind)
+                      : designKindMeta(selectedDesign.kind).label}
                   </Badge>
                   {selectedDesign.notes && (
                     <Tooltip>
@@ -670,6 +824,9 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
               </div>
               <div className="rounded-md p-3 bg-muted/20 flex-1 min-h-0 overflow-hidden">
                 {(() => {
+                  if (selectedDesign.diagram_type === 'text') {
+                    return <TextDocumentPreview source={selectedDesign.source} kind={selectedDesign.kind} />;
+                  }
                   if (selectedDesign.diagram_type === 'drawio') {
                     return (
                       <DrawioDiagram
@@ -716,7 +873,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-              Select or create a diagram.
+              Select or create a document.
             </div>
           )}
         </div>
@@ -726,20 +883,108 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
         <DialogContent
           className={
-            editForm.diagramType === 'drawio' || editForm.diagramType === 'pen' || editForm.diagramType === 'reactflow' || editorMode === 'arch'
-              ? 'flex h-[92vh] w-[96vw] min-w-[80vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
-              : 'max-w-3xl max-h-[85vh] overflow-y-auto'
+            editForm.diagramType === 'text'
+              ? 'flex h-[86vh] w-[96vw] min-w-[80vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
+              : editForm.diagramType === 'drawio' || editForm.diagramType === 'pen' || editForm.diagramType === 'reactflow' || editorMode === 'arch'
+                ? 'flex h-[92vh] w-[96vw] min-w-[80vw] max-w-[1500px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1500px]'
+                : 'w-[96vw] min-w-[80vw] max-w-[1500px] max-h-[85vh] overflow-y-auto sm:max-w-[1500px]'
           }
         >
-          {editForm.diagramType === 'drawio' ? (
+          {editForm.diagramType === 'text' ? (
             <>
-              <div className="border-b bg-card px-5 py-4">
-                <DialogHeader>
+              <div className="flex flex-col gap-4 border-b bg-card px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                <DialogHeader className="min-w-0 flex-1">
+                  <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New text document'}</DialogTitle>
+                  <DialogDescription>
+                    Keep the project&apos;s specs, notes, and content close to the visual work they explain.
+                  </DialogDescription>
+                </DialogHeader>
+                {formatSelector}
+              </div>
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden p-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
+                <div className="flex min-h-0 flex-col gap-4">
+                  <div className="grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_190px]">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor="text-document-title">Title</Label>
+                      <Input
+                        id="text-document-title"
+                        value={editForm.title}
+                        onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
+                        placeholder="e.g. Product brief"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Document type</Label>
+                      <Select value={TEXT_KIND_OPTIONS.some((option) => option.value === editForm.kind) ? editForm.kind : 'document'} onValueChange={handleKindChange}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {TEXT_KIND_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label htmlFor="text-document-source">Content</Label>
+                      <span className="font-mono text-[10px] text-muted-foreground">{editForm.source.length.toLocaleString()} chars</span>
+                    </div>
+                    <Textarea
+                      id="text-document-source"
+                      value={editForm.source}
+                      onChange={(e) => setEditForm((f) => ({ ...f, source: e.target.value }))}
+                      placeholder={editForm.kind === 'markdown' ? '# Project overview\n\nWrite with Markdown…' : 'Start writing the context your project needs…'}
+                      className="min-h-0 flex-1 resize-none rounded-xl bg-muted/20 px-4 py-3 font-mono text-sm leading-6"
+                      spellCheck
+                    />
+                  </div>
+                  <div className="flex shrink-0 flex-col gap-1.5">
+                    <Label htmlFor="text-document-notes">Notes <span className="font-normal text-muted-foreground">(optional)</span></Label>
+                    <Input
+                      id="text-document-notes"
+                      value={editForm.notes}
+                      onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                      placeholder="What should someone know before reading this?"
+                    />
+                  </div>
+                </div>
+                <div className="flex min-h-0 flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Preview</Label>
+                    {editForm.kind === 'markdown' && (
+                      <span className="rounded-full bg-sky-100 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-sky-700 dark:bg-sky-950/60 dark:text-sky-300">
+                        Markdown rendered
+                      </span>
+                    )}
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-auto rounded-xl border bg-[#fcfaf5] p-6 shadow-inner dark:bg-stone-950">
+                    <TextDocumentPreview source={editForm.source} kind={editForm.kind} />
+                  </div>
+                </div>
+              </div>
+              <DialogFooter className="border-t bg-card px-5 py-3">
+                <p className="mr-auto hidden text-xs text-muted-foreground sm:block">
+                  {editForm.kind === 'markdown'
+                    ? 'Markdown renders live in the preview.'
+                    : 'Text stays in this editor until you save the document.'}
+                </p>
+                <Button variant="outline" onClick={() => setIsEditOpen(false)}>Cancel</Button>
+                <Button onClick={handleSave} disabled={isSaving}>
+                  {isSaving ? 'Saving…' : editDesign ? 'Save changes' : 'Create document'}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : editForm.diagramType === 'drawio' ? (
+            <>
+              <div className="flex flex-col gap-4 border-b bg-card px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                <DialogHeader className="min-w-0 flex-1">
                   <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
                   <DialogDescription>
                     Build AWS architectures, workflows, swimlanes, BPMN, and sequence diagrams with the full visual studio.
                   </DialogDescription>
                 </DialogHeader>
+                {formatSelector}
               </div>
               <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr]">
                 <div className="flex flex-col gap-1.5">
@@ -782,21 +1027,6 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                     placeholder="Context, decisions, or implementation notes"
                   />
                 </div>
-                {!editDesign && (
-                  <div className="flex flex-col gap-1.5 md:col-span-3">
-                    <Label>Format</Label>
-                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
-                      <SelectTrigger className="w-64">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DESIGN_DIAGRAM_TYPES.map((type) => (
-                          <SelectItem key={type} value={type}>{DIAGRAM_TYPE_LABELS[type]}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
               </div>
               <div className="min-h-0 flex-1 bg-slate-100 dark:bg-slate-950">
                 <DrawioDiagram
@@ -821,11 +1051,12 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             </>
           ) : editForm.diagramType === 'reactflow' ? (
             <>
-              <div className="border-b bg-card px-5 py-4">
-                <DialogHeader>
+              <div className="flex flex-col gap-4 border-b bg-card px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                <DialogHeader className="min-w-0 flex-1">
                   <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
                   <DialogDescription>Drag AWS icons onto the canvas, connect handles, click a node to edit it.</DialogDescription>
                 </DialogHeader>
+                {formatSelector}
               </div>
               <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr_1fr]">
                 <div className="flex flex-col gap-1.5">
@@ -896,23 +1127,6 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                     onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
                   />
                 </div>
-                {!editDesign && (
-                  <div className="flex flex-col gap-1.5 md:col-span-4">
-                    <Label>Format</Label>
-                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
-                      <SelectTrigger className="w-56">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DESIGN_DIAGRAM_TYPES.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {DIAGRAM_TYPE_LABELS[type]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
               </div>
               <div className="min-h-0 flex-1 overflow-hidden p-4">
                 <DesignCanvas key={canvasKey} initialGraph={graphState} onChange={setGraphState} />
@@ -928,13 +1142,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             </>
           ) : editForm.diagramType === 'pen' ? (
             <>
-              <div className="border-b bg-card px-5 py-4">
-                <DialogHeader>
+              <div className="flex flex-col gap-4 border-b bg-card px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                <DialogHeader className="min-w-0 flex-1">
                   <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
                   <DialogDescription>
                     Free-form design surface, powered by OpenPencil.
                   </DialogDescription>
                 </DialogHeader>
+                {formatSelector}
               </div>
               <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr]">
                 <div className="flex flex-col gap-1.5">
@@ -977,21 +1192,6 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                     placeholder="Context, decisions, or implementation notes"
                   />
                 </div>
-                {!editDesign && (
-                  <div className="flex flex-col gap-1.5 md:col-span-3">
-                    <Label>Format</Label>
-                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
-                      <SelectTrigger className="w-64">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DESIGN_DIAGRAM_TYPES.map((type) => (
-                          <SelectItem key={type} value={type}>{DIAGRAM_TYPE_LABELS[type]}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
               </div>
               <div className="min-h-0 flex-1 bg-slate-100 dark:bg-slate-950">
                 {editDesign ? (
@@ -1020,13 +1220,14 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             </>
           ) : editorMode === 'arch' ? (
             <>
-              <div className="border-b bg-card px-5 py-4">
-                <DialogHeader>
+              <div className="flex flex-col gap-4 border-b bg-card px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                <DialogHeader className="min-w-0 flex-1">
                   <DialogTitle>{editDesign ? `Edit ${editDesign.title}` : 'New diagram'}</DialogTitle>
                   <DialogDescription>
                     Drag nodes to reposition them — structure, labels and icons come from the mermaid text on the left.
                   </DialogDescription>
                 </DialogHeader>
+                {formatSelector}
               </div>
               <div className="grid shrink-0 grid-cols-1 gap-3 border-b bg-muted/20 p-4 md:grid-cols-[1fr_220px_1fr_1fr]">
                 <div className="flex flex-col gap-1.5">
@@ -1097,23 +1298,6 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                     onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
                   />
                 </div>
-                {!editDesign && (
-                  <div className="flex flex-col gap-1.5 md:col-span-4">
-                    <Label>Format</Label>
-                    <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
-                      <SelectTrigger className="w-56">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DESIGN_DIAGRAM_TYPES.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {DIAGRAM_TYPE_LABELS[type]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
               </div>
               {archCorruptWarning && (
                 <div className="flex items-center justify-between gap-3 border-b bg-amber-50 px-5 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
@@ -1193,12 +1377,15 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
             </>
           ) : (
             <>
-              <DialogHeader>
-                <DialogTitle>{editDesign ? 'Edit diagram' : 'New diagram'}</DialogTitle>
-                <DialogDescription>
-                  Mermaid source is rendered live below as you type.
-                </DialogDescription>
-              </DialogHeader>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <DialogHeader className="min-w-0 flex-1">
+                  <DialogTitle>{editDesign ? 'Edit diagram' : 'New diagram'}</DialogTitle>
+                  <DialogDescription>
+                    Mermaid source is rendered live below as you type.
+                  </DialogDescription>
+                </DialogHeader>
+                {formatSelector}
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="flex flex-col gap-3">
                   <div className="flex flex-col gap-1.5">
@@ -1238,23 +1425,6 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                       </SelectContent>
                     </Select>
                   </div>
-                  {!editDesign && (
-                    <div className="flex flex-col gap-1.5">
-                      <Label>Format</Label>
-                      <Select value={editForm.diagramType} onValueChange={(value) => handleFormatChange(value as DesignDiagramType)}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {DESIGN_DIAGRAM_TYPES.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {DIAGRAM_TYPE_LABELS[type]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="design-ai-prompt">AI prompt</Label>
                     <ForecastProfileSelect profiles={forecastProfiles} value={forecastProfileId} onChange={setForecastProfileId} />
@@ -1339,6 +1509,40 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         design={selectedDesign}
       />
     </div>
+  );
+}
+
+function TextDocumentPreview({ source, kind }: { source: string; kind: string }) {
+  if (!source.trim()) {
+    return (
+      <div className="flex h-full min-h-[180px] items-center justify-center text-center text-sm text-muted-foreground">
+        Your saved content will read like this.
+      </div>
+    );
+  }
+
+  if (kind === 'markdown') {
+    return <MarkdownDocumentPreview source={source} />;
+  }
+
+  return (
+    <article className="h-full overflow-y-auto mx-auto max-w-3xl whitespace-pre-wrap break-words font-serif text-[15px] leading-7 text-stone-800 dark:text-stone-200">
+      {source}
+    </article>
+  );
+}
+
+function MarkdownDocumentPreview({ source }: { source: string }) {
+  const html = useMemo(
+    () => DOMPurify.sanitize(marked.parse(source, { async: false, breaks: true, gfm: true })),
+    [source]
+  );
+
+  return (
+    <article
+      className="h-full overflow-y-auto mx-auto max-w-3xl break-words text-[15px] leading-7 text-stone-800 dark:text-stone-200 [&_a]:font-medium [&_a]:text-sky-700 [&_a]:underline [&_a]:underline-offset-2 dark:[&_a]:text-sky-300 [&_blockquote]:my-5 [&_blockquote]:border-l-2 [&_blockquote]:border-amber-400/70 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:text-stone-600 dark:[&_blockquote]:text-stone-300 [&_code]:rounded [&_code]:bg-stone-900/10 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.9em] [&_h1]:mb-4 [&_h1]:mt-1 [&_h1]:text-3xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h2]:mb-3 [&_h2]:mt-8 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:leading-tight [&_h3]:mb-2 [&_h3]:mt-6 [&_h3]:text-xl [&_h3]:font-semibold [&_hr]:my-7 [&_hr]:border-stone-300 dark:[&_hr]:border-stone-700 [&_li]:my-1 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-4 [&_pre]:my-5 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-stone-900 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:leading-6 [&_pre]:text-stone-100 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:my-5 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-stone-300 [&_td]:p-2 dark:[&_td]:border-stone-700 [&_th]:border [&_th]:border-stone-300 [&_th]:bg-stone-900/5 [&_th]:p-2 [&_th]:text-left dark:[&_th]:border-stone-700 dark:[&_th]:bg-stone-100/5 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6 [&_ul]:text-stone-800 dark:[&_ul]:text-stone-200 [&_ul]:pl-6 [&_img]:max-w-full [&_input]:mr-2"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   );
 }
 

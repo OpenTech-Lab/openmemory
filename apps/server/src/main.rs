@@ -391,7 +391,7 @@ struct UpdateDesignPayload {
     status: Option<String>,
 }
 
-pub(crate) const VALID_DIAGRAM_TYPES: &[&str] = &["drawio", "mermaid", "reactflow", "pen"];
+pub(crate) const VALID_DIAGRAM_TYPES: &[&str] = &["drawio", "mermaid", "reactflow", "pen", "text"];
 
 #[derive(Debug, Deserialize)]
 struct ListDesignsParams {
@@ -2021,8 +2021,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     )
         .execute(db).await.ok();
 
-    // Design docs (mermaid diagrams: UI/structure/workflow/DB-schema for code projects,
-    // characters/plot/timeline/world for narrative projects). Source lives in the DB, not on
+    // Project docs (diagrams, UI/UX canvases, and text content). Source lives in the DB, not on
     // disk, so it works for projects with no filesystem path at all.
     sqlx::query(
         r#"
@@ -7006,7 +7005,7 @@ async fn create_project_design(
 
     if let Some(dt) = payload.diagram_type.as_deref() {
         if !VALID_DIAGRAM_TYPES.contains(&dt) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen"}))).into_response();
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen, text"}))).into_response();
         }
     }
 
@@ -7054,7 +7053,7 @@ async fn update_project_design(
 
     if let Some(dt) = payload.diagram_type.as_deref() {
         if !VALID_DIAGRAM_TYPES.contains(&dt) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen"}))).into_response();
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen, text"}))).into_response();
         }
     }
 
