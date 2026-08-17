@@ -1870,7 +1870,7 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
 
   return (
     <div
-      className={`group flex w-full min-w-0 max-w-full items-start gap-1.5 overflow-hidden rounded-md shadow-sm transition-colors ${cardTone} ${isCancelled ? 'opacity-50' : ''}`}
+      className={`group flex w-full min-w-0 max-w-full shrink-0 items-start gap-1.5 overflow-hidden rounded-md shadow-sm transition-colors ${cardTone} ${isCancelled ? 'opacity-50' : ''}`}
       title={hasOpenDecision ? 'Waiting for a decision' : undefined}
     >
       {showDragHandle ? (
