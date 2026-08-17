@@ -1206,6 +1206,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{t('projects.newTask')}</DialogTitle>
+            <DialogDescription>Create a task or scheduled routine for the selected project.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             {/* Type toggle */}

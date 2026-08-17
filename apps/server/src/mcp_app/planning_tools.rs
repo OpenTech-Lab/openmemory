@@ -463,9 +463,12 @@ impl McpServer {
         }
 
         let notes = sqlx::query(
-            "SELECT id, content, author, created_at, note_type, decision_options, decision_status, decision_choice, decision_resolved_by \
-             FROM project_task_notes WHERE task_id = $1 \
-             ORDER BY created_at ASC, id ASC LIMIT $2",
+            "SELECT n.id, n.content, n.author, n.created_at, n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, \
+                    COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, \
+                        'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
+                        FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
+             FROM project_task_notes n WHERE n.task_id = $1 \
+             ORDER BY n.created_at ASC, n.id ASC LIMIT $2",
         )
         .bind(task_id)
         .bind(limit)
@@ -494,12 +497,19 @@ impl McpServer {
             if note_type == "decision" {
                 let options: serde_json::Value = note.try_get("decision_options").unwrap_or_else(|_| json!([]));
                 let status: String = note.try_get("decision_status").unwrap_or_else(|_| "open".to_string());
-                let choice: Option<String> = note.try_get("decision_choice").unwrap_or(None);
+                let answers: serde_json::Value = note.try_get("decision_answers").unwrap_or_else(|_| json!([]));
+                let latest = answers.as_array().and_then(|values| values.last());
+                let latest_summary = latest
+                    .and_then(|entry| entry.get("options"))
+                    .map(|value| format!(" | latest: {value}"))
+                    .unwrap_or_default();
+                let history_count = answers.as_array().map(|values| values.len()).unwrap_or(0);
                 text.push_str(&format!(
-                    "  decision: {} | choices: {}{}\n\n",
+                    "  decision: {} | choices: {}{} | answers so far: {}\n\n",
                     status,
                     options,
-                    choice.map(|value| format!(" | selected: {value}")).unwrap_or_default()
+                    latest_summary,
+                    history_count
                 ));
             }
         }
@@ -598,46 +608,76 @@ impl McpServer {
             .context("missing note_id")?
             .parse()
             .context("invalid note_id UUID")?;
-        let option = args["option"].as_str().context("missing option")?.trim();
-        if option.is_empty() || option.chars().count() > 120 {
-            anyhow::bail!("option must be between 1 and 120 characters");
+        let raw_options: Vec<String> = args["options"]
+            .as_array()
+            .context("missing options")?
+            .iter()
+            .map(|value| value.as_str().map(str::trim).map(ToOwned::to_owned).context("options must be strings"))
+            .collect::<Result<Vec<String>>>()?;
+        if raw_options.is_empty() || raw_options.len() > 6 {
+            anyhow::bail!("options must contain between 1 and 6 choices");
+        }
+        let mut options: Vec<String> = Vec::with_capacity(raw_options.len());
+        for option in raw_options {
+            if option.is_empty() || option.chars().count() > 120 {
+                anyhow::bail!("each option must be between 1 and 120 characters");
+            }
+            if options.iter().any(|existing: &String| existing.eq_ignore_ascii_case(&option)) {
+                anyhow::bail!("options must not contain duplicates");
+            }
+            options.push(option);
         }
 
-        let options: serde_json::Value = sqlx::query_scalar(
+        // No `decision_status = 'open'` filter — re-answering an already-resolved decision is
+        // allowed.
+        let decision_options: serde_json::Value = sqlx::query_scalar(
             "SELECT n.decision_options FROM project_task_notes n \
              JOIN project_tasks t ON t.id = n.task_id \
              WHERE n.id = $1 AND n.task_id = $2 AND t.project_id = $3 \
-               AND n.note_type = 'decision' AND n.decision_status = 'open'",
+               AND n.note_type = 'decision'",
         )
         .bind(note_id)
         .bind(task_id)
         .bind(project_id)
         .fetch_optional(&self.db)
         .await?
-        .context("open decision not found")?;
-        let valid = options.as_array().map(|values| values.iter().filter_map(|value| value.as_str()).any(|value| value == option)).unwrap_or(false);
-        if !valid {
-            anyhow::bail!("option is not one of the decision choices");
+        .context("decision not found")?;
+        let valid_choices: Vec<&str> = decision_options
+            .as_array()
+            .map(|values| values.iter().filter_map(|value| value.as_str()).collect())
+            .unwrap_or_default();
+        if options.iter().any(|option| !valid_choices.contains(&option.as_str())) {
+            anyhow::bail!("options must each be one of the decision choices");
         }
 
         let actor = args["author"].as_str().unwrap_or("agent");
         if !matches!(actor, "human" | "agent") {
             anyhow::bail!("author must be human or agent");
         }
-        let updated = sqlx::query(
-            "UPDATE project_task_notes SET decision_status = 'resolved', decision_choice = $1, decision_resolved_by = $2, decision_resolved_at = NOW() \
-             WHERE id = $3 AND task_id = $4 AND note_type = 'decision' AND decision_status = 'open' RETURNING id",
+
+        let mut tx = self.db.begin().await.context("failed to start transaction")?;
+        sqlx::query(
+            "INSERT INTO project_task_decision_answers (note_id, selected_options, answered_by) VALUES ($1, $2, $3)",
         )
-        .bind(option)
+        .bind(note_id)
+        .bind(json!(options))
+        .bind(actor)
+        .execute(&mut *tx)
+        .await
+        .context("failed to record decision answer")?;
+        sqlx::query(
+            "UPDATE project_task_notes SET decision_status = 'resolved', decision_resolved_by = $1, decision_resolved_at = NOW() \
+             WHERE id = $2 AND task_id = $3 AND note_type = 'decision'",
+        )
         .bind(actor)
         .bind(note_id)
         .bind(task_id)
-        .fetch_optional(&self.db)
-        .await?;
-        if updated.is_none() {
-            anyhow::bail!("decision was already resolved");
-        }
-        Ok(json!({"content": [{"type": "text", "text": format!("Resolved decision {} with '{}'.", note_id, option)}]}))
+        .execute(&mut *tx)
+        .await
+        .context("failed to update decision status")?;
+        tx.commit().await.context("failed to commit decision answer")?;
+
+        Ok(json!({"content": [{"type": "text", "text": format!("Recorded answer for decision {}: {}.", note_id, options.join(", "))}]}))
     }
 
     pub(super) async fn project_task_delete(

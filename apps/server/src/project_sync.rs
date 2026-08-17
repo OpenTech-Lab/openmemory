@@ -124,7 +124,7 @@ struct TaskRow {
     sort_order: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TaskNoteRow {
     id: Uuid,
     task_id: Uuid,
@@ -138,16 +138,60 @@ struct TaskNoteRow {
     #[serde(default = "default_decision_status")]
     decision_status: String,
     #[serde(default)]
-    decision_choice: Option<String>,
-    #[serde(default)]
     decision_resolved_by: Option<String>,
     #[serde(default)]
     decision_resolved_at: Option<DateTime<Utc>>,
+    // Additive field — old exported bundles without it still import fine.
+    #[serde(default)]
+    decision_answers: Vec<TaskDecisionAnswerRow>,
 }
 
 fn default_note_type() -> String { "message".to_string() }
 fn default_decision_options() -> serde_json::Value { serde_json::json!([]) }
 fn default_decision_status() -> String { "open".to_string() }
+
+/// Plain DB row shape for `project_task_notes`, used only to load the main query — the answer
+/// history is attached afterward from a separate grouped query (see `export_project`).
+#[derive(Debug, Clone, FromRow)]
+struct DbTaskNoteRow {
+    id: Uuid,
+    task_id: Uuid,
+    content: String,
+    author: String,
+    created_at: DateTime<Utc>,
+    note_type: String,
+    decision_options: serde_json::Value,
+    decision_status: String,
+    decision_resolved_by: Option<String>,
+    decision_resolved_at: Option<DateTime<Utc>>,
+}
+
+impl From<DbTaskNoteRow> for TaskNoteRow {
+    fn from(row: DbTaskNoteRow) -> Self {
+        TaskNoteRow {
+            id: row.id,
+            task_id: row.task_id,
+            content: row.content,
+            author: row.author,
+            created_at: row.created_at,
+            note_type: row.note_type,
+            decision_options: row.decision_options,
+            decision_status: row.decision_status,
+            decision_resolved_by: row.decision_resolved_by,
+            decision_resolved_at: row.decision_resolved_at,
+            decision_answers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+struct TaskDecisionAnswerRow {
+    id: Uuid,
+    note_id: Uuid,
+    selected_options: serde_json::Value,
+    answered_by: String,
+    answered_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 struct RoutineRow {
@@ -301,9 +345,9 @@ async fn export_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
     .await
     .context("loading project tasks")?;
 
-    let task_notes = sqlx::query_as::<_, TaskNoteRow>(
+    let mut task_notes: Vec<TaskNoteRow> = sqlx::query_as::<_, DbTaskNoteRow>(
         "SELECT n.id, n.task_id, n.content, n.author, n.created_at \
-                , n.note_type, n.decision_options, n.decision_status, n.decision_choice, \
+                , n.note_type, n.decision_options, n.decision_status, \
                 n.decision_resolved_by, n.decision_resolved_at \
          FROM project_task_notes n JOIN project_tasks t ON t.id = n.task_id \
          WHERE t.project_id = $1 ORDER BY n.created_at ASC, n.id ASC",
@@ -311,7 +355,32 @@ async fn export_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
     .bind(project_id)
     .fetch_all(&state.db)
     .await
-    .context("loading task notes")?;
+    .context("loading task notes")?
+    .into_iter()
+    .map(TaskNoteRow::from)
+    .collect();
+
+    let decision_answers = sqlx::query_as::<_, TaskDecisionAnswerRow>(
+        "SELECT a.id, a.note_id, a.selected_options, a.answered_by, a.answered_at \
+         FROM project_task_decision_answers a \
+         JOIN project_task_notes n ON n.id = a.note_id \
+         JOIN project_tasks t ON t.id = n.task_id \
+         WHERE t.project_id = $1 ORDER BY a.answered_at ASC",
+    )
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await
+    .context("loading task decision answers")?;
+    let mut answers_by_note = decision_answers.into_iter().fold(
+        HashMap::<Uuid, Vec<TaskDecisionAnswerRow>>::new(),
+        |mut map, answer| {
+            map.entry(answer.note_id).or_default().push(answer);
+            map
+        },
+    );
+    for note in &mut task_notes {
+        note.decision_answers = answers_by_note.remove(&note.id).unwrap_or_default();
+    }
 
     let routines = sqlx::query_as::<_, RoutineRow>(
         "SELECT id, project_id, title, description, frequency, priority, assigned_to, last_task_date, \
@@ -738,11 +807,11 @@ async fn upsert_task_note(
         bail!("task note references a task outside this project");
     }
     let result = sqlx::query(
-        "INSERT INTO project_task_notes (id, task_id, content, author, created_at, note_type, decision_options, decision_status, decision_choice, decision_resolved_by, decision_resolved_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) \
+        "INSERT INTO project_task_notes (id, task_id, content, author, created_at, note_type, decision_options, decision_status, decision_resolved_by, decision_resolved_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
          ON CONFLICT (id) DO UPDATE SET task_id=EXCLUDED.task_id, content=EXCLUDED.content, author=EXCLUDED.author, created_at=EXCLUDED.created_at, \
              note_type=EXCLUDED.note_type, decision_options=EXCLUDED.decision_options, decision_status=EXCLUDED.decision_status, \
-             decision_choice=EXCLUDED.decision_choice, decision_resolved_by=EXCLUDED.decision_resolved_by, decision_resolved_at=EXCLUDED.decision_resolved_at \
+             decision_resolved_by=EXCLUDED.decision_resolved_by, decision_resolved_at=EXCLUDED.decision_resolved_at \
          WHERE project_task_notes.task_id = EXCLUDED.task_id",
     )
     .bind(note.id)
@@ -753,7 +822,6 @@ async fn upsert_task_note(
     .bind(&note.note_type)
     .bind(&note.decision_options)
     .bind(&note.decision_status)
-    .bind(&note.decision_choice)
     .bind(&note.decision_resolved_by)
     .bind(note.decision_resolved_at)
     .execute(&mut **tx)
@@ -761,6 +829,28 @@ async fn upsert_task_note(
     .context("upserting task note")?;
     if result.rows_affected() == 0 {
         bail!("task note belongs to a different project");
+    }
+
+    // Replace the note's answer history wholesale, preserving each row's original id and
+    // answered_at so repeated imports of the same bundle are idempotent.
+    sqlx::query("DELETE FROM project_task_decision_answers WHERE note_id = $1")
+        .bind(note.id)
+        .execute(&mut **tx)
+        .await
+        .context("clearing task decision answer history")?;
+    for answer in &note.decision_answers {
+        sqlx::query(
+            "INSERT INTO project_task_decision_answers (id, note_id, selected_options, answered_by, answered_at) \
+             VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(answer.id)
+        .bind(note.id)
+        .bind(&answer.selected_options)
+        .bind(&answer.answered_by)
+        .bind(answer.answered_at)
+        .execute(&mut **tx)
+        .await
+        .context("restoring task decision answer")?;
     }
     Ok(())
 }

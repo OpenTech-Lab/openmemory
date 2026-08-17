@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useSyncExternalStore } from 'react';
 import { useTheme } from 'next-themes';
 import {
   ChevronDown,
@@ -25,10 +26,16 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
+const subscribeToMount = () => () => {};
+const getClientMounted = () => true;
+const getServerMounted = () => false;
+
 export function AppHeader() {
   const pathname = usePathname();
   const { resolvedTheme, theme, setTheme } = useTheme();
   const { language, setLanguage, t } = useI18n();
+  const mounted = useSyncExternalStore(subscribeToMount, getClientMounted, getServerMounted);
+  const isDarkTheme = mounted && resolvedTheme === 'dark';
   const activeItem = NAV_GROUPS
     .flatMap((group) => group.items.map((item) => ({ ...item, groupLabelKey: group.labelKey })))
     .find((item) => isNavItemActive(pathname, item.href));
@@ -117,7 +124,7 @@ export function AppHeader() {
               aria-label={t('header.preferences')}
               className="flex h-full items-center gap-1.5 px-3 text-slate-300 outline-none transition-colors hover:bg-white/8 hover:text-white focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#ff9900] data-[state=open]:bg-white/10 data-[state=open]:text-white"
             >
-              {resolvedTheme === 'dark' ? <Moon className="size-4" /> : <Sun className="size-4" />}
+              {isDarkTheme ? <Moon className="size-4" /> : <Sun className="size-4" />}
               <span className="hidden text-[11px] font-semibold uppercase tracking-[0.14em] sm:inline">{language}</span>
               <ChevronDown className="size-3 opacity-70" />
             </button>
@@ -127,7 +134,7 @@ export function AppHeader() {
               {t('settings.appearance')}
             </DropdownMenuLabel>
             <div className="flex items-center gap-2 px-2 pb-1 text-sm font-medium">
-              {resolvedTheme === 'dark' ? <Moon className="size-4 text-muted-foreground" /> : <Sun className="size-4 text-muted-foreground" />}
+              {isDarkTheme ? <Moon className="size-4 text-muted-foreground" /> : <Sun className="size-4 text-muted-foreground" />}
               {t('settings.theme')}
             </div>
             <DropdownMenuRadioGroup value={theme ?? 'system'} onValueChange={setTheme}>

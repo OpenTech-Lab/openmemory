@@ -3,14 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Bot, Check, CheckCircle2, CircleHelp, CornerDownLeft, ListChecks, MessageSquareText, Plus, RefreshCw, Send, UserRound, X } from 'lucide-react';
+import { Bot, CheckCircle2, ChevronDown, CircleHelp, CornerDownLeft, ListChecks, MessageSquareText, Plus, RefreshCw, Send, UserRound, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+
+interface TaskDecisionAnswer {
+  options: string[];
+  answered_by: string;
+  answered_at: string;
+}
 
 interface TaskNote {
   id: string;
@@ -21,7 +28,7 @@ interface TaskNote {
   note_type?: 'message' | 'decision';
   decision_options?: string[];
   decision_status?: 'open' | 'resolved';
-  decision_choice?: string | null;
+  decision_answers?: TaskDecisionAnswer[];
   decision_resolved_by?: string | null;
   decision_resolved_at?: string | null;
 }
@@ -58,7 +65,9 @@ export function TaskNotesPanel({
   const [decisionQuestion, setDecisionQuestion] = useState('');
   const [decisionOptions, setDecisionOptions] = useState(['Yes', 'No']);
   const [isSavingDecision, setIsSavingDecision] = useState(false);
-  const [resolvingDecisionId, setResolvingDecisionId] = useState<string | null>(null);
+  const [submittingDecisionId, setSubmittingDecisionId] = useState<string | null>(null);
+  const [draftSelections, setDraftSelections] = useState<Record<string, string[]>>({});
+  const [historyOpenIds, setHistoryOpenIds] = useState<Record<string, boolean>>({});
   const threadRef = useRef<HTMLDivElement>(null);
 
   const loadNotes = useCallback(async () => {
@@ -70,6 +79,14 @@ export function TaskNotesPanel({
       if (!response.ok) throw new Error(data.error || 'Failed to load implementation notes');
       const nextNotes: TaskNote[] = Array.isArray(data.notes) ? data.notes : [];
       setNotes(nextNotes);
+      setDraftSelections(previous => {
+        const next = { ...previous };
+        for (const note of nextNotes) {
+          if (note.note_type !== 'decision' || next[note.id]) continue;
+          next[note.id] = note.decision_answers?.at(-1)?.options ?? [];
+        }
+        return next;
+      });
       onOpenDecisionChange?.(
         taskId,
         nextNotes.some(note => note.note_type === 'decision' && note.decision_status !== 'resolved'),
@@ -84,6 +101,8 @@ export function TaskNotesPanel({
   useEffect(() => {
     setNotes([]);
     setDraft('');
+    setDraftSelections({});
+    setHistoryOpenIds({});
     void loadNotes();
   }, [loadNotes]);
 
@@ -151,6 +170,7 @@ export function TaskNotesPanel({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to add decision checkpoint');
       setNotes(previous => [...previous, data]);
+      setDraftSelections(previous => ({ ...previous, [data.id]: [] }));
       onOpenDecisionChange?.(taskId, true);
       setDecisionOpen(false);
       toast.success('Decision checkpoint added');
@@ -161,31 +181,41 @@ export function TaskNotesPanel({
     }
   };
 
-  const handleResolveDecision = async (note: TaskNote, option: string) => {
-    if (note.decision_status === 'resolved' || resolvingDecisionId) return;
-    setResolvingDecisionId(note.id);
+  const handleSubmitDecisionAnswer = async (note: TaskNote, options: string[]) => {
+    if (options.length === 0 || submittingDecisionId) return;
+    setSubmittingDecisionId(note.id);
     try {
       const response = await fetch(`/api/projects/${projectId}/tasks/${taskId}/notes/${note.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ option, author: 'human' }),
+        body: JSON.stringify({ options, author: 'human' }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to record decision');
       setNotes(previous => previous.map(current => current.id === note.id ? data : current));
+      setDraftSelections(previous => ({ ...previous, [note.id]: data.decision_answers?.at(-1)?.options ?? options }));
       onOpenDecisionChange?.(
         taskId,
         notes.some(current => current.id !== note.id && current.note_type === 'decision' && current.decision_status !== 'resolved'),
       );
-      toast.success(`Decision recorded: ${option}`);
+      toast.success(`Answer recorded: ${options.join(', ')}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to record decision');
     } finally {
-      setResolvingDecisionId(null);
+      setSubmittingDecisionId(null);
     }
   };
 
+  const toggleDraftOption = (noteId: string, option: string) => {
+    setDraftSelections(previous => {
+      const current = previous[noteId] ?? [];
+      const next = current.includes(option) ? current.filter(value => value !== option) : [...current, option];
+      return { ...previous, [noteId]: next };
+    });
+  };
+
   const decisionChoices = (note: TaskNote) => Array.isArray(note.decision_options) ? note.decision_options : [];
+  const decisionAnswers = (note: TaskNote) => Array.isArray(note.decision_answers) ? note.decision_answers : [];
   const pendingDecisions = notes.filter(note => note.note_type === 'decision' && note.decision_status !== 'resolved').length;
 
   return (
@@ -233,7 +263,6 @@ export function TaskNotesPanel({
           notes.map(note => {
             const agent = isAgent(note.author);
             const isDecision = note.note_type === 'decision';
-            const isResolved = note.decision_status === 'resolved';
             return (
               <article key={note.id} className={cn('flex items-end gap-2', !agent && 'justify-end')}>
                 {agent && (
@@ -262,34 +291,80 @@ export function TaskNotesPanel({
                       )}
                     </div>
                     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{note.content}</p>
-                    {isDecision && (
-                      <div className="mt-3 border-t border-amber-300/60 pt-2.5 dark:border-amber-800/60">
-                        {isResolved ? (
-                          <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                            <CheckCircle2 className="size-3.5" />
-                            Chosen: {note.decision_choice}
-                            <span className="font-normal text-muted-foreground">· {authorLabel(note.decision_resolved_by ?? 'human')}</span>
+                    {isDecision && (() => {
+                      const answers = decisionAnswers(note);
+                      const latest = answers.at(-1);
+                      const draft = draftSelections[note.id] ?? [];
+                      const isSubmitting = submittingDecisionId === note.id;
+                      const historyOpen = historyOpenIds[note.id] ?? false;
+                      return (
+                        <div className="mt-3 border-t border-amber-300/60 pt-2.5 dark:border-amber-800/60">
+                          {latest && (
+                            <div className="mb-2.5 flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                              <CheckCircle2 className="size-3.5" />
+                              Current: {latest.options.join(', ')}
+                              <span className="font-normal text-muted-foreground">
+                                · {authorLabel(latest.answered_by)} · {formatTimestamp(latest.answered_at)}
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex flex-col gap-1.5">
+                            {decisionChoices(note).map(option => {
+                              const inputId = `decision-${note.id}-${option}`;
+                              return (
+                                <label
+                                  key={option}
+                                  htmlFor={inputId}
+                                  className="flex cursor-pointer items-center gap-2 text-xs text-foreground"
+                                >
+                                  <Checkbox
+                                    id={inputId}
+                                    checked={draft.includes(option)}
+                                    onCheckedChange={() => toggleDraftOption(note.id, option)}
+                                    disabled={isSubmitting}
+                                  />
+                                  {option}
+                                </label>
+                              );
+                            })}
                           </div>
-                        ) : (
-                          <div className="flex flex-wrap gap-1.5">
-                            {decisionChoices(note).map(option => (
-                              <Button
-                                key={option}
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className="h-7 border-amber-300/80 bg-background/70 px-2.5 text-xs hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700/70 dark:hover:bg-amber-950/50"
-                                onClick={() => void handleResolveDecision(note, option)}
-                                disabled={resolvingDecisionId !== null}
-                              >
-                                {resolvingDecisionId === note.id ? <RefreshCw className="mr-1 size-3 animate-spin" /> : <Check className="mr-1 size-3" />}
-                                {option}
-                              </Button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="mt-2.5 h-7 border-amber-300/80 bg-background/70 px-2.5 text-xs hover:border-amber-500 hover:bg-amber-100 dark:border-amber-700/70 dark:hover:bg-amber-950/50"
+                            onClick={() => void handleSubmitDecisionAnswer(note, draft)}
+                            disabled={draft.length === 0 || isSubmitting}
+                          >
+                            {isSubmitting && <RefreshCw className="mr-1 size-3 animate-spin" />}
+                            {answers.length > 0 ? 'Update answer' : 'Submit answer'}
+                          </Button>
+                          {answers.length > 1 && (
+                            <details
+                              className="mt-2.5"
+                              open={historyOpen}
+                              onToggle={event => {
+                                const isOpen = event.currentTarget.open;
+                                setHistoryOpenIds(previous => ({ ...previous, [note.id]: isOpen }));
+                              }}
+                            >
+                              <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] font-medium text-muted-foreground select-none">
+                                <ChevronDown className={cn('size-3 transition-transform', historyOpen && 'rotate-180')} />
+                                History ({answers.length})
+                              </summary>
+                              <ul className="mt-1.5 space-y-1 border-l border-amber-300/60 pl-2.5 dark:border-amber-800/60">
+                                {[...answers].reverse().map((answer, index) => (
+                                  <li key={`${answer.answered_at}-${index}`} className="text-[11px] text-muted-foreground">
+                                    {answer.options.join(', ')}
+                                    <span> · {authorLabel(answer.answered_by)} · {formatTimestamp(answer.answered_at)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
                 {!agent && (

@@ -171,6 +171,27 @@ impl McpServer {
         sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_at TIMESTAMPTZ")
             .execute(&db).await.ok();
 
+        // Multi-select, amendable decisions: drop the old single-value column and replace it
+        // with an append-only history table so every answer (including re-answers) is kept.
+        sqlx::query("ALTER TABLE project_task_notes DROP COLUMN IF EXISTS decision_choice")
+            .execute(&db).await.ok();
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS project_task_decision_answers (
+                id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                note_id          UUID        NOT NULL REFERENCES project_task_notes(id) ON DELETE CASCADE,
+                selected_options JSONB       NOT NULL,
+                answered_by      TEXT        NOT NULL DEFAULT 'human',
+                answered_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .context("failed to create project_task_decision_answers table")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_decision_answers_note_id_answered_at ON project_task_decision_answers(note_id, answered_at)")
+            .execute(&db).await.ok();
+
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_project_task_notes_task_id_created_at ON project_task_notes(task_id, created_at)",
         )

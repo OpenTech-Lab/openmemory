@@ -1048,17 +1048,17 @@ impl McpServer {
                 },
                 {
                     "name": "project_task_note_decide",
-                    "description": "Resolve an open task decision checkpoint with one of its choices.",
+                    "description": "Answer a task decision checkpoint by selecting one or more of its choices. Calling this again on the same decision records a new answer (with the previous answer kept in history) rather than failing.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "task_id": {"type": "string", "description": "UUID of the task"},
                             "note_id": {"type": "string", "description": "UUID of the decision note"},
-                            "option": {"type": "string", "description": "Exact choice to select"},
+                            "options": {"type": "array", "items": {"type": "string"}, "description": "One or more exact choices to select"},
                             "author": {"type": "string", "description": "human or agent (default: agent)"}
                         },
-                        "required": ["project_id", "task_id", "note_id", "option"]
+                        "required": ["project_id", "task_id", "note_id", "options"]
                     }
                 },
                 {

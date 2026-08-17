@@ -229,7 +229,23 @@ struct ProjectTaskNote {
     note_type: String,
     decision_options: serde_json::Value,
     decision_status: String,
-    decision_choice: Option<String>,
+    decision_resolved_by: Option<String>,
+    decision_resolved_at: Option<DateTime<Utc>>,
+    decision_answers: serde_json::Value,
+}
+
+/// Same shape as `ProjectTaskNote` minus `decision_answers`, for INSERT ... RETURNING on a
+/// brand-new note where the answer history is trivially empty (avoids an extra query).
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+struct NewProjectTaskNote {
+    id: Uuid,
+    task_id: Uuid,
+    content: String,
+    author: String,
+    created_at: DateTime<Utc>,
+    note_type: String,
+    decision_options: serde_json::Value,
+    decision_status: String,
     decision_resolved_by: Option<String>,
     decision_resolved_at: Option<DateTime<Utc>>,
 }
@@ -282,7 +298,7 @@ struct CreateTaskNotePayload {
 
 #[derive(Debug, Deserialize)]
 struct ResolveTaskDecisionPayload {
-    option: String,
+    options: Vec<String>,
     author: Option<String>,
 }
 
@@ -1962,6 +1978,27 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_by TEXT")
         .execute(db).await.ok();
     sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_resolved_at TIMESTAMPTZ")
+        .execute(db).await.ok();
+
+    // Multi-select, amendable decisions: drop the old single-value column and replace it with
+    // an append-only history table so every answer (including re-answers) is permanently kept.
+    sqlx::query("ALTER TABLE project_task_notes DROP COLUMN IF EXISTS decision_choice")
+        .execute(db).await.ok();
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_task_decision_answers (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            note_id          UUID        NOT NULL REFERENCES project_task_notes(id) ON DELETE CASCADE,
+            selected_options JSONB       NOT NULL,
+            answered_by      TEXT        NOT NULL DEFAULT 'human',
+            answered_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_task_decision_answers table")?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_decision_answers_note_id_answered_at ON project_task_decision_answers(note_id, answered_at)")
         .execute(db).await.ok();
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_task_notes_task_id_created_at ON project_task_notes(task_id, created_at)")
@@ -6493,10 +6530,13 @@ async fn list_project_task_notes(
     }
 
     match sqlx::query_as::<_, ProjectTaskNote>(
-        "SELECT id, task_id, content, author, created_at \
-                , note_type, decision_options, decision_status, decision_choice, decision_resolved_by, decision_resolved_at \
-         FROM project_task_notes WHERE task_id = $1 \
-         ORDER BY created_at ASC, id ASC LIMIT 500",
+        "SELECT n.id, n.task_id, n.content, n.author, n.created_at \
+                , n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, n.decision_resolved_at, \
+                COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, \
+                    'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
+                    FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
+         FROM project_task_notes n WHERE n.task_id = $1 \
+         ORDER BY n.created_at ASC, n.id ASC LIMIT 500",
     )
     .bind(task_id)
     .fetch_all(&state.db)
@@ -6562,10 +6602,10 @@ async fn create_project_task_note(
         Ok(Some(_)) => {}
     }
 
-    let note = sqlx::query_as::<_, ProjectTaskNote>(
+    let note = sqlx::query_as::<_, NewProjectTaskNote>(
         "INSERT INTO project_task_notes (task_id, content, author, note_type, decision_options) \
          VALUES ($1, $2, $3, $4, $5) \
-         RETURNING id, task_id, content, author, created_at, note_type, decision_options, decision_status, decision_choice, decision_resolved_by, decision_resolved_at",
+         RETURNING id, task_id, content, author, created_at, note_type, decision_options, decision_status, decision_resolved_by, decision_resolved_at",
     )
     .bind(task_id)
     .bind(content)
@@ -6576,7 +6616,13 @@ async fn create_project_task_note(
     .await;
 
     match note {
-        Ok(note) => (StatusCode::CREATED, Json(serde_json::json!(note))).into_response(),
+        Ok(note) => {
+            // A brand-new note has no answer history yet — attach an empty array rather than
+            // issuing an extra query.
+            let mut note_json = serde_json::json!(note);
+            note_json["decision_answers"] = serde_json::json!([]);
+            (StatusCode::CREATED, Json(note_json)).into_response()
+        }
         Err(e) => {
             error!("create_project_task_note error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
@@ -6626,20 +6672,32 @@ async fn resolve_project_task_decision(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    let option = payload.option.trim();
-    if option.is_empty() || option.chars().count() > 120 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "option must be between 1 and 120 characters"}))).into_response();
+    if payload.options.is_empty() || payload.options.len() > 6 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "options must contain between 1 and 6 choices"}))).into_response();
+    }
+    let mut options: Vec<String> = Vec::with_capacity(payload.options.len());
+    for raw in &payload.options {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > 120 {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "each option must be between 1 and 120 characters"}))).into_response();
+        }
+        if options.iter().any(|existing: &String| existing.eq_ignore_ascii_case(trimmed)) {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "options must not contain duplicates"}))).into_response();
+        }
+        options.push(trimmed.to_string());
     }
     let author = payload.author.as_deref().unwrap_or("human").trim();
     if !matches!(author, "human" | "agent") {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "author must be human or agent"}))).into_response();
     }
 
-    let options = sqlx::query_scalar::<_, serde_json::Value>(
+    // No `decision_status = 'open'` filter here — re-answering an already-resolved decision is
+    // allowed; only the note's existence/type/ownership matters.
+    let decision_options = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT n.decision_options FROM project_task_notes n \
          JOIN project_tasks t ON t.id = n.task_id \
          WHERE n.id = $1 AND n.task_id = $2 AND t.project_id = $3 \
-           AND n.note_type = 'decision' AND n.decision_status = 'open'",
+           AND n.note_type = 'decision'",
     )
     .bind(note_id)
     .bind(task_id)
@@ -6647,10 +6705,10 @@ async fn resolve_project_task_decision(
     .fetch_optional(&state.db)
     .await;
 
-    let options = match options {
-        Ok(Some(options)) => options,
+    let decision_options = match decision_options {
+        Ok(Some(decision_options)) => decision_options,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "open decision not found"}))).into_response();
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "decision not found"}))).into_response();
         }
         Err(error) => {
             error!("resolve_project_task_decision lookup error: {error}");
@@ -6658,33 +6716,73 @@ async fn resolve_project_task_decision(
         }
     };
 
-    let valid_option = options
+    let valid_choices: Vec<&str> = decision_options
         .as_array()
-        .map(|values| values.iter().filter_map(serde_json::Value::as_str).any(|value| value == option))
-        .unwrap_or(false);
-    if !valid_option {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "option is not one of the decision choices"}))).into_response();
+        .map(|values| values.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    if options.iter().any(|option| !valid_choices.contains(&option.as_str())) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "options must each be one of the decision choices"}))).into_response();
     }
 
-    let note = sqlx::query_as::<_, ProjectTaskNote>(
-        "UPDATE project_task_notes SET decision_status = 'resolved', decision_choice = $1, \
-                decision_resolved_by = $2, decision_resolved_at = NOW() \
-         WHERE id = $3 AND task_id = $4 AND note_type = 'decision' AND decision_status = 'open' \
-         RETURNING id, task_id, content, author, created_at, note_type, decision_options, decision_status, \
-                   decision_choice, decision_resolved_by, decision_resolved_at",
+    let selected_options_json = serde_json::to_value(&options).unwrap_or_else(|_| serde_json::json!([]));
+
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            error!("resolve_project_task_decision begin tx error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    };
+
+    if let Err(error) = sqlx::query(
+        "INSERT INTO project_task_decision_answers (note_id, selected_options, answered_by) VALUES ($1, $2, $3)",
     )
-    .bind(option)
+    .bind(note_id)
+    .bind(selected_options_json)
+    .bind(author)
+    .execute(&mut *tx)
+    .await
+    {
+        error!("resolve_project_task_decision insert answer error: {error}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+    }
+
+    if let Err(error) = sqlx::query(
+        "UPDATE project_task_notes SET decision_status = 'resolved', \
+                decision_resolved_by = $1, decision_resolved_at = NOW() \
+         WHERE id = $2 AND task_id = $3 AND note_type = 'decision'",
+    )
     .bind(author)
     .bind(note_id)
     .bind(task_id)
-    .fetch_optional(&state.db)
+    .execute(&mut *tx)
+    .await
+    {
+        error!("resolve_project_task_decision update note error: {error}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+    }
+
+    if let Err(error) = tx.commit().await {
+        error!("resolve_project_task_decision commit error: {error}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+    }
+
+    let note = sqlx::query_as::<_, ProjectTaskNote>(
+        "SELECT n.id, n.task_id, n.content, n.author, n.created_at \
+                , n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, n.decision_resolved_at, \
+                COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, \
+                    'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
+                    FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
+         FROM project_task_notes n WHERE n.id = $1",
+    )
+    .bind(note_id)
+    .fetch_one(&state.db)
     .await;
 
     match note {
-        Ok(Some(note)) => Json(serde_json::json!(note)).into_response(),
-        Ok(None) => (StatusCode::CONFLICT, Json(serde_json::json!({"error": "decision was already resolved"}))).into_response(),
+        Ok(note) => Json(serde_json::json!(note)).into_response(),
         Err(error) => {
-            error!("resolve_project_task_decision update error: {error}");
+            error!("resolve_project_task_decision re-select error: {error}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response()
         }
     }
