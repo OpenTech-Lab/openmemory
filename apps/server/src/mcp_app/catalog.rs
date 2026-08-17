@@ -1033,7 +1033,7 @@ impl McpServer {
                 },
                 {
                     "name": "project_task_note_create",
-                    "description": "Add an implementation note, handoff message, or decision checkpoint to a task. Notes are append-only and attributed to the AI agent.",
+                    "description": "Add an implementation note, handoff message, or decision checkpoint to a task. Choice decisions default to single-select; set decision_selection_mode to multiple when reviewers may choose more than one. Notes are append-only and attributed to the AI agent.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -1041,7 +1041,8 @@ impl McpServer {
                             "task_id": {"type": "string", "description": "UUID of the task"},
                             "content": {"type": "string", "description": "Implementation detail, decision question, finding, or handoff message"},
                             "note_type": {"type": "string", "description": "message (default) or decision"},
-                            "decision_options": {"type": "array", "items": {"type": "string"}, "description": "Optional: zero to six choices when note_type is decision; omit or use [] for an open question, or provide one choice for a single-choice checkpoint"}
+                            "decision_options": {"type": "array", "items": {"type": "string"}, "description": "Optional: zero to six choices when note_type is decision; omit or use [] for an open question"},
+                            "decision_selection_mode": {"type": "string", "enum": ["single", "multiple"], "description": "How reviewers answer a choice decision (default: single)"}
                         },
                         "required": ["project_id", "task_id", "content"]
                     }

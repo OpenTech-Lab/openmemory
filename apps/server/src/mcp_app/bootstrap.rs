@@ -162,6 +162,8 @@ impl McpServer {
             .execute(&db).await.ok();
         sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_options JSONB NOT NULL DEFAULT '[]'::jsonb")
             .execute(&db).await.ok();
+        sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_selection_mode TEXT NOT NULL DEFAULT 'multiple'")
+            .execute(&db).await.ok();
         sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_status TEXT NOT NULL DEFAULT 'open'")
             .execute(&db).await.ok();
         sqlx::query("ALTER TABLE project_task_notes ADD COLUMN IF NOT EXISTS decision_choice TEXT")

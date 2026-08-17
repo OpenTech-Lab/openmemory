@@ -135,6 +135,10 @@ struct TaskNoteRow {
     note_type: String,
     #[serde(default = "default_decision_options")]
     decision_options: serde_json::Value,
+    // Legacy bundles did not record whether choices were single- or multi-select; preserve the
+    // behavior of those existing checkpoints when importing them.
+    #[serde(default = "default_decision_selection_mode")]
+    decision_selection_mode: String,
     #[serde(default = "default_decision_status")]
     decision_status: String,
     #[serde(default)]
@@ -148,6 +152,7 @@ struct TaskNoteRow {
 
 fn default_note_type() -> String { "message".to_string() }
 fn default_decision_options() -> serde_json::Value { serde_json::json!([]) }
+fn default_decision_selection_mode() -> String { "multiple".to_string() }
 fn default_decision_status() -> String { "open".to_string() }
 
 /// Plain DB row shape for `project_task_notes`, used only to load the main query — the answer
@@ -161,6 +166,7 @@ struct DbTaskNoteRow {
     created_at: DateTime<Utc>,
     note_type: String,
     decision_options: serde_json::Value,
+    decision_selection_mode: String,
     decision_status: String,
     decision_resolved_by: Option<String>,
     decision_resolved_at: Option<DateTime<Utc>>,
@@ -176,6 +182,7 @@ impl From<DbTaskNoteRow> for TaskNoteRow {
             created_at: row.created_at,
             note_type: row.note_type,
             decision_options: row.decision_options,
+            decision_selection_mode: row.decision_selection_mode,
             decision_status: row.decision_status,
             decision_resolved_by: row.decision_resolved_by,
             decision_resolved_at: row.decision_resolved_at,
@@ -349,7 +356,7 @@ async fn export_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
 
     let mut task_notes: Vec<TaskNoteRow> = sqlx::query_as::<_, DbTaskNoteRow>(
         "SELECT n.id, n.task_id, n.content, n.author, n.created_at \
-                , n.note_type, n.decision_options, n.decision_status, \
+                , n.note_type, n.decision_options, n.decision_selection_mode, n.decision_status, \
                 n.decision_resolved_by, n.decision_resolved_at \
          FROM project_task_notes n JOIN project_tasks t ON t.id = n.task_id \
          WHERE t.project_id = $1 ORDER BY n.created_at ASC, n.id ASC",
@@ -809,10 +816,10 @@ async fn upsert_task_note(
         bail!("task note references a task outside this project");
     }
     let result = sqlx::query(
-        "INSERT INTO project_task_notes (id, task_id, content, author, created_at, note_type, decision_options, decision_status, decision_resolved_by, decision_resolved_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+        "INSERT INTO project_task_notes (id, task_id, content, author, created_at, note_type, decision_options, decision_selection_mode, decision_status, decision_resolved_by, decision_resolved_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) \
          ON CONFLICT (id) DO UPDATE SET task_id=EXCLUDED.task_id, content=EXCLUDED.content, author=EXCLUDED.author, created_at=EXCLUDED.created_at, \
-             note_type=EXCLUDED.note_type, decision_options=EXCLUDED.decision_options, decision_status=EXCLUDED.decision_status, \
+             note_type=EXCLUDED.note_type, decision_options=EXCLUDED.decision_options, decision_selection_mode=EXCLUDED.decision_selection_mode, decision_status=EXCLUDED.decision_status, \
              decision_resolved_by=EXCLUDED.decision_resolved_by, decision_resolved_at=EXCLUDED.decision_resolved_at \
          WHERE project_task_notes.task_id = EXCLUDED.task_id",
     )
@@ -823,6 +830,7 @@ async fn upsert_task_note(
     .bind(note.created_at)
     .bind(&note.note_type)
     .bind(&note.decision_options)
+    .bind(&note.decision_selection_mode)
     .bind(&note.decision_status)
     .bind(&note.decision_resolved_by)
     .bind(note.decision_resolved_at)

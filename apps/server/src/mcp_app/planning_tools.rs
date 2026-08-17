@@ -464,6 +464,7 @@ impl McpServer {
 
         let notes = sqlx::query(
             "SELECT n.id, n.content, n.author, n.created_at, n.note_type, n.decision_options, n.decision_status, n.decision_resolved_by, \
+                    n.decision_selection_mode, \
                     COALESCE((SELECT json_agg(json_build_object('options', a.selected_options, 'reply', a.reply, \
                         'answered_by', a.answered_by, 'answered_at', a.answered_at) ORDER BY a.answered_at ASC) \
                         FROM project_task_decision_answers a WHERE a.note_id = n.id), '[]'::json) AS decision_answers \
@@ -496,6 +497,7 @@ impl McpServer {
             let note_type: String = note.try_get("note_type").unwrap_or_else(|_| "message".to_string());
             if note_type == "decision" {
                 let options: serde_json::Value = note.try_get("decision_options").unwrap_or_else(|_| json!([]));
+                let selection_mode: String = note.try_get("decision_selection_mode").unwrap_or_else(|_| "multiple".to_string());
                 let status: String = note.try_get("decision_status").unwrap_or_else(|_| "open".to_string());
                 let answers: serde_json::Value = note.try_get("decision_answers").unwrap_or_else(|_| json!([]));
                 let latest = answers.as_array().and_then(|values| values.last());
@@ -511,8 +513,9 @@ impl McpServer {
                     .unwrap_or_default();
                 let history_count = answers.as_array().map(|values| values.len()).unwrap_or(0);
                 text.push_str(&format!(
-                    "  decision: {} | choices: {}{}{} | answers so far: {}\n\n",
+                    "  decision: {} | selection: {} | choices: {}{}{} | answers so far: {}\n\n",
                     status,
+                    selection_mode,
                     options,
                     latest_summary,
                     latest_reply,
@@ -556,6 +559,13 @@ impl McpServer {
             .as_array()
             .map(|values| values.iter().filter_map(|value| value.as_str().map(str::trim)).filter(|value| !value.is_empty()).map(ToOwned::to_owned).collect())
             .unwrap_or_default();
+        let selection_mode = args["decision_selection_mode"].as_str().unwrap_or("single").trim();
+        if !matches!(selection_mode, "single" | "multiple") {
+            anyhow::bail!("decision_selection_mode must be single or multiple");
+        }
+        if note_type != "decision" && selection_mode != "single" {
+            anyhow::bail!("decision_selection_mode is only valid for decision notes");
+        }
         if note_type == "decision" && options.len() > 6 {
             anyhow::bail!("decisions may have up to six choices");
         }
@@ -581,13 +591,14 @@ impl McpServer {
         }
 
         let row = sqlx::query(
-            "INSERT INTO project_task_notes (task_id, content, author, note_type, decision_options) \
-             VALUES ($1, $2, 'agent', $3, $4) RETURNING id",
+            "INSERT INTO project_task_notes (task_id, content, author, note_type, decision_options, decision_selection_mode) \
+             VALUES ($1, $2, 'agent', $3, $4, $5) RETURNING id",
         )
         .bind(task_id)
         .bind(content)
         .bind(note_type)
         .bind(json!(options))
+        .bind(selection_mode)
         .fetch_one(&self.db)
         .await
         .context("failed to create task implementation note")?;
@@ -646,8 +657,8 @@ impl McpServer {
 
         // No `decision_status = 'open'` filter — re-answering an already-resolved decision is
         // allowed.
-        let decision_options: serde_json::Value = sqlx::query_scalar(
-            "SELECT n.decision_options FROM project_task_notes n \
+        let decision = sqlx::query(
+            "SELECT n.decision_options, n.decision_selection_mode FROM project_task_notes n \
              JOIN project_tasks t ON t.id = n.task_id \
              WHERE n.id = $1 AND n.task_id = $2 AND t.project_id = $3 \
                AND n.note_type = 'decision'",
@@ -658,6 +669,11 @@ impl McpServer {
         .fetch_optional(&self.db)
         .await?
         .context("decision not found")?;
+        let decision_options: serde_json::Value = decision.try_get("decision_options").context("invalid decision options")?;
+        let selection_mode: String = decision.try_get("decision_selection_mode").unwrap_or_else(|_| "multiple".to_string());
+        if selection_mode == "single" && options.len() > 1 {
+            anyhow::bail!("this decision allows only one selected choice");
+        }
         let valid_choices: Vec<&str> = decision_options
             .as_array()
             .map(|values| values.iter().filter_map(|value| value.as_str()).collect())

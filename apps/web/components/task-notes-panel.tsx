@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Bot, CheckCircle2, ChevronDown, CircleHelp, CornerDownLeft, ListChecks, MessageSquareText, Plus, RefreshCw, Send, UserRound, X } from 'lucide-react';
@@ -28,6 +29,7 @@ interface TaskNote {
   created_at: string;
   note_type?: 'message' | 'decision';
   decision_options?: string[];
+  decision_selection_mode?: 'single' | 'multiple';
   decision_status?: 'open' | 'resolved';
   decision_answers?: TaskDecisionAnswer[];
   decision_resolved_by?: string | null;
@@ -63,6 +65,7 @@ export function TaskNotesPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [decisionOpen, setDecisionOpen] = useState(false);
   const [decisionMode, setDecisionMode] = useState<'yes_no' | 'options' | 'question'>('yes_no');
+  const [decisionSelectionMode, setDecisionSelectionMode] = useState<'single' | 'multiple'>('single');
   const [decisionQuestion, setDecisionQuestion] = useState('');
   const [decisionOptions, setDecisionOptions] = useState(['Yes', 'No']);
   const [isSavingDecision, setIsSavingDecision] = useState(false);
@@ -85,7 +88,8 @@ export function TaskNotesPanel({
         const next = { ...previous };
         for (const note of nextNotes) {
           if (note.note_type !== 'decision' || next[note.id]) continue;
-          next[note.id] = note.decision_answers?.at(-1)?.options ?? [];
+          const latestOptions = note.decision_answers?.at(-1)?.options ?? [];
+          next[note.id] = note.decision_selection_mode === 'single' ? latestOptions.slice(0, 1) : latestOptions;
         }
         return next;
       });
@@ -149,6 +153,7 @@ export function TaskNotesPanel({
 
   const openDecisionComposer = () => {
     setDecisionMode('yes_no');
+    setDecisionSelectionMode('single');
     setDecisionQuestion('');
     setDecisionOptions(['Yes', 'No']);
     setDecisionOpen(true);
@@ -180,7 +185,13 @@ export function TaskNotesPanel({
       const response = await fetch(`/api/projects/${projectId}/tasks/${taskId}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, author: 'human', note_type: 'decision', decision_options: options }),
+        body: JSON.stringify({
+          content,
+          author: 'human',
+          note_type: 'decision',
+          decision_options: options,
+          decision_selection_mode: decisionMode === 'question' ? 'single' : decisionSelectionMode,
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to add decision checkpoint');
@@ -210,7 +221,11 @@ export function TaskNotesPanel({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to record decision');
       setNotes(previous => previous.map(current => current.id === note.id ? data : current));
-      setDraftSelections(previous => ({ ...previous, [note.id]: data.decision_answers?.at(-1)?.options ?? options }));
+      const returnedOptions = data.decision_answers?.at(-1)?.options ?? options;
+      setDraftSelections(previous => ({
+        ...previous,
+        [note.id]: note.decision_selection_mode === 'single' ? returnedOptions.slice(0, 1) : returnedOptions,
+      }));
       setDraftReplies(previous => ({ ...previous, [note.id]: data.decision_answers?.at(-1)?.reply ?? trimmedReply }));
       onOpenDecisionChange?.(
         taskId,
@@ -232,7 +247,12 @@ export function TaskNotesPanel({
     });
   };
 
+  const selectDraftOption = (noteId: string, option: string) => {
+    setDraftSelections(previous => ({ ...previous, [noteId]: [option] }));
+  };
+
   const decisionChoices = (note: TaskNote) => Array.isArray(note.decision_options) ? note.decision_options : [];
+  const isSingleSelection = (note: TaskNote) => note.decision_selection_mode === 'single';
   const decisionAnswers = (note: TaskNote) => Array.isArray(note.decision_answers) ? note.decision_answers : [];
   const pendingDecisions = notes.filter(note => note.note_type === 'decision' && note.decision_status !== 'resolved').length;
 
@@ -329,28 +349,57 @@ export function TaskNotesPanel({
                             </div>
                           )}
                           {decisionChoices(note).length > 0 ? (
-                            <div className="flex flex-col gap-1.5">
-                              {decisionChoices(note).map(option => {
-                                const inputId = `decision-${note.id}-${option}`;
-                                return (
-                                  <label
-                                    key={option}
-                                    htmlFor={inputId}
-                                    className="flex cursor-pointer items-center gap-2 text-xs text-foreground"
-                                  >
-                                    <Checkbox
-                                      id={inputId}
-                                      checked={draft.includes(option)}
-                                      onCheckedChange={() => toggleDraftOption(note.id, option)}
-                                      disabled={isSubmitting}
-                                    />
-                                    {option}
-                                  </label>
-                                );
-                              })}
-                            </div>
+                            isSingleSelection(note) ? (
+                              <RadioGroup
+                                value={draft[0] ?? ''}
+                                onValueChange={option => selectDraftOption(note.id, option)}
+                                disabled={isSubmitting}
+                                className="gap-1.5"
+                                aria-label="Select one decision choice"
+                              >
+                                {decisionChoices(note).map(option => {
+                                  const inputId = `decision-${note.id}-${option}`;
+                                  return (
+                                    <label
+                                      key={option}
+                                      htmlFor={inputId}
+                                      className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-foreground"
+                                    >
+                                      <RadioGroupItem value={option} id={inputId} />
+                                      <span className="min-w-0 break-words">{option}</span>
+                                    </label>
+                                  );
+                                })}
+                              </RadioGroup>
+                            ) : (
+                              <div className="flex flex-col gap-1.5">
+                                {decisionChoices(note).map(option => {
+                                  const inputId = `decision-${note.id}-${option}`;
+                                  return (
+                                    <label
+                                      key={option}
+                                      htmlFor={inputId}
+                                      className="flex min-w-0 cursor-pointer items-center gap-2 text-xs text-foreground"
+                                    >
+                                      <Checkbox
+                                        id={inputId}
+                                        checked={draft.includes(option)}
+                                        onCheckedChange={() => toggleDraftOption(note.id, option)}
+                                        disabled={isSubmitting}
+                                      />
+                                      <span className="min-w-0 break-words">{option}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )
                           ) : (
                             <p className="text-xs text-muted-foreground">Open question — add a custom reply below.</p>
+                          )}
+                          {decisionChoices(note).length > 0 && (
+                            <p className="mt-1.5 text-[10px] text-muted-foreground">
+                              {isSingleSelection(note) ? 'Select one choice.' : 'Select one or more choices.'}
+                            </p>
                           )}
                           <Textarea
                             value={reply}
@@ -501,6 +550,19 @@ export function TaskNotesPanel({
                 </SelectContent>
               </Select>
             </div>
+            {decisionMode !== 'question' && (
+              <div className="space-y-2">
+                <Label>Answer selection</Label>
+                <Select value={decisionSelectionMode} onValueChange={value => setDecisionSelectionMode(value as 'single' | 'multiple')}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="single">Choose one</SelectItem>
+                    <SelectItem value="multiple">Choose multiple</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">Choose one for Yes/No or A/B/C decisions where only one answer is allowed.</p>
+              </div>
+            )}
             {decisionMode === 'question' ? (
               <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 The reviewer can answer this question with any custom text.
