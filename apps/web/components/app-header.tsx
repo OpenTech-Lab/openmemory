@@ -40,7 +40,7 @@ export function AppHeader() {
           <button
             type="button"
             aria-label={t('header.openNavigation')}
-            className="group grid size-11 shrink-0 place-items-center border-r border-white/10 bg-[#070c12] outline-none transition-colors hover:bg-[#172231] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#ff9900] data-[state=open]:bg-[#1c2938]"
+            className="group grid size-11 shrink-0 place-items-center bg-[#070c12] outline-none transition-colors hover:bg-[#172231] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#ff9900] data-[state=open]:bg-[#1c2938]"
           >
             <Grip className="size-5 transition-transform duration-200 group-data-[state=open]:rotate-45" strokeWidth={2.2} />
           </button>
@@ -48,7 +48,7 @@ export function AppHeader() {
         <DropdownMenuContent
           align="start"
           sideOffset={8}
-          className="ml-2 w-[calc(100vw-1rem)] max-w-[760px] rounded-sm border-slate-300/80 bg-background p-0 shadow-[0_18px_48px_rgba(3,10,20,0.28)] dark:border-slate-700"
+          className="ml-2 w-[calc(100vw-1rem)] max-w-[760px] rounded-sm border-border bg-background p-0 shadow-[0_18px_48px_rgba(3,10,20,0.28)]"
         >
           <div className="flex items-center justify-between border-b bg-muted/35 px-5 py-3.5">
             <div>
