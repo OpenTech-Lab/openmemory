@@ -52,7 +52,7 @@ import {
   ArrowUpRight,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { marked } from 'marked';
+import { marked, type Tokens } from 'marked';
 import { toast } from 'sonner';
 import { MermaidDiagram } from '@/components/mermaid-diagram';
 import { DesignCanvas } from '@/components/design-canvas';
@@ -223,6 +223,8 @@ const TEXT_KIND_OPTIONS = [
   { value: 'notes', label: 'Notes' },
   { value: 'markdown', label: 'Markdown' },
 ] as const;
+
+const MERMAID_SLOT_PATTERN = /<div data-openmemory-mermaid-slot="(\d+)"><\/div>/;
 
 function textDocumentKindLabel(kind: string): string {
   return TEXT_KIND_OPTIONS.find((option) => option.value === kind)?.label ?? designKindMeta(kind).label;
@@ -1533,16 +1535,48 @@ function TextDocumentPreview({ source, kind }: { source: string; kind: string })
 }
 
 function MarkdownDocumentPreview({ source }: { source: string }) {
-  const html = useMemo(
-    () => DOMPurify.sanitize(marked.parse(source, { async: false, breaks: true, gfm: true })),
-    [source]
-  );
+  const { html, mermaidBlocks } = useMemo(() => {
+    const mermaidBlocks: string[] = [];
+    const defaultRenderer = new marked.Renderer();
+    const renderer = new marked.Renderer();
+    renderer.code = (token: Tokens.Code) => {
+      const language = token.lang?.trim().toLowerCase().split(/\s+/)[0];
+      if (language === 'mermaid') {
+        const index = mermaidBlocks.push(token.text) - 1;
+        return `<div data-openmemory-mermaid-slot="${index}"></div>`;
+      }
+      return defaultRenderer.code(token);
+    };
+
+    return {
+      html: DOMPurify.sanitize(marked.parse(source, { async: false, breaks: true, gfm: true, renderer })),
+      mermaidBlocks,
+    };
+  }, [source]);
+  const renderedParts = html.split(MERMAID_SLOT_PATTERN);
 
   return (
     <article
       className="h-full overflow-y-auto mx-auto max-w-3xl break-words text-[15px] leading-7 text-stone-800 dark:text-stone-200 [&_a]:font-medium [&_a]:text-sky-700 [&_a]:underline [&_a]:underline-offset-2 dark:[&_a]:text-sky-300 [&_blockquote]:my-5 [&_blockquote]:border-l-2 [&_blockquote]:border-amber-400/70 [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:text-stone-600 dark:[&_blockquote]:text-stone-300 [&_code]:rounded [&_code]:bg-stone-900/10 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.9em] [&_h1]:mb-4 [&_h1]:mt-1 [&_h1]:text-3xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h2]:mb-3 [&_h2]:mt-8 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:leading-tight [&_h3]:mb-2 [&_h3]:mt-6 [&_h3]:text-xl [&_h3]:font-semibold [&_hr]:my-7 [&_hr]:border-stone-300 dark:[&_hr]:border-stone-700 [&_li]:my-1 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-4 [&_pre]:my-5 [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-stone-900 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:leading-6 [&_pre]:text-stone-100 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:my-5 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-stone-300 [&_td]:p-2 dark:[&_td]:border-stone-700 [&_th]:border [&_th]:border-stone-300 [&_th]:bg-stone-900/5 [&_th]:p-2 [&_th]:text-left dark:[&_th]:border-stone-700 dark:[&_th]:bg-stone-100/5 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6 [&_ul]:text-stone-800 dark:[&_ul]:text-stone-200 [&_ul]:pl-6 [&_img]:max-w-full [&_input]:mr-2"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    >
+      {renderedParts.map((part, index) => {
+        if (index % 2 === 0) {
+          return part ? <div key={`markdown-${index}`} dangerouslySetInnerHTML={{ __html: part }} /> : null;
+        }
+
+        const mermaidSource = mermaidBlocks[Number(part)];
+        if (mermaidSource === undefined) return null;
+
+        return (
+          <div
+            key={`mermaid-${part}`}
+            className="my-6 h-[420px] min-h-[320px] w-full overflow-hidden rounded-xl border border-stone-200 bg-white/70 p-3 shadow-sm dark:border-stone-800 dark:bg-stone-950/70"
+          >
+            <MermaidDiagram source={mermaidSource} />
+          </div>
+        );
+      })}
+    </article>
   );
 }
 
