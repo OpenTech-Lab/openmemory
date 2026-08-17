@@ -8,6 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { DataTable } from '@/components/ui/data-table';
 import { createMemoryColumns, type Memory } from '@/components/memory-columns';
 import { Search, AlertCircle } from 'lucide-react';
+import { I18nText } from '@/lib/i18n';
 
 export default function MemorySearchPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -40,7 +41,7 @@ export default function MemorySearchPage() {
   return (
     <div className="flex-1 overflow-auto p-4">
       <div className="flex items-center gap-3 mb-2">
-        <h1 className="text-lg font-semibold">Search</h1>
+        <h1 className="text-lg font-semibold"><I18nText id="page.search" /></h1>
         {memories.length > 0 && (
           <Badge variant="secondary" className="text-xs">{memories.length} results</Badge>
         )}

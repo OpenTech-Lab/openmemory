@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, FolderOpen, GitBranch, MessageSquare } from 'lucide-react';
+import { I18nText } from '@/lib/i18n';
 
 interface Session {
   id: string;
@@ -38,7 +39,7 @@ export default function SessionsPage() {
 
   return (
     <div className="flex-1 overflow-auto p-4">
-      <h1 className="text-lg font-semibold mb-2">Sessions</h1>
+      <h1 className="text-lg font-semibold mb-2"><I18nText id="page.sessions" /></h1>
       <div className="h-px bg-gradient-to-r from-border via-border/40 to-transparent mb-4" />
 
       <div>

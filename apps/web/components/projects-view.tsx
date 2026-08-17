@@ -48,6 +48,7 @@ import { isNonEmptyArray } from '@/lib/autofill-merge';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 import { TaskNotesPanel } from '@/components/task-notes-panel';
+import { useI18n } from '@/lib/i18n';
 
 interface Project {
   id: string;
@@ -181,6 +182,7 @@ function matchesBoardKeyword(item: Task | Routine, query: string): boolean {
 
 export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const router = useRouter();
+  const { t } = useI18n();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -894,7 +896,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b">
         <div>
-          <h1 className="text-2xl font-semibold">Projects</h1>
+          <h1 className="text-2xl font-semibold">{t('page.projects')}</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Manage projects, tasks, and code knowledge graphs
           </p>
@@ -905,7 +907,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             variant="ghost"
             onClick={() => { fetchProjects(); }}
             disabled={isLoading || isLoadingTasks}
-            title="Refresh"
+            title={t('projects.refresh')}
           >
             <RefreshCw className={`h-4 w-4 ${(isLoading || isLoadingTasks) ? 'animate-spin' : ''}`} />
           </Button>
@@ -942,8 +944,8 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               </div>
             ) : projects.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                <p>No projects yet.</p>
-                <p className="text-sm mt-1">Click &quot;+ Project&quot; to create one.</p>
+                <p>{t('projects.noProjects')}</p>
+                <p className="text-sm mt-1">{t('projects.createHint')}</p>
               </div>
             ) : (
               <div className="flex flex-col gap-3">
@@ -966,13 +968,13 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
           <div className="flex flex-col h-full overflow-hidden">
             {/* Filter row — full width, never scrolls */}
             <div className="shrink-0 flex flex-wrap items-center gap-2 w-full min-w-0 px-6 py-3">
-              <span className="text-sm text-muted-foreground">Project:</span>
+              <span className="text-sm text-muted-foreground">{t('projects.project')}:</span>
               <Select value={boardFilter} onValueChange={setBoardFilter}>
                 <SelectTrigger className="w-48 max-w-full min-w-0 h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Projects</SelectItem>
+                  <SelectItem value="all">{t('projects.allProjects')}</SelectItem>
                   {projects.map(p => (
                     <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                   ))}
@@ -981,14 +983,14 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               <Input
                 value={boardSearchQuery}
                 onChange={(event) => setBoardSearchQuery(event.target.value)}
-                placeholder="Search tasks and routines..."
-                aria-label="Search board tasks and routines"
+                placeholder={t('projects.searchBoard')}
+                aria-label={t('projects.searchBoard')}
                 className="h-8 w-[240px] max-w-full"
               />
               {isLoadingTasks && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
               <div className="ml-auto">
                 <Button size="sm" onClick={() => setShowTaskDialog(true)}>
-                  <Plus className="h-4 w-4 mr-1" /> Task
+                  <Plus className="h-4 w-4 mr-1" /> {t('projects.task')}
                 </Button>
               </div>
             </div>
@@ -1025,7 +1027,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                       <span className="text-sm font-medium">{col.label}</span>
                       <Badge variant="secondary" className="text-xs">{totalCount}</Badge>
                     </div>
-                    <div className="flex flex-col gap-2 flex-1 min-h-0 overflow-y-auto">
+                    <div className="flex flex-col gap-2 flex-1 min-h-0 min-w-0 overflow-x-hidden overflow-y-auto">
                       {colRoutines.map(routine => (
                         <BoardCard
                           key={routine.id}
@@ -1065,7 +1067,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>New Project</DialogTitle>
+            <DialogTitle>{t('projects.newProject')}</DialogTitle>
             <DialogDescription>
               Create a project. Folder path is optional — only needed for knowledge graph features.
             </DialogDescription>
@@ -1110,7 +1112,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>{t('projects.cancel')}</Button>
             <Button onClick={handleCreate} disabled={isCreating}>
               {isCreating && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
               Create
@@ -1167,7 +1169,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingProject(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setEditingProject(null)}>{t('projects.cancel')}</Button>
             <Button onClick={handleSaveProject} disabled={isSavingProject}>
               {isSavingProject && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
               Save
@@ -1203,7 +1205,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       <Dialog open={showTaskDialog} onOpenChange={setShowTaskDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>New Task</DialogTitle>
+            <DialogTitle>{t('projects.newTask')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             {/* Type toggle */}
@@ -1349,7 +1351,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowTaskDialog(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowTaskDialog(false)}>{t('projects.cancel')}</Button>
             <Button onClick={handleCreateTask} disabled={isCreatingTask}>
               {isCreatingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
               {taskForm.task_type === 'scheduled' ? 'Create Routine' : 'Create Task'}
@@ -1405,7 +1407,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                   <Label className="text-xs text-muted-foreground">Status</Label>
                   <p className="mt-1">
                     <span className={`text-xs border rounded px-1.5 py-0.5 ${selectedTask ? (STATUS_COLORS[selectedTask.status] ?? '') : ''}`}>
-                      {selectedTask ? (STATUS_LABELS[selectedTask.status] ?? selectedTask.status) : ''}
+                      {selectedTask ? t(`status.${selectedTask.status}`) : ''}
                     </span>
                   </p>
                 </div>
@@ -1546,7 +1548,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             </div>
           )}
           <SheetFooter className="px-6 py-4 border-t">
-            <Button variant="outline" onClick={() => setSelectedTask(null)}>Close</Button>
+            <Button variant="outline" onClick={() => setSelectedTask(null)}>{t('projects.close')}</Button>
             {taskSheetMode === 'edit' && (
               <Button onClick={handleSaveTask} disabled={isSavingTask}>
                 {isSavingTask && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
@@ -1712,7 +1714,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             </div>
           )}
           <SheetFooter className="px-6 py-4 border-t flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setSelectedRoutine(null)}>Close</Button>
+            <Button variant="outline" className="flex-1" onClick={() => setSelectedRoutine(null)}>{t('projects.close')}</Button>
             {routineSheetMode === 'edit' && (
               <Button className="flex-1" onClick={handleSaveRoutine} disabled={isSavingRoutine}>
                 {isSavingRoutine && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
@@ -1754,7 +1756,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium truncate">{task.title}</span>
                       <span className={`text-xs shrink-0 border rounded px-1.5 py-0.5 ${STATUS_COLORS[task.status] ?? ''}`}>
-                        {STATUS_LABELS[task.status] ?? task.status}
+                        {t(`status.${task.status}`)}
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
@@ -1766,7 +1768,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             )}
           </div>
           <SheetFooter className="px-6 py-4 border-t">
-            <Button variant="outline" className="w-full" onClick={() => setRoutineHistoryOpen(false)}>Close</Button>
+            <Button variant="outline" className="w-full" onClick={() => setRoutineHistoryOpen(false)}>{t('projects.close')}</Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>
@@ -1848,6 +1850,7 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
   onOpen: () => void;
   onEdit: () => void;
 }) {
+  const { t } = useI18n();
   const isTask = item.kind === 'task';
   const task = item.kind === 'task' ? item.data : null;
   const routine = item.kind === 'routine' ? item.data : null;
@@ -1867,7 +1870,7 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
 
   return (
     <div
-      className={`group flex items-start gap-1.5 rounded-md shadow-sm transition-colors ${cardTone} ${isCancelled ? 'opacity-50' : ''}`}
+      className={`group flex w-full min-w-0 max-w-full items-start gap-1.5 overflow-hidden rounded-md shadow-sm transition-colors ${cardTone} ${isCancelled ? 'opacity-50' : ''}`}
       title={hasOpenDecision ? 'Waiting for a decision' : undefined}
     >
       {showDragHandle ? (
@@ -1888,19 +1891,19 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
       )}
 
       {/* Card body — click to open sheet */}
-      <div className="flex-1 min-w-0 py-2.5 pr-1 cursor-pointer" onClick={onOpen}>
+      <div className="min-w-0 flex-1 overflow-hidden py-2.5 pr-1 cursor-pointer" onClick={onOpen}>
         {isTask && parentTitle && (
           <p className="text-[11px] text-muted-foreground truncate mb-0.5 flex items-center gap-1">
             <CornerDownRight className="h-2.5 w-2.5 shrink-0" />{parentTitle}
           </p>
         )}
-        <p className={`text-sm font-medium leading-snug mb-1.5 ${isCancelled ? 'line-through text-muted-foreground' : ''}`}>
+        <p className={`text-sm font-medium leading-snug mb-1.5 [overflow-wrap:anywhere] ${isCancelled ? 'line-through text-muted-foreground' : ''}`}>
           {title}
         </p>
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex min-w-0 items-center gap-1.5 flex-wrap">
           {task ? (
             <span className={`text-xs px-1.5 py-0.5 rounded border ${STATUS_COLORS[task.status] ?? 'border-border text-muted-foreground'}`}>
-              {STATUS_LABELS[task.status] ?? task.status}
+              {t(`status.${task.status}`)}
             </span>
           ) : (
             <span className="text-xs px-1.5 py-0.5 rounded border border-purple-400 text-purple-600 dark:text-purple-400 flex items-center gap-1">
@@ -1916,7 +1919,7 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
             </span>
           )}
           {labels?.map(l => (
-            <span key={l} className={`text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
+            <span key={l} className={`max-w-full break-words text-xs px-1.5 py-0.5 rounded border ${TASK_LABEL_COLORS[l] ?? CUSTOM_LABEL_COLOR}`}>
               {l}
             </span>
           ))}

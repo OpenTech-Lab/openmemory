@@ -38,6 +38,7 @@ import { createMemoryColumns, type Memory } from '@/components/memory-columns';
 import { Database, HardDrive, Cloud, RefreshCw, Plus, AlertCircle, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { mergeAutofillField, isNonEmptyArray } from '@/lib/autofill-merge';
+import { I18nText } from '@/lib/i18n';
 
 const PAGE_SIZE = 20;
 
@@ -241,7 +242,7 @@ export default function MemoryBrowsePage() {
       {/* Page header */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">Browse</h1>
+          <h1 className="text-lg font-semibold"><I18nText id="nav.memory.browse" /></h1>
           <Badge variant="secondary" className="text-xs">
             {totalCount > 0 ? totalCount : allMemories.length} total
           </Badge>

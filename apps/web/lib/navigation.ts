@@ -21,44 +21,49 @@ import {
 export const NAV_GROUPS = [
   {
     label: 'Workspace',
+    labelKey: 'nav.workspace',
     items: [
-      { href: '/dashboard', label: 'Dashboard', description: 'Open the app launcher', icon: Database },
+      { href: '/dashboard', label: 'Dashboard', labelKey: 'nav.dashboard', description: 'Open the app launcher', descriptionKey: 'nav.dashboard.description', icon: Database },
     ],
   },
   {
     label: 'Memory',
+    labelKey: 'nav.memory',
     items: [
-      { href: '/memory', label: 'Browse', description: 'View saved memories', icon: FolderOpen },
-      { href: '/memory/search', label: 'Search', description: 'Find stored context', icon: Search },
-      { href: '/memory/graph-memories', label: 'Graph', description: 'Explore connections', icon: Network },
+      { href: '/memory', label: 'Browse', labelKey: 'nav.memory.browse', description: 'View saved memories', descriptionKey: 'nav.memory.browse.description', icon: FolderOpen },
+      { href: '/memory/search', label: 'Search', labelKey: 'nav.memory.search', description: 'Find stored context', descriptionKey: 'nav.memory.search.description', icon: Search },
+      { href: '/memory/graph-memories', label: 'Graph', labelKey: 'nav.memory.graph', description: 'Explore connections', descriptionKey: 'nav.memory.graph.description', icon: Network },
     ],
   },
   {
     label: 'Projects',
+    labelKey: 'nav.projects',
     items: [
-      { href: '/projects', label: 'List', description: 'Browse projects', icon: LayoutList },
-      { href: '/projects/board', label: 'Board', description: 'Track work by status', icon: Columns3 },
-      { href: '/projects/roadmap', label: 'Roadmap', description: 'Plan on a timeline', icon: GanttChartSquare },
-      { href: '/lessons', label: 'Lessons', description: 'Review learned patterns', icon: GraduationCap },
-      { href: '/library', label: 'Library', description: 'Browse visual assets', icon: Image },
+      { href: '/projects', label: 'List', labelKey: 'nav.projects.list', description: 'Browse projects', descriptionKey: 'nav.projects.list.description', icon: LayoutList },
+      { href: '/projects/board', label: 'Board', labelKey: 'nav.projects.board', description: 'Track work by status', descriptionKey: 'nav.projects.board.description', icon: Columns3 },
+      { href: '/projects/roadmap', label: 'Roadmap', labelKey: 'nav.projects.roadmap', description: 'Plan on a timeline', descriptionKey: 'nav.projects.roadmap.description', icon: GanttChartSquare },
+      { href: '/lessons', label: 'Lessons', labelKey: 'nav.projects.lessons', description: 'Review learned patterns', descriptionKey: 'nav.projects.lessons.description', icon: GraduationCap },
+      { href: '/library', label: 'Library', labelKey: 'nav.projects.library', description: 'Browse visual assets', descriptionKey: 'nav.projects.library.description', icon: Image },
     ],
   },
   {
     label: 'Agents',
+    labelKey: 'nav.agents',
     items: [
-      { href: '/agents', label: 'Agents', description: 'Configure agents', icon: Bot },
-      { href: '/agents/sessions', label: 'Sessions', description: 'Review activity', icon: History },
-      { href: '/agents/usage', label: 'Usage', description: 'Inspect consumption', icon: Gauge },
+      { href: '/agents', label: 'Agents', labelKey: 'nav.agents.agents', description: 'Configure agents', descriptionKey: 'nav.agents.agents.description', icon: Bot },
+      { href: '/agents/sessions', label: 'Sessions', labelKey: 'nav.agents.sessions', description: 'Review activity', descriptionKey: 'nav.agents.sessions.description', icon: History },
+      { href: '/agents/usage', label: 'Usage', labelKey: 'nav.agents.usage', description: 'Inspect consumption', descriptionKey: 'nav.agents.usage.description', icon: Gauge },
     ],
   },
   {
     label: 'Settings',
+    labelKey: 'nav.settings',
     items: [
-      { href: '/settings', label: 'LLM', description: 'Model configuration', icon: SlidersHorizontal },
-      { href: '/settings/forecasts', label: 'Forecasts', description: 'Usage projections', icon: TrendingUp },
-      { href: '/settings/environment', label: 'Environment', description: 'Runtime variables', icon: Settings2 },
-      { href: '/settings/resources', label: 'Resources', description: 'Connected resources', icon: Boxes },
-      { href: '/settings/workflows', label: 'Workflows', description: 'Automated routines', icon: Workflow },
+      { href: '/settings', label: 'LLM', labelKey: 'nav.settings.llm', description: 'Model configuration', descriptionKey: 'nav.settings.llm.description', icon: SlidersHorizontal },
+      { href: '/settings/forecasts', label: 'Forecasts', labelKey: 'nav.settings.forecasts', description: 'Usage projections', descriptionKey: 'nav.settings.forecasts.description', icon: TrendingUp },
+      { href: '/settings/environment', label: 'Environment', labelKey: 'nav.settings.environment', description: 'Runtime variables', descriptionKey: 'nav.settings.environment.description', icon: Settings2 },
+      { href: '/settings/resources', label: 'Resources', labelKey: 'nav.settings.resources', description: 'Connected resources', descriptionKey: 'nav.settings.resources.description', icon: Boxes },
+      { href: '/settings/workflows', label: 'Workflows', labelKey: 'nav.settings.workflows', description: 'Automated routines', descriptionKey: 'nav.settings.workflows.description', icon: Workflow },
     ],
   },
 ] as const;

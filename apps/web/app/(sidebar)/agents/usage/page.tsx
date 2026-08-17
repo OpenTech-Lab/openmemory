@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ClaudePlanUsage } from '@/components/claude-plan-usage';
 import { UsageSparkline } from '@/components/usage-sparkline';
+import { I18nText } from '@/lib/i18n';
 
 interface AgentUsage {
   agent_id: string;
@@ -63,7 +64,7 @@ export default function AgentsUsagePage() {
       <div className="flex items-center gap-2 mb-2">
         <h1 className="text-lg font-semibold flex items-center gap-2">
           <Gauge className="h-5 w-5" />
-          Agent Usage
+          <I18nText id="page.agentUsage" />
         </h1>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={load} disabled={isLoading}>

@@ -13,7 +13,6 @@ import {
   isWeekend,
 } from 'date-fns';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -66,6 +65,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { I18nText } from '@/lib/i18n';
 
 interface Project {
   id: string;
@@ -697,7 +697,7 @@ export function ProjectRoadmapView() {
       <div className="flex items-center justify-between gap-3 p-4 border-b flex-wrap shrink-0">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <GanttChartSquare className="h-5 w-5 shrink-0" /> Roadmap
+            <GanttChartSquare className="h-5 w-5 shrink-0" /> <I18nText id="page.roadmap" />
           </h1>
           <div className="text-sm text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
             {stats.overdue > 0 && (
