@@ -1,358 +1,249 @@
-# OpenMemory — Persistent Memory for AI Agents
+---
+name: openmemory
+description: Use OpenMemory 0.2.0 to persist and retrieve durable agent context; manage projects, tasks, decision notes, routines, lessons, resources, secrets, workflows, project code graphs, asset-library entries, forecast profiles, and design budgets; or invoke credential-safe HTTP, download, JWT, Google service-account, and SSH operations. Trigger when work should survive across sessions, when registered project context or integrations may exist, or when the user asks to use OpenMemory or its mem CLI.
+---
 
-OpenMemory gives you persistent, searchable memory across sessions. Use it to remember user preferences, project decisions, and important context.
+# OpenMemory 0.2.0
 
-## Setup
+Use OpenMemory as durable, local infrastructure for agent memory, planning, registered resources, and credential-safe integrations. Prefer native `openmemory` MCP tools when available. Use `mem` for shell workflows and the authenticated REST API only when an operation has no MCP or CLI equivalent.
 
-API mode must be running:
-```bash
-docker compose --profile api up -d   # from the openmemory project directory
-```
+## Start a work session
 
-The `mem` CLI must be in PATH, or set `OPENMEMORY_URL` for direct curl fallback.
+1. Search for relevant durable context:
 
-```bash
-# Add to PATH (run once)
-export PATH="/path/to/openmemory/scripts:$PATH"
+   ```bash
+   mem search "<project or topic>" --limit 10
+   ```
 
-# Or set URL (if using curl fallback)
-export OPENMEMORY_URL=http://localhost:8080
-```
+2. Call `project_list` when the work may belong to a tracked project. Use its ID for tasks, lessons, and project-scoped tools.
+3. Call `lesson_list` for the selected project before making changes.
+4. Call `routine_check` when the project uses repeating work.
+5. Call `resource_list` when the task may depend on registered files, websites, datasets, or accounts. Call `resource_tags` before filtering by unfamiliar tags.
+6. Call `workflow_list` before rebuilding a recurring integration sequence manually.
+7. Call `forecast_list` before architecture or cost-planning work.
 
-## When to Search
+Do not fail the user's task merely because one of these searches returns no results.
 
-At the **start of a session**, search for relevant context if the user mentions a project, technology, or ongoing task you might have memory of:
+## Persist durable memory
 
-```bash
-mem search "TypeScript project setup" --limit 5
-mem search "user preferences" --limit 10
-```
+Save facts that remain useful in future sessions:
 
-Search is fast (<10ms). When in doubt, search — empty results cost nothing.
+- user preferences and corrections;
+- architectural decisions and their reasons;
+- stable constraints, locations, and project conventions;
+- durable research conclusions.
 
-## What NOT to Save
+Never save chat logs, turn-by-turn summaries, routine progress reports, secrets, credentials, or content whose only value is in the current conversation. The session watcher already records supported agent conversations; duplicating them pollutes retrieval.
 
-**Never write conversation content, chat logs, or turn-by-turn dialogue into memory.** The session watcher handles that automatically — writing it again creates duplicates and pollutes search results.
-
-Do not save:
-- Summaries of what you just said or did in this conversation
-- Paraphrases of the user's messages
-- Progress updates like "implemented feature X in this session"
-- Anything that describes *the conversation itself* rather than a lasting fact
-
-## When to Save
-
-Save durable facts worth knowing in **future** sessions:
-- User preferences ("prefers X over Y")
-- Project decisions ("chose approach A because B")
-- Constraints ("can't use library X due to license")
-- Key facts ("server is at IP 192.168.1.5")
+Use a concise, standalone statement that remains understandable without the current transcript:
 
 ```bash
-# Strong preference or decision → importance 0.8–0.9
-mem save "User prefers rustls over native-tls for all Docker-based Rust projects" \
-  --importance 0.9 --tags rust,docker,preference
+mem save "The API uses rustls because deployment images omit OpenSSL." \
+  --importance 0.8 --tags api,rust,decision \
+  --summary "API TLS dependency"
 
-# Useful context → importance 0.5–0.7
-mem save "OpenMemory project lives at ~/projects/openmemory, uses port 8080" \
-  --importance 0.6 --tags openmemory,project
-
-# Minor note → importance 0.3–0.4
-mem save "User timezone is JST (UTC+9)" \
-  --importance 0.3 --tags user,timezone
-```
-
-## Commands
-
-```bash
-# Search (most common — use this to load context)
-mem search "<topic>" [--limit 5]
-
-# Save
-mem save "<content>" [--importance 0.8] [--tags tag1,tag2] [--summary "brief label"]
-
-# Save with an LLM-suggested importance/tags/summary for whatever you didn't
-# pass explicitly (agents should normally decide these themselves — --auto is
-# mainly for humans/scripts; requires an LLM key configured via LLM Settings
-# in the web UI, the same key that also powers Knowledge Graph extraction)
-mem save "<content>" --auto
-
-# Preview a suggestion without saving
-mem autofill memory "<content>"
-
-# List recent memories
-mem list [--limit 20]
-
-# Get full content of a specific memory
+mem search "API TLS decision" --limit 5
+mem list --limit 20
 mem get <uuid>
-
-# Delete outdated or wrong memory
 mem delete <uuid>
 ```
 
-## Direct API Fallback (if mem is not in PATH)
+Use `memory_save` and `memory_search` when MCP tools are available. Use the following importance scale:
+
+| Score | Use |
+|---|---|
+| `0.9` | hard constraints and critical preferences |
+| `0.7`–`0.8` | decisions, strong preferences, important conventions |
+| `0.5`–`0.6` | useful project facts |
+| `0.3`–`0.4` | minor durable notes |
+
+Use `mem save ... --auto` only when LLM Settings are configured and automatic suggestions are useful. Explicit `--importance`, `--tags`, and `--summary` values always take precedence. Preview without saving with `mem autofill memory "<content>"`; `mem autofill task` and `mem autofill resource` preview the corresponding metadata. Agents should normally select these fields themselves.
+
+Use `memory_graph_relate` to add an explicit named relationship between two memories and `memory_graph_neighbors` to traverse related memories. Use the temporal `graph_*` tools for entities and time-varying facts rather than ordinary preference/project memory:
+
+- `graph_add_episode` records immutable source material;
+- `graph_add_entity` upserts an entity;
+- `graph_add_fact` adds a relationship and may invalidate an older fact;
+- `graph_query_facts`, `graph_query_at`, `graph_get_entity`, and `graph_get_entity_history` retrieve current or historical knowledge.
+
+## Manage projects and work
+
+Use `project_list` to resolve project IDs and `project_create` to create a planning-only project or register a project path. Track scoped, actionable work with `project_task_list`, `project_task_create`, `project_task_update`, and `project_task_delete`.
+
+- Move active work through `todo` → `in_progress` → `done`.
+- Use `cancelled`, not `done`, for dropped or superseded work.
+- Use `parent_id` for subtasks and `start_date`/`due_date` for scheduling.
+- Use `limit` and `offset` when listing large task sets.
+- Avoid creating tasks for incidental actions that do not need durable tracking.
+
+### Record notes and decisions
+
+Use append-only task notes for implementation findings, handoffs, and decisions:
+
+1. Call `project_task_note_create` with `note_type: "message"` for a finding or handoff.
+2. Use `note_type: "decision"` for a checkpoint requiring an answer.
+3. Provide up to six unique `decision_options`. Omit them for an open question.
+4. Set `decision_selection_mode` to `single` (default) or `multiple`.
+5. Call `project_task_note_decide` with exact option strings and/or a custom `reply`.
+6. Call `project_task_note_list` to read the full answer history. Re-answering records a new answer without deleting earlier ones.
+
+### Check routines
+
+Routines do not run on a timer. `routine_check` materializes due routines as dated tasks:
+
+- daily: no task created today;
+- weekly: no task created in the last seven days;
+- monthly: no task created in the current calendar month.
+
+Use `dry_run: true` to preview. Use `routine_list` and `routine_create` to inspect and define templates.
+
+### Record lessons
+
+Call `lesson_list` at the start of project work. After a user correction or durable discovery, call `lesson_create` with a short title and an actionable rule; include context, category, severity, and tags when useful.
+
+- Reusing the same normalized title in a project increments `occurrences` instead of duplicating the lesson.
+- Categories: `correction`, `discovery`, `convention`, `pitfall`.
+- Severities: `low`, `medium`, `high`.
+- Archive superseded lessons with `lesson_update` and `status: "archived"`; use `lesson_delete` only when permanent removal is intended.
+
+The CLI is read-only for lessons:
 
 ```bash
-# Search
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"memory.search","query":"<topic>","limit":5}' | jq .
-
-# Save
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"memory.save","content":"<content>","importance":0.8,"tags":["tag"]}' | jq .
+mem lessons --project <uuid> --query "<topic>" --limit 20
 ```
 
-## Importance Score Guide
+## Discover resources and assets
 
-| Score | Use for |
-|-------|---------|
-| 0.9 | Critical preferences, hard constraints |
-| 0.7–0.8 | Strong preferences, key decisions |
-| 0.5–0.6 | Useful context, project facts |
-| 0.3–0.4 | Minor notes |
+Use the resource catalog for source material and account configuration:
 
-## Environment Parameters
+- `resource_list`, `resource_tags`, and `resource_get` discover local paths and URLs.
+- `resource_add` registers a path or URL; check for duplicates first.
+- `resource_update` replaces supplied fields; pass an empty `env_param_keys` array to clear credential links.
+- `resource_delete` removes only manual catalog entries. Change env-backed `RESOURCE_PATH.*` and `RESOURCE_URL.*` entries through `env_set`/`env_delete`.
 
-Store configuration values and secrets so AI agents can access them during tasks — without pasting credentials into chat.
+CLI equivalents are available as `mem resource-list`, `resource-tags`, `resource-get`, `resource-add`, `resource-update`, and `resource-delete`. `resource-add --auto` can suggest description and tags without overriding explicit values.
 
-### Two types
+Use the global visual library for already-created candidates, not source materials:
 
-| Type | Agent can write? | Agent can read? | Web UI can read? |
-|------|-----------------|-----------------|-----------------|
-| **Normal** (`is_secret=false`) | Yes | Yes | Yes |
-| **Secret** (`is_secret=true`) | Yes | No — blocked | Yes |
+- `library_add` catalogs an existing image, video, or self-contained HTML/CSS/JS preview;
+- `library_list` filters by project, tag, or category;
+- `library_get` and `library_delete` retrieve or remove entries.
 
-Agents should call `env.list` to discover what parameters exist, then use normal values directly and reference secret keys by name (e.g., pass to a tool) without reading them.
+The library does not generate, copy, or validate media and has no review-state workflow.
 
-### Commands
+## Use environment parameters safely
 
-```bash
-# List all parameters (keys + type + description, no values)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"env.list"}' | jq .
-
-# Set a normal parameter (agent can read back)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"env.set","key":"OPENROUTER_MODEL","value":"openai/gpt-4o","is_secret":false,"description":"Default model for OpenRouter calls"}'
-
-# Set a secret parameter (agent CANNOT read back)
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"env.set","key":"OPENAI_API_KEY","value":"sk-...","is_secret":true}'
-
-# Get a normal parameter value
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"env.get","key":"OPENROUTER_MODEL"}' | jq .value
-
-# Delete a parameter
-curl -s -X POST "${OPENMEMORY_URL:-http://localhost:8080}/mcp" \
-  -H 'content-type: application/json' \
-  -d '{"type":"env.delete","key":"OLD_KEY"}'
-```
-
-### CLI shorthand
+Call `env_list` to discover keys and descriptions. Use `env_get` only for non-secret values, `env_rename` to rename a key while preserving its value, and `env_delete` to remove obsolete entries. Never attempt to reveal a secret or echo a retrieved value in chat, logs, commands, or memory.
 
 ```bash
 mem env-list
 mem env-set <key> <value> [--secret] [--description TEXT]
-mem env-get <key>          # only works for normal params
+mem env-rename <old-key> <new-key> [--value VALUE] [--secret|--normal]
+mem env-get <key>     # non-secret values only
 mem env-delete <key>
 ```
 
-### When to use
+Prefer the server-side credential tools so sensitive values never enter the agent transcript:
 
-- At session start, call `env.list` or `mem env-list` to see available config values
-- Read normal params (e.g. `OPENROUTER_MODEL`, `API_BASE_URL`) to configure your tools
-- For secret params, use `env.list` to confirm existence, then pass the **key name** to whatever tool or script needs it — do not attempt to read the value
-- Never echo or include a retrieved value in your response text
+| Need | Tool |
+|---|---|
+| authenticated JSON/text HTTP request | `env_http_request` |
+| binary download to an absolute local path | `env_http_download` |
+| JWT-authenticated HTTP request | `env_http_request_jwt` |
+| Google service-account request | `env_google_service_account_request` |
+| store a credential file without reading its bytes | `env_set_file` |
+| return a short-lived signed token only when unavoidable | `env_sign_jwt` |
+| execute a non-interactive remote command | `env_ssh_execute` |
 
-## Project & Task Management
+Use `env_http_download` for every binary response; `env_http_request` decodes responses as text and corrupts binary bytes. For HTTP secrets, select header, full-URL, or query-parameter injection as required. Respect `OPENMEMORY_HTTP_ALLOWED_HOSTS`.
 
-Track work items alongside memories. Projects can be pure task-management containers (no folder path required) or linked to a code knowledge graph.
+Prefer `env_http_request_jwt` over exposing a token from `env_sign_jwt`. Store certificate, key, and service-account files with `env_set_file`; set `key_from_file: true` where required.
 
-### Tools
+`env_ssh_execute` is fail-closed unless `OPENMEMORY_SSH_ALLOWED_HOSTS` permits the target. Require a pinned `<ssh_key_key>.host_key_fingerprint`; optionally constrain the key with `<ssh_key_key>.allowed_hosts`. It supports no PTY, forwarding, or password authentication. Treat remote writes and destructive commands with the same confirmation requirements as local ones.
 
-Projects, tasks, routines, and lessons are **not** on the legacy `/mcp` request
-enum (that endpoint only understands `memory.*`, `graph.*`, `env.*`, and
-`resource.*`). They're exposed two ways instead: as MCP tools
-(`project_list`, `project_task_list`, `project_task_create`,
-`project_task_update`, `project_task_delete`, ...) callable from an agent
-session, and as plain REST routes on the server for scripting/curl:
+## Query project code graphs
+
+Use project graphs for codebase orientation and dependency questions:
+
+1. Call `project_graph_list` to locate the registered project.
+2. Call `project_graph_create` to index a local project path if none exists.
+3. Use `project_graph_query` for keyword-centered, multi-hop exploration.
+4. Use `project_graph_node_detail` to inspect a result, `project_graph_shortest_path` to connect two nodes, and `project_graph_god_nodes` to find hubs.
+5. Call `project_graph_rebuild` after material code changes; unchanged graphs are skipped.
+
+`project_graph_delete` removes only the registered graph, not the source files.
+
+## Run reusable workflows
+
+Prefer an existing workflow over reconstructing the same integration sequence:
+
+1. Call `workflow_list`.
+2. Call `workflow_get` for its `input_schema`.
+3. Call `workflow_run` with its UUID/name and an input object.
+4. If the result is `action_required`, perform exactly the returned host-agent action and call `workflow_continue` with the `run_id` and structured result.
+5. Repeat until `completed`. Treat `failed` as terminal; later steps do not execute.
+
+Templates can reference `{{input.name}}` and earlier results such as `{{steps.lookup.body.id}}`. File-like workflow inputs accept an absolute host-visible path or an object with `path`; image and PDF inputs must have matching file types. OpenMemory executes HTTP nodes server-side but never executes host commands itself.
+
+## Plan forecasts and design budgets
+
+Use `forecast_list` before designing for scale or estimating cost. Manage reusable assumptions with `forecast_create`, `forecast_update`, and `forecast_delete`. Profiles capture application type, user count, monthly budget, stress tolerance, usage pattern, engagement, planning horizon, and growth.
+
+Use `design_budget_list`, `design_budget_create`, `design_budget_update`, and `design_budget_delete` for per-design monthly forecasts. Supply service line items in cents; OpenMemory derives the monthly total. Record the forecast profile or custom conditions, confidence, and pricing basis so estimates remain auditable.
+
+The 0.2.0 web UI also supports project documents/designs in text, Mermaid, draw.io, React Flow, and OpenPencil formats, plus AI diagram/budget suggestions and selective source-control commits/pushes. These are REST/UI features rather than general MCP authoring tools.
+
+## Synchronize a project bundle
+
+For a project linked to a Git repository, the authenticated REST route `POST /projects/<id>/sync` exports or imports a Git-friendly `.openmemory/` bundle containing documents, tasks and decision history, routines, lessons, and budgets.
 
 ```bash
 TOKEN=$(tr -d '[:space:]' < ~/.openmemory/api_token)
-BASE="${OPENMEMORY_URL:-http://localhost:8080}"
+BASE="${OPENMEMORY_URL:-http://localhost:18080}"
 
-# List all projects with task counts
-curl -s "$BASE/projects" -H "Authorization: Bearer $TOKEN"
+# Export database-backed project data into the repository
+curl -s -X POST "$BASE/projects/<uuid>/sync" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"export"}' | jq .
 
-# Create a project (path optional)
-curl -s -X POST "$BASE/projects" -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"name":"my-project","description":"optional"}'
-
-# List tasks for a project (use project_id from the projects list)
-curl -s "$BASE/projects/<uuid>/tasks?status=todo" -H "Authorization: Bearer $TOKEN"
-
-# Create a task
-curl -s -X POST "$BASE/projects/<uuid>/tasks" -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"title":"Fix the auth bug","priority":"high","assigned_to":"agent"}'
-
-# Update a task (only provided fields change)
-curl -s -X PUT "$BASE/projects/<uuid>/tasks/<task_id>" -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"status":"in_progress"}'
-
-# Delete a task
-curl -s -X DELETE "$BASE/projects/<uuid>/tasks/<task_id>" -H "Authorization: Bearer $TOKEN"
+# Import the checked-out bundle; missing records are not deleted
+curl -s -X POST "$BASE/projects/<uuid>/sync" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"import"}' | jq .
 ```
 
-### Task fields
+Inspect the repository diff before committing an export. Import only from a trusted checkout. Import merges by stable IDs and does not delete database records absent from the bundle.
 
-| Field | Values | Default |
-|-------|--------|---------|
-| `status` | `todo` \| `in_progress` \| `done` | `todo` |
-| `priority` | `low` \| `medium` \| `high` | `medium` |
-| `assigned_to` | `human` \| `agent` \| null | null |
-| `created_by` | set automatically | `agent` via MCP, `human` via UI |
+## Inspect recorded sessions
 
-### When to use
-
-- Use `project_list` at session start to discover active projects and their IDs
-- Create tasks when you identify work items during analysis or planning
-- Update task status as work progresses (`todo` → `in_progress` → `done`)
-- Humans can view and manage the same tasks at `/projects` in the web UI
-
-## Routine Tasks
-
-Routines are repeating task templates. They do **not** run on a timer — they generate a new task when an agent calls `routine_check`. This is the intended workflow:
-
-1. Human defines a routine: "Research top news" (daily, assigned to agent)
-2. At the start of a work session, agent calls `routine_check`
-3. If the routine is due (hasn't run today), a task is created: `"Research top news — 2026-06-03"`
-4. Agent handles the task, moves it `in_progress` → `done`
-
-Use the `routine_check`, `routine_list`, and `routine_create` MCP tools from an
-agent session. Over REST (same auth as above):
+The watcher records supported Claude Code, Gemini CLI, and Codex CLI sessions without agent-side saves. Use the CLI for read-only inspection:
 
 ```bash
-# Check which routines are due and create tasks for them
-curl -s -X POST "$BASE/projects/<uuid>/routines/check" -H "Authorization: Bearer $TOKEN"
-
-# Preview without creating (dry run)
-curl -s -X POST "$BASE/projects/<uuid>/routines/check?dry_run=true" -H "Authorization: Bearer $TOKEN"
-
-# List routines for a project
-curl -s "$BASE/projects/<uuid>/routines" -H "Authorization: Bearer $TOKEN"
-
-# Create a routine
-curl -s -X POST "$BASE/projects/<uuid>/routines" -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"title":"Research top news","frequency":"daily","assigned_to":"agent"}'
+mem sessions --limit 50
+mem sessions <uuid>
+mem sessions messages <uuid> --limit 200 --after 0
 ```
 
-### Routine fields
+Do not copy session transcripts back into durable memory unless extracting a genuinely lasting fact.
 
-| Field | Values | Default |
-|-------|--------|---------|
-| `frequency` | `daily` \| `weekly` \| `monthly` | `daily` |
-| `priority` | `low` \| `medium` \| `high` | `medium` |
-| `assigned_to` | `human` \| `agent` \| null | null |
+## Fallback and health checks
 
-### Due logic
-- **daily**: no task created today yet
-- **weekly**: no task created in the last 7 days
-- **monthly**: no task created this calendar month
-
-Tasks generated from routines have `created_by = 'agent'` and include the date in the title. Humans manage routines at `/projects/[id]` → Routines tab.
-
-## Lessons Learned
-
-A structured, per-project store for corrections and conventions — the same shape as
-per-project `tasks/lessons.md` files (`## title`, context, rule), but queryable
-instead of scattered markdown. Use the `lesson_create`, `lesson_list`,
-`lesson_update`, and `lesson_delete` MCP tools from an agent session.
-
-- Call `lesson_list` (with `project_id`) at the **start of a session** to load
-  accumulated lessons before doing any work — this is the direct replacement for
-  reading `tasks/lessons.md` by hand.
-- Call `lesson_create` after any correction from the user: give it a short `title`,
-  the `rule` to follow going forward, and optionally `context` (what happened),
-  `category`, `severity`, and `tags`. Recording the same `title` again in the same
-  project bumps an `occurrences` counter instead of creating a duplicate.
-- Set `status` to `archived` via `lesson_update` when a lesson is superseded,
-  rather than deleting it.
-
-| Field | Values | Default |
-|-------|--------|---------|
-| `category` | `correction` \| `discovery` \| `convention` \| `pitfall` | `correction` |
-| `severity` | `low` \| `medium` \| `high` | `medium` |
-| `status` | `active` \| `archived` | `active` |
-
-Over REST (same auth as above):
+The default API URL in 0.2.0 is `http://localhost:18080`:
 
 ```bash
-# List/search lessons for a project (query does full-text search over title+context+rule)
-curl -s "$BASE/projects/<uuid>/lessons?query=scroll" -H "Authorization: Bearer $TOKEN"
-
-# Cross-project search
-curl -s "$BASE/lessons?query=shadcn" -H "Authorization: Bearer $TOKEN"
-
-# Create a lesson (re-posting the same title bumps occurrences instead of duplicating)
-curl -s -X POST "$BASE/projects/<uuid>/lessons" -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"title":"Don'"'"'t restart the stdio MCP server mid-session","rule":"Compile-verify instead and hand the restart back to the user.","category":"pitfall","severity":"high"}'
+curl -s http://localhost:18080/health
+docker compose --profile api up -d
+export OPENMEMORY_URL=http://localhost:18080
+export PATH="/path/to/openmemory/scripts:$PATH"
 ```
 
-Or from the CLI (read-only — writes go through the agent via MCP):
+For memory operations only, use the legacy `/mcp` REST enum when MCP and `mem` are unavailable:
 
 ```bash
-mem lessons --project <uuid> [--query TEXT] [--limit N]
+curl -s -X POST "$OPENMEMORY_URL/mcp" -H 'content-type: application/json' \
+  -d '{"type":"memory.search","query":"<topic>","limit":5}' | jq .
 ```
 
-## Reusable Workflows
+Projects, tasks, notes, routines, lessons, workflows, forecasts, designs, and sync are not legacy `/mcp` request types. Use their MCP tools or authenticated REST routes.
 
-Workflows are ordered HTTP and agent-assisted processes configured by a human
-on the drag-and-drop node canvas at `/settings/workflows`. They are the preferred path when an integration sequence
-has already been defined: do not reconstruct the same calls manually in every
-session.
-
-1. Call `workflow_list` to discover available processes.
-2. Call `workflow_get` when you need its documented `input_schema`.
-3. Call `workflow_run` with the workflow UUID/name and an `input` object.
-4. If the status is `action_required`, perform the returned capability exactly
-   and call `workflow_continue` with `run_id` and the structured result. Repeat
-   until status is `completed`.
-5. Treat status `failed` as a failed run; later steps are not executed after a
-   failed HTTP response.
-
-Workflow credentials are Environment parameter references. Their values remain
-inside OpenMemory during execution. Templates may reference inputs such as
-`{{input.issue_id}}` and earlier responses such as
-`{{steps.lookup.body.id}}`.
-Agent nodes may also require input/artifact files. OpenMemory verifies those
-paths exist before releasing the action to the host agent. Commands are never
-executed by the OpenMemory server itself.
-
-Workflow input definitions support `text`, `json`, `image`, `pdf`, `file`, and
-`any`. Pass file-like inputs as an absolute host-visible path or an object with
-a `path` property. Image and PDF inputs must use a matching file extension.
-
-## Security Note
-
-`OPENMEMORY_PORT` (default 8080) must not be exposed publicly — it is localhost-only by default. Memory read/write operations have no authentication.
-
-**Secret parameters and the API token:**
-
-`env.get` for `is_secret=true` parameters requires `Authorization: Bearer <token>` on the HTTP API. The token is resolved in this order:
-
-1. `OPENMEMORY_API_TOKEN` env var (preferred for Docker/CI)
-2. `~/.openmemory/api_token` file (auto-created on first run with a random UUID)
-
-On first run with no env var set, a secure random token is generated and saved to `~/.openmemory/api_token` — check server logs for it. Agents cannot read secret values without this token.
+Keep the API bound to localhost. Resolve the HTTP API token from `OPENMEMORY_API_TOKEN` or `~/.openmemory/api_token`; do not expose it. Restart the MCP client session after rebuilding the MCP binary because a running stdio process cannot hot-reload new tools.
