@@ -22,14 +22,11 @@ use std::{
 use tracing::error;
 use uuid::Uuid;
 
-use crate::{
-    design_blobs, is_authenticated, resolve_git_project_root, AppState,
-};
+use crate::{design_blobs, is_authenticated, resolve_git_project_root, AppState};
 
 const BUNDLE_DIR: &str = ".openmemory";
 const BUNDLE_FORMAT: &str = "openmemory.project";
 const BUNDLE_VERSION: u32 = 1;
-const PENCIL_SOURCE: &str = r#"{"providerId":"openmemory"}"#;
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectSyncPayload {
@@ -150,10 +147,18 @@ struct TaskNoteRow {
     decision_answers: Vec<TaskDecisionAnswerRow>,
 }
 
-fn default_note_type() -> String { "message".to_string() }
-fn default_decision_options() -> serde_json::Value { serde_json::json!([]) }
-fn default_decision_selection_mode() -> String { "multiple".to_string() }
-fn default_decision_status() -> String { "open".to_string() }
+fn default_note_type() -> String {
+    "message".to_string()
+}
+fn default_decision_options() -> serde_json::Value {
+    serde_json::json!([])
+}
+fn default_decision_selection_mode() -> String {
+    "multiple".to_string()
+}
+fn default_decision_status() -> String {
+    "open".to_string()
+}
 
 /// Plain DB row shape for `project_task_notes`, used only to load the main query — the answer
 /// history is attached afterward from a separate grouped query (see `export_project`).
@@ -292,7 +297,11 @@ pub async fn sync_project(
     Json(payload): Json<ProjectSyncPayload>,
 ) -> impl IntoResponse {
     if !is_authenticated(&headers, &state.api_token) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     let root = match resolve_git_project_root(&state, project_id).await {
@@ -310,7 +319,11 @@ pub async fn sync_project(
         Ok(summary) => Json(summary).into_response(),
         Err(error) => {
             error!(project_id = %project_id, "project sync failed: {error:#}");
-            (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": error.to_string()}))).into_response()
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": error.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -451,7 +464,7 @@ fn write_bundle(root: &Path, snapshot: ExportSnapshot) -> Result<SyncResponse> {
     clear_record_files(&routines_dir)?;
     clear_record_files(&lessons_dir)?;
 
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let budgets_by_design = snapshot.budgets.iter().cloned().fold(
         HashMap::<Uuid, Vec<BudgetRow>>::new(),
         |mut map, budget| {
@@ -468,11 +481,22 @@ fn write_bundle(root: &Path, snapshot: ExportSnapshot) -> Result<SyncResponse> {
         let source_path = docs_dir.join(&file_name);
         if design.diagram_type == "pen" {
             let blob_path = design_blobs::blob_path(&design_blobs::blob_root(), design.id);
-            if blob_path.is_file() {
-                atomic_copy(&blob_path, &source_path)?;
+            let blob = if blob_path.is_file() {
+                Some(
+                    fs::read(&blob_path)
+                        .with_context(|| format!("reading {}", blob_path.display()))?,
+                )
             } else {
-                atomic_write(&source_path, design.source.as_bytes())?;
-                warnings.push(format!("document '{}' has no saved .fig blob; exported its marker instead", design.title));
+                None
+            };
+            if let Some(blob) = blob.and_then(saved_pencil_blob) {
+                atomic_write(&source_path, &blob)?;
+            } else {
+                // A pen source marker is metadata for an unsaved document, not a valid
+                // .fig file. Keep it in the readable bundle, but never let a later import
+                // mistake it for binary design data. An empty Pencil document is a valid
+                // state, so this is not an export warning.
+                atomic_write(&source_path, design_blobs::PENCIL_SOURCE.as_bytes())?;
             }
         } else {
             let source = if design.diagram_type == "reactflow" {
@@ -500,10 +524,19 @@ fn write_bundle(root: &Path, snapshot: ExportSnapshot) -> Result<SyncResponse> {
             created_at: design.created_at,
             updated_at: design.updated_at,
             source_file: file_name,
-            budgets: budgets_by_design.get(&design.id).cloned().unwrap_or_default(),
+            budgets: budgets_by_design
+                .get(&design.id)
+                .cloned()
+                .unwrap_or_default(),
         });
     }
-    write_json(&docs_dir.join("index.json"), &DocsIndex { version: BUNDLE_VERSION, documents: document_meta })?;
+    write_json(
+        &docs_dir.join("index.json"),
+        &DocsIndex {
+            version: BUNDLE_VERSION,
+            documents: document_meta,
+        },
+    )?;
     files_written += 1;
 
     let notes_by_task = snapshot.task_notes.iter().cloned().fold(
@@ -518,15 +551,24 @@ fn write_bundle(root: &Path, snapshot: ExportSnapshot) -> Result<SyncResponse> {
             task: task.clone(),
             notes: notes_by_task.get(&task.id).cloned().unwrap_or_default(),
         };
-        write_json(&tasks_dir.join(record_file_name(task.id, &task.title, "json")), &task_file)?;
+        write_json(
+            &tasks_dir.join(record_file_name(task.id, &task.title, "json")),
+            &task_file,
+        )?;
         files_written += 1;
     }
     for routine in &snapshot.routines {
-        write_json(&routines_dir.join(record_file_name(routine.id, &routine.title, "json")), routine)?;
+        write_json(
+            &routines_dir.join(record_file_name(routine.id, &routine.title, "json")),
+            routine,
+        )?;
         files_written += 1;
     }
     for lesson in &snapshot.lessons {
-        write_json(&lessons_dir.join(record_file_name(lesson.id, &lesson.title, "json")), lesson)?;
+        write_json(
+            &lessons_dir.join(record_file_name(lesson.id, &lesson.title, "json")),
+            lesson,
+        )?;
         files_written += 1;
     }
 
@@ -572,11 +614,19 @@ async fn import_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
         .await
         .context("import task failed")??;
 
-    let document_ids: HashSet<Uuid> = snapshot.documents.iter().map(|document| document.meta.id).collect();
+    let document_ids: HashSet<Uuid> = snapshot
+        .documents
+        .iter()
+        .map(|document| document.meta.id)
+        .collect();
     let routine_ids: HashSet<Uuid> = snapshot.routines.iter().map(|routine| routine.id).collect();
     let task_ids: HashSet<Uuid> = snapshot.tasks.iter().map(|task| task.task.id).collect();
 
-    let mut tx = state.db.begin().await.context("starting project import transaction")?;
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .context("starting project import transaction")?;
 
     for routine in &snapshot.routines {
         upsert_routine(&mut tx, routine, project_id).await?;
@@ -585,7 +635,10 @@ async fn import_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
     for document in &snapshot.documents {
         if let Some(bytes) = document.pencil_bytes.as_ref() {
             if bytes.len() > design_blobs::MAX_DESIGN_BLOB_BYTES {
-                bail!("document '{}' exceeds the design file size limit", document.meta.title);
+                bail!(
+                    "document '{}' exceeds the design file size limit",
+                    document.meta.title
+                );
             }
             write_design_blob(document.meta.id, bytes).await?;
         }
@@ -597,16 +650,26 @@ async fn import_project(state: &AppState, project_id: Uuid, root: PathBuf) -> Re
 
     for task_file in &snapshot.tasks {
         if let Some(routine_id) = task_file.task.routine_id {
-            if !routine_ids.contains(&routine_id) && !routine_belongs_to_project(&mut tx, routine_id, project_id).await? {
-                bail!("task '{}' references a routine outside this project", task_file.task.title);
+            if !routine_ids.contains(&routine_id)
+                && !routine_belongs_to_project(&mut tx, routine_id, project_id).await?
+            {
+                bail!(
+                    "task '{}' references a routine outside this project",
+                    task_file.task.title
+                );
             }
         }
         upsert_task_without_parent(&mut tx, &task_file.task, project_id).await?;
     }
     for task_file in &snapshot.tasks {
         if let Some(parent_id) = task_file.task.parent_id {
-            if !task_ids.contains(&parent_id) && !task_belongs_to_project(&mut tx, parent_id, project_id).await? {
-                bail!("task '{}' references a parent outside this project", task_file.task.title);
+            if !task_ids.contains(&parent_id)
+                && !task_belongs_to_project(&mut tx, parent_id, project_id).await?
+            {
+                bail!(
+                    "task '{}' references a parent outside this project",
+                    task_file.task.title
+                );
             }
             sqlx::query("UPDATE project_tasks SET parent_id = $1, updated_at = $2 WHERE id = $3 AND project_id = $4")
                 .bind(parent_id)
@@ -689,7 +752,10 @@ async fn upsert_budget(
     document_ids: &HashSet<Uuid>,
 ) -> Result<()> {
     if !document_ids.contains(&budget.design_id) {
-        bail!("budget '{}' references a document not present in this bundle", budget.name);
+        bail!(
+            "budget '{}' references a document not present in this bundle",
+            budget.name
+        );
     }
     let existing_owner: Option<Uuid> = sqlx::query_scalar(
         "SELECT d.project_id FROM design_budget_forecasts b JOIN project_designs d ON d.id = b.design_id WHERE b.id = $1",
@@ -911,12 +977,14 @@ async fn routine_belongs_to_project(
     routine_id: Uuid,
     project_id: Uuid,
 ) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_, Uuid>("SELECT project_id FROM project_routines WHERE id = $1")
-        .bind(routine_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .context("checking routine ownership")?
-        .is_some_and(|owner| owner == project_id))
+    Ok(
+        sqlx::query_scalar::<_, Uuid>("SELECT project_id FROM project_routines WHERE id = $1")
+            .bind(routine_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .context("checking routine ownership")?
+            .is_some_and(|owner| owner == project_id),
+    )
 }
 
 async fn task_belongs_to_project(
@@ -924,20 +992,26 @@ async fn task_belongs_to_project(
     task_id: Uuid,
     project_id: Uuid,
 ) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_, Uuid>("SELECT project_id FROM project_tasks WHERE id = $1")
-        .bind(task_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .context("checking task ownership")?
-        .is_some_and(|owner| owner == project_id))
+    Ok(
+        sqlx::query_scalar::<_, Uuid>("SELECT project_id FROM project_tasks WHERE id = $1")
+            .bind(task_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .context("checking task ownership")?
+            .is_some_and(|owner| owner == project_id),
+    )
 }
 
 async fn write_design_blob(design_id: Uuid, bytes: &[u8]) -> Result<()> {
     let root = design_blobs::blob_root();
-    tokio::fs::create_dir_all(&root).await.context("creating design blob directory")?;
+    tokio::fs::create_dir_all(&root)
+        .await
+        .context("creating design blob directory")?;
     let final_path = design_blobs::blob_path(&root, design_id);
     let temp_path = design_blobs::temp_blob_path(&root, design_id);
-    tokio::fs::write(&temp_path, bytes).await.context("writing imported design blob")?;
+    tokio::fs::write(&temp_path, bytes)
+        .await
+        .context("writing imported design blob")?;
     if let Err(error) = tokio::fs::rename(&temp_path, &final_path).await {
         let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(error).context("installing imported design blob");
@@ -952,7 +1026,10 @@ fn read_bundle(root: &Path, project_id: Uuid) -> Result<ImportSnapshot> {
         bail!("unsupported OpenMemory bundle format or version");
     }
     if manifest.project_id != project_id {
-        bail!("this bundle belongs to project {}, not this project", manifest.project_id);
+        bail!(
+            "this bundle belongs to project {}, not this project",
+            manifest.project_id
+        );
     }
 
     let docs_dir = existing_dir(&bundle.join("docs"))?;
@@ -969,12 +1046,23 @@ fn read_bundle(root: &Path, project_id: Uuid) -> Result<ImportSnapshot> {
         }
         let source_path = safe_record_file(&docs_dir, &meta.source_file, meta.id)?;
         let (source, pencil_bytes) = if meta.diagram_type == "pen" {
-            (PENCIL_SOURCE.to_string(), Some(fs::read(&source_path).with_context(|| format!("reading {}", meta.source_file))?))
+            let bytes =
+                fs::read(&source_path).with_context(|| format!("reading {}", meta.source_file))?;
+            let pencil_bytes = saved_pencil_blob(bytes);
+            (design_blobs::PENCIL_SOURCE.to_string(), pencil_bytes)
         } else {
-            (fs::read_to_string(&source_path).with_context(|| format!("reading {}", meta.source_file))?, None)
+            (
+                fs::read_to_string(&source_path)
+                    .with_context(|| format!("reading {}", meta.source_file))?,
+                None,
+            )
         };
         budgets += meta.budgets.len();
-        documents.push(ImportedDocument { meta, source, pencil_bytes });
+        documents.push(ImportedDocument {
+            meta,
+            source,
+            pencil_bytes,
+        });
     }
 
     let tasks = read_record_files::<TaskFile>(&existing_dir(&bundle.join("tasks"))?)?;
@@ -1003,7 +1091,14 @@ fn read_bundle(root: &Path, project_id: Uuid) -> Result<ImportSnapshot> {
         }
     }
 
-    Ok(ImportSnapshot { documents, tasks, routines, lessons, task_notes, budgets })
+    Ok(ImportSnapshot {
+        documents,
+        tasks,
+        routines,
+        lessons,
+        task_notes,
+        budgets,
+    })
 }
 
 fn read_record_files<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>> {
@@ -1044,7 +1139,8 @@ fn read_record_files<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>> {
         if value_id != id {
             bail!("record file {file_name} does not match its stable id");
         }
-        records.push(serde_json::from_value(value).with_context(|| format!("parsing {file_name}"))?);
+        records
+            .push(serde_json::from_value(value).with_context(|| format!("parsing {file_name}"))?);
     }
     Ok(records)
 }
@@ -1061,7 +1157,8 @@ fn ensure_dir(path: &Path) -> Result<PathBuf> {
 }
 
 fn existing_dir(path: &Path) -> Result<PathBuf> {
-    let metadata = fs::symlink_metadata(path).with_context(|| format!("missing bundle directory {}", path.display()))?;
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("missing bundle directory {}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("bundle path is not a real directory: {}", path.display());
     }
@@ -1077,7 +1174,11 @@ fn clear_record_files(dir: &Path) -> Result<()> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        let has_uuid_prefix = name.split("--").next().and_then(|prefix| Uuid::parse_str(prefix).ok()).is_some();
+        let has_uuid_prefix = name
+            .split("--")
+            .next()
+            .and_then(|prefix| Uuid::parse_str(prefix).ok())
+            .is_some();
         if has_uuid_prefix {
             fs::remove_file(path)?;
         }
@@ -1090,12 +1191,18 @@ fn safe_record_file(dir: &Path, file_name: &str, id: Uuid) -> Result<PathBuf> {
     if relative.is_absolute()
         || relative.components().count() != 1
         || !matches!(relative.components().next(), Some(Component::Normal(_)))
-        || relative.file_name().and_then(|name| name.to_str()).and_then(|name| name.split("--").next()).and_then(|prefix| Uuid::parse_str(prefix).ok()) != Some(id)
+        || relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.split("--").next())
+            .and_then(|prefix| Uuid::parse_str(prefix).ok())
+            != Some(id)
     {
         bail!("invalid bundle file name: {file_name}");
     }
     let path = dir.join(relative);
-    let metadata = fs::symlink_metadata(&path).with_context(|| format!("missing bundle file {file_name}"))?;
+    let metadata =
+        fs::symlink_metadata(&path).with_context(|| format!("missing bundle file {file_name}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         bail!("bundle file is not a regular file: {file_name}");
     }
@@ -1135,7 +1242,11 @@ fn slugify(value: &str) -> String {
     while output.ends_with('-') {
         output.pop();
     }
-    if output.is_empty() { "document".to_string() } else { output }
+    if output.is_empty() {
+        "document".to_string()
+    } else {
+        output
+    }
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -1148,14 +1259,15 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))
 }
 
-fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
-    let bytes = fs::read(source).with_context(|| format!("reading {}", source.display()))?;
-    atomic_write(destination, &bytes)
-}
-
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| anyhow!("bundle file has no parent"))?;
-    let temp = parent.join(format!(".{}.{}.tmp", path.file_name().unwrap_or_default().to_string_lossy(), Uuid::new_v4()));
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("bundle file has no parent"))?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        Uuid::new_v4()
+    ));
     fs::write(&temp, bytes).with_context(|| format!("writing {}", path.display()))?;
     if let Err(error) = fs::rename(&temp, path) {
         let _ = fs::remove_file(&temp);
@@ -1164,9 +1276,91 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Only a non-empty, non-marker file is a saved Pencil document. The marker is kept in the
+/// bundle as readable metadata, but importing it must leave the blob absent so the embed opens
+/// a blank graph instead of passing JSON to the `.fig` ZIP reader.
+fn saved_pencil_blob(bytes: Vec<u8>) -> Option<Vec<u8>> {
+    if bytes.is_empty() || design_blobs::is_pencil_placeholder(&bytes) {
+        None
+    } else {
+        Some(bytes)
+    }
+}
+
 fn bundle_readme(project_name: &str) -> String {
     format!(
         "# OpenMemory project data\n\nThis folder is the Git-friendly mirror for **{}**.\n\n- `docs/` contains source documents (`.md`, `.mmd`, `.drawio`, `.json`, or `.pen`) plus `index.json` metadata.\n- `tasks/`, `routines/`, and `lessons/` contain one JSON file per record. Task notes and decision checkpoints live inside each task file.\n- `manifest.json` records the bundle format and exported counts.\n\nUse the project page's Import / Export menu after checking out or merging these files. Import merges records by their stable IDs; it does not delete records that are absent from the bundle.\n",
         project_name
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pencil_source_marker_is_not_imported_as_a_blob() {
+        assert_eq!(
+            saved_pencil_blob(design_blobs::PENCIL_SOURCE.as_bytes().to_vec()),
+            None
+        );
+        assert_eq!(saved_pencil_blob(Vec::new()), None);
+        assert_eq!(
+            saved_pencil_blob(b" {\"providerId\":\"openmemory\"} \n".to_vec()),
+            None
+        );
+    }
+
+    #[test]
+    fn saved_pencil_bytes_are_preserved() {
+        let bytes = b"PK\x03\x04saved-fig-data".to_vec();
+        assert_eq!(saved_pencil_blob(bytes.clone()), Some(bytes));
+    }
+
+    #[test]
+    fn empty_pencil_export_keeps_marker_without_warning() {
+        let root = std::env::temp_dir().join(format!("openmemory-project-sync-{}", Uuid::new_v4()));
+        let design_id = Uuid::new_v4();
+        let timestamp = Utc::now();
+        let snapshot = ExportSnapshot {
+            project_id: Uuid::new_v4(),
+            project_name: "test".to_string(),
+            designs: vec![DesignRow {
+                id: design_id,
+                project_id: Uuid::new_v4(),
+                title: "uiux".to_string(),
+                kind: "ui".to_string(),
+                diagram_type: "pen".to_string(),
+                source: design_blobs::PENCIL_SOURCE.to_string(),
+                notes: None,
+                tags: Vec::new(),
+                sort_order: 0,
+                status: "active".to_string(),
+                created_by: "user".to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            }],
+            budgets: Vec::new(),
+            tasks: Vec::new(),
+            task_notes: Vec::new(),
+            routines: Vec::new(),
+            lessons: Vec::new(),
+        };
+
+        let export_result = write_bundle(&root, snapshot);
+        let source_path = root
+            .join(BUNDLE_DIR)
+            .join("docs")
+            .join(record_file_name(design_id, "uiux", "pen"));
+        let marker_result = fs::read(source_path);
+        let cleanup_result = fs::remove_dir_all(&root);
+
+        let response = export_result.expect("empty Pencil export should succeed");
+        assert!(response.warnings.is_empty());
+        assert_eq!(
+            marker_result.expect("exported marker should be readable"),
+            design_blobs::PENCIL_SOURCE.as_bytes()
+        );
+        cleanup_result.expect("test bundle should be removable");
+    }
 }

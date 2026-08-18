@@ -1165,4 +1165,33 @@ impl McpServer {
             frequency, title, id
         )}]}))
     }
+
+    pub(super) async fn project_design_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let project_id = args["project_id"]
+            .as_str()
+            .context("missing project_id")?;
+        let design_id = args["design_id"]
+            .as_str()
+            .context("missing design_id")?;
+
+        Uuid::parse_str(project_id).context("invalid project_id UUID")?;
+        Uuid::parse_str(design_id).context("invalid design_id UUID")?;
+
+        let result = sqlx::query(
+            "DELETE FROM project_designs WHERE id = $1 AND project_id = $2 RETURNING id"
+        )
+        .bind(design_id)
+        .bind(project_id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        result.context("design not found in project")?;
+        Ok(json!({"content": [{"type": "text", "text": format!(
+            "Deleted design {}.",
+            design_id
+        )}]}))
+    }
 }

@@ -968,6 +968,18 @@ impl McpServer {
                     "inputSchema": {"type": "object", "properties": {"design_id": {"type": "string"}, "budget_id": {"type": "string"}}, "required": ["design_id", "budget_id"]}
                 },
                 {
+                    "name": "project_design_delete",
+                    "description": "Delete a design from an OpenMemory project",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Project UUID"},
+                            "design_id": {"type": "string", "description": "Design UUID"}
+                        },
+                        "required": ["project_id", "design_id"]
+                    }
+                },
+                {
                     "name": "project_list",
                     "description": "List all projects with their task counts. Use this to find project_id for task operations.",
                     "inputSchema": {"type": "object", "properties": {}}

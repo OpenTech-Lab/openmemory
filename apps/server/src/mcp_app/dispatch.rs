@@ -68,6 +68,7 @@ impl McpServer {
             "design_budget_create" => self.design_budget_create(arguments).await,
             "design_budget_update" => self.design_budget_update(arguments).await,
             "design_budget_delete" => self.design_budget_delete(arguments).await,
+            "project_design_delete" => self.project_design_delete(arguments).await,
             "project_list" => self.project_list(arguments).await,
             "project_create" => self.project_create(arguments).await,
             "project_task_list" => self.project_task_list(arguments).await,

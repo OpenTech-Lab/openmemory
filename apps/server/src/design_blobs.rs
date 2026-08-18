@@ -15,6 +15,20 @@ use crate::{is_authenticated, AppState};
 /// Upper bound on a single design document. Real `.fig` files reach ~82 MB.
 pub const MAX_DESIGN_BLOB_BYTES: usize = 128 * 1024 * 1024;
 
+/// Marker stored in `project_designs.source` for a pen design before its first save.
+///
+/// This is metadata, not a `.fig` document. Older project-sync imports could copy the
+/// marker into the blob volume, where OpenPencil would correctly reject it as invalid ZIP
+/// data. Keep the marker definition next to blob handling so every boundary agrees that it
+/// represents an empty design.
+pub const PENCIL_SOURCE: &str = r#"{"providerId":"openmemory"}"#;
+
+pub fn is_pencil_placeholder(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .map(str::trim)
+        .is_ok_and(|value| value == PENCIL_SOURCE)
+}
+
 /// Directory holding `.fig` documents, overridable for tests and local runs.
 pub fn blob_root() -> PathBuf {
     std::env::var("OPENMEMORY_DESIGN_BLOB_DIR")
@@ -69,6 +83,16 @@ pub async fn get_design_blob(
     }
 
     match tokio::fs::read(blob_path(&blob_root(), design_id)).await {
+        Ok(bytes) if is_pencil_placeholder(&bytes) => {
+            // A legacy sync import may have written the source marker into the blob path.
+            // Treat it exactly like a design that has not been saved yet, so the embed keeps
+            // its blank graph instead of trying to parse metadata as a ZIP archive.
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "blob not found"})),
+            )
+                .into_response()
+        }
         Ok(bytes) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -102,7 +126,7 @@ pub async fn put_design_blob(
                 "error": format!("design exceeds {} MB limit", MAX_DESIGN_BLOB_BYTES / (1024 * 1024))
             })),
         )
-            .into_response();
+        .into_response();
     }
 
     match design_exists(&state, project_id, design_id).await {
@@ -114,6 +138,16 @@ pub async fn put_design_blob(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
         }
         Ok(true) => {}
+    }
+
+    if is_pencil_placeholder(&body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "design blob must contain a saved .fig document"
+            })),
+        )
+            .into_response();
     }
 
     let root = blob_root();
@@ -186,6 +220,13 @@ mod tests {
         let file_name = temp_a.file_name().unwrap().to_string_lossy().into_owned();
         assert!(file_name.starts_with(&format!("{design_id}.")));
         assert!(file_name.ends_with(".fig.tmp"));
+    }
+
+    #[test]
+    fn source_marker_is_recognized_as_an_empty_placeholder_not_a_blob() {
+        assert!(is_pencil_placeholder(PENCIL_SOURCE.as_bytes()));
+        assert!(is_pencil_placeholder(b" {\"providerId\":\"openmemory\"} \n"));
+        assert!(!is_pencil_placeholder(b"PK\x03\x04saved-fig-data"));
     }
 
     #[test]
