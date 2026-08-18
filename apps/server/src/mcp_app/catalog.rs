@@ -632,6 +632,53 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "env_http_request_oauth1",
+                    "description": "Make an HTTP request signed with OAuth 1.0a (RFC 5849, HMAC-SHA1) — all server-side; the consumer secret, access token secret, and computed signature never reach the agent, only the API response is returned. Use this for APIs that require the classic 4-secret OAuth1 handshake instead of a bearer token, most notably X/Twitter's API v1.1/v2 tweet-posting endpoints (consumer key/secret + access token/secret). A fresh oauth_nonce and oauth_timestamp are generated per request.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method: GET, POST, PUT, PATCH, DELETE",
+                                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Full URL to request, including query string if any — query params are included in the OAuth1 signature base string per RFC 5849 §3.4.1"
+                            },
+                            "consumer_key": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the OAuth consumer key (API key)"
+                            },
+                            "consumer_secret": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the OAuth consumer secret (API secret)"
+                            },
+                            "access_token": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the OAuth access token"
+                            },
+                            "access_token_secret": {
+                                "type": "string",
+                                "description": "Name of the secret env param holding the OAuth access token secret"
+                            },
+                            "form": {
+                                "type": "object",
+                                "description": "Optional x-www-form-urlencoded body params. If present, these are included in the OAuth1 signature base string (per spec) AND sent as the request body with Content-Type: application/x-www-form-urlencoded."
+                            },
+                            "body": {
+                                "type": "object",
+                                "description": "Optional JSON request body (for POST/PUT/PATCH), sent with Content-Type: application/json. Ignored if 'form' is also given. Note: JSON bodies are NOT part of the OAuth1 signature per spec — only query params and form-encoded params are signed."
+                            },
+                            "headers": {
+                                "type": "object",
+                                "description": "Optional additional headers as key-value pairs"
+                            }
+                        },
+                        "required": ["method", "url", "consumer_key", "consumer_secret", "access_token", "access_token_secret"]
+                    }
+                },
+                {
                     "name": "env_set_file",
                     "description": "Store a local file's contents as an env secret. The server reads the file from disk and encrypts it directly — the agent never has to pass the file's bytes as a tool argument, so raw file content never appears in the agent's own tool calls or transcript. Use this for uploading credential files (service account JSON, .p8/.p12 keys, certs) instead of env_set. Always stored as a secret (unreadable by agents) and base64-encoded internally, so both text and binary files work. Use env_http_request / env_http_request_jwt / env_sign_jwt afterward to use the stored file safely.",
                     "inputSchema": {

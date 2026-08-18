@@ -625,6 +625,238 @@ impl McpServer {
         }))
     }
 
+    // RFC 3986 percent-encoding for OAuth1 signature base strings — the unreserved
+    // set (A-Za-z0-9-._~) is left literal, everything else is %XX uppercase hex.
+    // reqwest's own URL percent-encoding is not strict enough for OAuth1 (it leaves
+    // some reserved characters like '!' or '*' unescaped), so this is hand-rolled.
+    fn oauth1_percent_encode(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        for byte in input.as_bytes() {
+            match *byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    out.push(*byte as char);
+                }
+                _ => {
+                    out.push('%');
+                    out.push_str(&format!("{:02X}", byte));
+                }
+            }
+        }
+        out
+    }
+
+    // OAuth 1.0a (RFC 5849) HMAC-SHA1-signed HTTP requests. X/Twitter's API
+    // v1.1/v2 tweet-posting endpoints require this 4-secret signing scheme
+    // instead of a plain bearer token, which env_http_request can't produce —
+    // the consumer secret and access token secret must be combined into a
+    // per-request HMAC-SHA1 signature over a canonical base string. All four
+    // secrets and the computed signature stay on the server; only the final
+    // API response is returned to the agent.
+    pub(super) async fn env_http_request_oauth1(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use hmac::{Hmac, Mac};
+        use rand::Rng;
+        use sha1::Sha1;
+
+        let method = args["method"]
+            .as_str()
+            .context("missing method")?
+            .to_uppercase();
+        let url = args["url"].as_str().context("missing url")?.to_string();
+        let consumer_key_name = args["consumer_key"]
+            .as_str()
+            .context("missing consumer_key")?
+            .to_string();
+        let consumer_secret_name = args["consumer_secret"]
+            .as_str()
+            .context("missing consumer_secret")?
+            .to_string();
+        let access_token_name = args["access_token"]
+            .as_str()
+            .context("missing access_token")?
+            .to_string();
+        let access_token_secret_name = args["access_token_secret"]
+            .as_str()
+            .context("missing access_token_secret")?
+            .to_string();
+
+        // Resolve all four secrets server-side — never returned to the agent.
+        let consumer_key = self.resolve_env_secret(&consumer_key_name).await?;
+        let consumer_secret = self.resolve_env_secret(&consumer_secret_name).await?;
+        let access_token = self.resolve_env_secret(&access_token_name).await?;
+        let access_token_secret = self.resolve_env_secret(&access_token_secret_name).await?;
+
+        if let Ok(allowed) = std::env::var("OPENMEMORY_HTTP_ALLOWED_HOSTS") {
+            let allowed_hosts: Vec<String> = allowed
+                .split(',')
+                .map(|h| h.trim().to_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let parsed = reqwest::Url::parse(&url).context("invalid url")?;
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            if !allowed_hosts.iter().any(|h| h == &host) {
+                anyhow::bail!(
+                    "Host '{}' is not in OPENMEMORY_HTTP_ALLOWED_HOSTS — request blocked",
+                    host
+                );
+            }
+        }
+
+        let form = args["form"].as_object().cloned();
+
+        // Split the URL into its base (no query) and query params — both the
+        // query params and any form params are part of the OAuth1 signature.
+        let parsed_url = reqwest::Url::parse(&url).context("invalid url")?;
+        let mut base_url = parsed_url.clone();
+        base_url.set_query(None);
+        base_url.set_fragment(None);
+        let base_url = base_url.to_string();
+
+        let nonce: String = {
+            let mut rng = rand::thread_rng();
+            (0..32)
+                .map(|_| {
+                    let charset = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+                    charset[rng.gen_range(0..charset.len())] as char
+                })
+                .collect()
+        };
+        let timestamp = Utc::now().timestamp().to_string();
+
+        let mut oauth_params: Vec<(String, String)> = vec![
+            ("oauth_consumer_key".to_string(), consumer_key.clone()),
+            ("oauth_nonce".to_string(), nonce),
+            (
+                "oauth_signature_method".to_string(),
+                "HMAC-SHA1".to_string(),
+            ),
+            ("oauth_timestamp".to_string(), timestamp),
+            ("oauth_token".to_string(), access_token.clone()),
+            ("oauth_version".to_string(), "1.0".to_string()),
+        ];
+
+        // Full param set for the signature base string: oauth_* + URL query params
+        // + form params (if given). JSON bodies are deliberately excluded — RFC
+        // 5849 only signs query-string and form-encoded params.
+        let mut sig_params: Vec<(String, String)> = oauth_params.clone();
+        for (k, v) in parsed_url.query_pairs() {
+            sig_params.push((k.to_string(), v.to_string()));
+        }
+        if let Some(form) = &form {
+            for (k, v) in form {
+                if let Some(v_str) = v.as_str() {
+                    sig_params.push((k.clone(), v_str.to_string()));
+                }
+            }
+        }
+
+        // RFC 3986 percent-encode every key/value, then sort by encoded key
+        // (then value) and join as key=value pairs to build the param string.
+        let mut encoded_params: Vec<(String, String)> = sig_params
+            .iter()
+            .map(|(k, v)| (Self::oauth1_percent_encode(k), Self::oauth1_percent_encode(v)))
+            .collect();
+        encoded_params.sort();
+        let param_string = encoded_params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let base_string = format!(
+            "{}&{}&{}",
+            method,
+            Self::oauth1_percent_encode(&base_url),
+            Self::oauth1_percent_encode(&param_string)
+        );
+
+        let signing_key = format!(
+            "{}&{}",
+            Self::oauth1_percent_encode(&consumer_secret),
+            Self::oauth1_percent_encode(&access_token_secret)
+        );
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(signing_key.as_bytes())
+            .context("failed to initialize HMAC-SHA1")?;
+        mac.update(base_string.as_bytes());
+        let signature = STANDARD.encode(mac.finalize().into_bytes());
+
+        oauth_params.push(("oauth_signature".to_string(), signature));
+
+        // Build the Authorization header: all oauth_* params (including the
+        // signature), percent-encoded, sorted by key, comma-separated.
+        let mut header_params: Vec<(String, String)> = oauth_params
+            .iter()
+            .map(|(k, v)| (k.clone(), Self::oauth1_percent_encode(v)))
+            .collect();
+        header_params.sort();
+        let auth_header = format!(
+            "OAuth {}",
+            header_params
+                .iter()
+                .map(|(k, v)| format!("{}=\"{}\"", k, v))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        let client = HttpClient::new();
+        let mut req = match method.as_str() {
+            "GET" => client.get(&url),
+            "POST" => client.post(&url),
+            "PUT" => client.put(&url),
+            "PATCH" => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            other => anyhow::bail!("Unsupported HTTP method: {}", other),
+        }
+        .header("Authorization", auth_header);
+
+        if let Some(headers) = args["headers"].as_object() {
+            for (k, v) in headers {
+                if let Some(v_str) = v.as_str() {
+                    req = req.header(k.as_str(), v_str);
+                }
+            }
+        }
+
+        // Always set a body (even empty) — some APIs (e.g. Google's) require
+        // Content-Length on POST/PUT/PATCH and reject requests with none set.
+        // reqwest doesn't auto-emit Content-Length for a zero-length body, so
+        // set it explicitly in that case.
+        req = if let Some(form) = &form {
+            let form_pairs: Vec<(String, String)> = form
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|v_str| (k.clone(), v_str.to_string())))
+                .collect();
+            req.form(&form_pairs)
+        } else {
+            match args.get("body") {
+                Some(body) if !body.is_null() => {
+                    req.header("Content-Type", "application/json").body(body.to_string())
+                }
+                _ => req.header("Content-Length", "0").body(""),
+            }
+        };
+
+        let response = req.send().await.context("HTTP request failed")?;
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_default();
+
+        let display = serde_json::from_str::<serde_json::Value>(&body_text)
+            .map(|v| serde_json::to_string_pretty(&v).unwrap_or(body_text.clone()))
+            .unwrap_or(body_text);
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("HTTP {} — status {}\n\n{}", method, status, display)
+            }],
+            "isError": status >= 400
+        }))
+    }
+
     pub(super) async fn env_set_file(
         &mut self,
         args: &serde_json::Value,

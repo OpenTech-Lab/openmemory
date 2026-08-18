@@ -47,6 +47,7 @@ impl McpServer {
             "env_http_download" => self.env_http_download(arguments).await,
             "env_sign_jwt" => self.env_sign_jwt(arguments).await,
             "env_http_request_jwt" => self.env_http_request_jwt(arguments).await,
+            "env_http_request_oauth1" => self.env_http_request_oauth1(arguments).await,
             "env_set_file" => self.env_set_file(arguments).await,
             "env_google_service_account_request" => {
                 self.env_google_service_account_request(arguments).await
