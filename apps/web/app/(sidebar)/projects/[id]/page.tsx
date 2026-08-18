@@ -675,7 +675,7 @@ export default function ProjectDetailPage() {
 
       {/* Tabs — always visible; Graph/Files/History tabs only for projects with a path.
           Order: Files, Docs, Tasks, Routines, Lessons, Graph, History. */}
-      <div className="flex shrink-0 px-6">
+      <div className="flex shrink-0 border-b px-6">
         {hasGraph && (
           <button
             className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'files' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
@@ -1007,7 +1007,7 @@ export default function ProjectDetailPage() {
         )}
 
         {activeTab === 'design' && (
-          <div className="flex flex-col h-full p-6 overflow-auto">
+          <div className="flex h-full min-h-0 flex-col overflow-auto">
             <ProjectDesignPanel key={`${id}-${syncVersion}`} projectId={id} projectPath={project.path} />
           </div>
         )}

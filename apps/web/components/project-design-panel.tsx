@@ -3,7 +3,7 @@
 // Note: this component must be imported with next/dynamic + ssr:false — it renders
 // <MermaidDiagram>, which touches `document` at import time.
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Children, useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
@@ -93,6 +93,8 @@ import {
 import { drawioStarterSource, isDrawioStarterSource } from '@/lib/drawio';
 import type { ForecastProfile } from '@/lib/forecast-types';
 import { DesignBudgetSheet } from '@/components/design-budget-sheet';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 // The editor/preview routing decision (Decision 3): draw.io uses the same mxGraph document in its
 // editor and viewer, React Flow designs are always 'canvas';
@@ -252,6 +254,35 @@ function graphIsUntouched(graph: DesignGraph, kind: string): boolean {
 function deriveTitleFromPrompt(prompt: string): string {
   const words = prompt.trim().split(/\s+/).slice(0, 8).join(' ');
   return words.length > 60 ? `${words.slice(0, 60).trim()}…` : words;
+}
+
+function ProjectDocsLayout({ children }: { children: ReactNode }) {
+  const isMobile = useIsMobile();
+  const [sidebar, preview] = Children.toArray(children);
+
+  if (isMobile) {
+    return <div className="flex min-h-0 flex-1 flex-col gap-3">{sidebar}{preview}</div>;
+  }
+
+  return (
+    <ResizablePanelGroup
+      direction="horizontal"
+      autoSaveId="openmemory-project-docs-layout-v2"
+      keyboardResizeBy={2}
+      className="min-h-0 flex-1"
+    >
+      <ResizablePanel defaultSize={24} minSize={16} maxSize={40} className="min-w-56">
+        {sidebar}
+      </ResizablePanel>
+      <ResizableHandle
+        withHandle
+        className="mx-1.5 w-1.5 rounded-full bg-transparent transition-colors after:w-3 hover:bg-border/40 focus-visible:bg-border/40 [&>div]:border-border/80 [&>div]:bg-background [&>div]:shadow-sm"
+      />
+      <ResizablePanel minSize={60} className="min-w-0 pl-1.5">
+        {preview}
+      </ResizablePanel>
+    </ResizablePanelGroup>
+  );
 }
 
 export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPanelProps) {
@@ -709,8 +740,8 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex min-h-0 flex-1 flex-col gap-3 md:grid md:grid-cols-[250px_minmax(0,1fr)]">
-        <aside className="flex max-h-[300px] min-h-0 flex-col overflow-hidden rounded-lg border bg-card/30 md:h-full md:max-h-none">
+      <ProjectDocsLayout>
+        <aside className="flex max-h-[300px] min-h-0 flex-col overflow-hidden md:h-full md:max-h-none md:border-r">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5">
             <div className="flex min-w-0 items-center gap-2">
               <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
@@ -976,7 +1007,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
         </div>
       </div>
         </div>
-      </div>
+      </ProjectDocsLayout>
 
       {/* Create/Edit dialog — canvas formats need far more width than the Mermaid textarea. */}
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>

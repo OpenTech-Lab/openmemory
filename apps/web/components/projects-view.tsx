@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
@@ -204,6 +205,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const [routineSheetMode, setRoutineSheetMode] = useState<'view' | 'edit'>('view');
   const [routineEditForm, setRoutineEditForm] = useState({ title: '', description: '', frequency: '', priority: '', assigned_to: '', enabled: true, labels: [] as string[] });
   const [isSavingRoutine, setIsSavingRoutine] = useState(false);
+  const [togglingRoutineId, setTogglingRoutineId] = useState<string | null>(null);
   const [confirmDeleteRoutine, setConfirmDeleteRoutine] = useState(false);
 
   // Routine execution history sheet
@@ -716,6 +718,38 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     }
   };
 
+  const handleToggleRoutine = async (routine: Routine) => {
+    if (togglingRoutineId) return;
+    const nextEnabled = !routine.enabled;
+    setTogglingRoutineId(routine.id);
+    setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, enabled: nextEnabled } : r));
+    setSelectedRoutine(prev => prev?.id === routine.id ? { ...prev, enabled: nextEnabled } : prev);
+    setRoutineEditForm(prev => selectedRoutine?.id === routine.id ? { ...prev, enabled: nextEnabled } : prev);
+
+    try {
+      const res = await fetch(`/api/projects/${routine.project_id}/routines/${routine.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      const updated = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(updated.error ?? `HTTP ${res.status}`);
+
+      const persistedEnabled = updated.enabled ?? nextEnabled;
+      setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, ...updated, enabled: persistedEnabled, project_name: r.project_name } : r));
+      setSelectedRoutine(prev => prev?.id === routine.id ? { ...prev, ...updated, enabled: persistedEnabled } : prev);
+      setRoutineEditForm(prev => selectedRoutine?.id === routine.id ? { ...prev, enabled: persistedEnabled } : prev);
+      toast.success(`${routine.title} ${persistedEnabled ? 'activated' : 'deactivated'}`);
+    } catch (error) {
+      setRoutines(prev => prev.map(r => r.id === routine.id ? { ...r, enabled: routine.enabled } : r));
+      setSelectedRoutine(prev => prev?.id === routine.id ? { ...prev, enabled: routine.enabled } : prev);
+      setRoutineEditForm(prev => selectedRoutine?.id === routine.id ? { ...prev, enabled: routine.enabled } : prev);
+      toast.error(`Failed to ${nextEnabled ? 'activate' : 'deactivate'} routine${error instanceof Error && error.message ? `: ${error.message}` : ''}`);
+    } finally {
+      setTogglingRoutineId(null);
+    }
+  };
+
   const handleDeleteTask = async (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
@@ -1035,6 +1069,8 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
                           showProject={boardFilter === 'all'}
                           onOpen={() => openRoutineSheet(routine)}
                           onEdit={() => openRoutineSheet(routine, 'edit')}
+                          onToggleEnabled={() => handleToggleRoutine(routine)}
+                          isToggling={togglingRoutineId === routine.id}
                         />
                       ))}
                       {colTasks.map(task => (
@@ -1844,12 +1880,14 @@ type BoardCardItem =
 /// Renders a task or a routine as a board card. The two entities are structurally
 /// near-identical (title, priority, labels, assignee) — the only real differences are
 /// the primary badge (task status vs. routine frequency) and the drag handle (tasks only).
-function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
+function BoardCard({ item, showProject, parentTitle, onOpen, onEdit, onToggleEnabled, isToggling }: {
   item: BoardCardItem;
   showProject: boolean;
   parentTitle?: string;
   onOpen: () => void;
   onEdit: () => void;
+  onToggleEnabled?: () => void;
+  isToggling?: boolean;
 }) {
   const { t } = useI18n();
   const isTask = item.kind === 'task';
@@ -1867,7 +1905,9 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
     ? 'border-amber-300/90 bg-amber-50/80 hover:border-amber-500 dark:border-amber-700/80 dark:bg-amber-950/30 dark:hover:border-amber-400'
     : isTask
     ? 'border bg-background hover:border-primary/30'
-    : 'border bg-background border-purple-200/60 dark:border-purple-800/40 hover:border-purple-400/60 dark:hover:border-purple-600/60';
+    : routine!.enabled
+    ? 'border bg-background border-purple-200/60 dark:border-purple-800/40 hover:border-purple-400/60 dark:hover:border-purple-600/60'
+    : 'border bg-muted/30 border-purple-200/40 dark:border-purple-800/30';
 
   return (
     <div
@@ -1932,15 +1972,31 @@ function BoardCard({ item, showProject, parentTitle, onOpen, onEdit }: {
         </div>
       </div>
 
-      {/* Action buttons — shown on hover */}
-      <div className="shrink-0 mt-1.5 mr-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={e => { e.stopPropagation(); onEdit(); }}
-          className="p-1.5 rounded hover:bg-muted text-muted-foreground"
-          title={isTask ? 'Edit task' : 'Edit routine'}
-        >
-          <Pencil className="h-3 w-3" />
-        </button>
+      {/* Edit stays in the top-right; routine activation stays in the bottom-right. */}
+      <div className="shrink-0 self-stretch mr-1 flex flex-col items-end py-1.5">
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={e => { e.stopPropagation(); onEdit(); }}
+            className="p-1.5 rounded hover:bg-muted text-muted-foreground"
+            title={isTask ? 'Edit task' : 'Edit routine'}
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        </div>
+        {routine && onToggleEnabled && (
+          <div className="mt-auto flex items-center gap-1" onClick={e => e.stopPropagation()}>
+            <span className={`text-[10px] font-medium ${routine.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
+              {routine.enabled ? 'Active' : 'Inactive'}
+            </span>
+            <Switch
+              checked={routine.enabled}
+              onCheckedChange={onToggleEnabled}
+              disabled={isToggling}
+              size="sm"
+              aria-label={`${routine.enabled ? 'Deactivate' : 'Activate'} ${routine.title}`}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

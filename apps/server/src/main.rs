@@ -7509,7 +7509,7 @@ fn is_routine_due(frequency: &str, last_task_date: Option<chrono::NaiveDate>) ->
 async fn run_routine_check(db: &PgPool, project_id: Uuid) -> Result<Vec<serde_json::Value>, sqlx::Error> {
     let all_routines = sqlx::query_as::<_, ProjectRoutine>(
         r#"SELECT id, project_id, title, description, frequency, priority, assigned_to,
-                  last_task_date, enabled, created_at, updated_at
+                  last_task_date, enabled, created_at, updated_at, labels
            FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
     )
     .bind(project_id)
@@ -7732,7 +7732,7 @@ async fn check_project_routines(
         // Report which routines are currently due without creating tasks or claiming the day.
         let all_routines = sqlx::query_as::<_, ProjectRoutine>(
             r#"SELECT id, project_id, title, description, frequency, priority, assigned_to,
-                      last_task_date, enabled, created_at, updated_at
+                      last_task_date, enabled, created_at, updated_at, labels
                FROM project_routines WHERE project_id = $1 AND enabled = TRUE"#
         )
         .bind(project_id)
