@@ -55,7 +55,7 @@ export function AppHeader() {
         <DropdownMenuContent
           align="start"
           sideOffset={8}
-          className="ml-2 w-[calc(100vw-1rem)] max-w-[760px] rounded-sm border-border bg-background p-0 shadow-[0_18px_48px_rgba(3,10,20,0.28)]"
+          className="ml-2 w-[calc(100vw-1rem)] max-w-[440px] rounded-sm border-border bg-background p-0 shadow-[0_18px_48px_rgba(3,10,20,0.28)]"
         >
           <div className="flex items-center justify-between border-b bg-muted/35 px-5 py-3.5">
             <div>
@@ -66,13 +66,13 @@ export function AppHeader() {
               {t('header.navigation')}
             </span>
           </div>
-          <div className="grid max-h-[min(72vh,640px)] grid-cols-1 gap-x-7 gap-y-5 overflow-y-auto p-4 sm:grid-cols-2">
+          <div className="grid max-h-[min(72vh,640px)] grid-cols-1 gap-y-4 overflow-y-auto p-3">
             {NAV_GROUPS.map((group) => (
               <DropdownMenuGroup key={group.label}>
                 <DropdownMenuLabel className="mb-1 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
                   {t(group.labelKey)}
                 </DropdownMenuLabel>
-                <div className="space-y-0.5">
+                <div className="grid grid-cols-3 gap-1 sm:grid-cols-4">
                   {group.items.map((item) => {
                     const isActive = isNavItemActive(pathname, item.href);
                     return (
@@ -80,17 +80,14 @@ export function AppHeader() {
                         <Link
                           href={item.href}
                           aria-current={isActive ? 'page' : undefined}
-                          className={`group/item grid grid-cols-[2.25rem_1fr] gap-x-2 rounded-sm border-l-2 px-2 py-2 outline-none transition-colors ${
-                            isActive
-                              ? 'border-[#ff9900] bg-[#ff9900]/10'
-                              : 'border-transparent hover:border-slate-300 hover:bg-muted/70 dark:hover:border-slate-600'
-                          }`}
+                          aria-label={`${t(item.labelKey)}: ${t(item.descriptionKey)}`}
+                          title={t(item.descriptionKey)}
+                          className="group/item flex flex-col items-center justify-center gap-1 rounded-lg px-1 py-2.5 text-center outline-none transition-colors hover:bg-muted/70"
                         >
-                          <span className={`row-span-2 grid size-8 place-items-center rounded-sm ${isActive ? 'bg-[#ff9900] text-[#182536]' : 'bg-muted text-muted-foreground group-hover/item:text-foreground'}`}>
+                          <span className={`grid size-9 place-items-center rounded-lg ${isActive ? 'bg-[#ff9900] text-[#182536]' : 'bg-muted text-muted-foreground group-hover/item:text-foreground'}`}>
                             <item.icon className="size-4" />
                           </span>
-                          <span className="self-end text-sm font-semibold leading-tight">{t(item.labelKey)}</span>
-                          <span className="text-[11px] leading-tight text-muted-foreground">{t(item.descriptionKey)}</span>
+                          <span className="text-[11px] font-semibold leading-tight">{t(item.labelKey)}</span>
                         </Link>
                       </DropdownMenuItem>
                     );

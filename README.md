@@ -347,6 +347,10 @@ docker compose logs openmemory-watcher
 
 ## Architecture
 
+See [docs/design/primitives.md](docs/design/primitives.md) for a conceptual reference on
+every agent-facing primitive (memory, temporal graph, env params, resources, tasks,
+lessons, workflows, and more) — what each one is and when to use it over its neighbors.
+
 ```mermaid
 flowchart LR
     Agent[MCP client] --> MCP[openmemory-mcp]

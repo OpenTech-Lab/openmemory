@@ -185,6 +185,14 @@ Prefer an existing workflow over reconstructing the same integration sequence:
 
 Templates can reference `{{input.name}}` and earlier results such as `{{steps.lookup.body.id}}`. File-like workflow inputs accept an absolute host-visible path or an object with `path`; image and PDF inputs must have matching file types. OpenMemory executes HTTP nodes server-side but never executes host commands itself.
 
+### Recipe: Summarize a meeting
+
+A reusable `http` (fetch transcript) → `agent` (summarize + save) workflow — transcript-in,
+summary-out, no audio capture or transcription provider baked in. See
+[`docs/design/meeting-summary-workflow.md`](../../docs/design/meeting-summary-workflow.md) for
+the concrete `workflow` definition, the one-time `env_set` credential setup, and a mandatory
+privacy callout (summarizing sends transcript content to whatever LLM backs the agent step).
+
 ## Plan forecasts and design budgets
 
 Use `forecast_list` before designing for scale or estimating cost. Manage reusable assumptions with `forecast_create`, `forecast_update`, and `forecast_delete`. Profiles capture application type, user count, monthly budget, stress tolerance, usage pattern, engagement, planning horizon, and growth.
