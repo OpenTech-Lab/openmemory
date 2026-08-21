@@ -219,6 +219,8 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const [createForm, setCreateForm] = useState({ name: '', path: '', description: '', version_status: 'active' });
   const [isCreating, setIsCreating] = useState(false);
   const [rebuildingId, setRebuildingId] = useState<string | null>(null);
+  const [confirmBulkRebuild, setConfirmBulkRebuild] = useState(false);
+  const [bulkRebuild, setBulkRebuild] = useState<{ done: number; total: number; currentId: string | null } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -346,6 +348,38 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       toast.error('Rebuild failed');
     } finally {
       setRebuildingId(null);
+    }
+  };
+
+  // Rebuilds every project's graph one at a time — these are expensive server-side,
+  // so they are deliberately not fired in parallel.
+  const handleBulkRebuild = async () => {
+    setConfirmBulkRebuild(false);
+    const targets = projects;
+    if (targets.length === 0) return;
+    setBulkRebuild({ done: 0, total: targets.length, currentId: targets[0].id });
+    const failed: string[] = [];
+    try {
+      for (let i = 0; i < targets.length; i += 1) {
+        const project = targets[i];
+        setBulkRebuild({ done: i, total: targets.length, currentId: project.id });
+        try {
+          const res = await fetch(`/api/projects/${project.id}/rebuild`, { method: 'POST' });
+          if (!res.ok) failed.push(project.name);
+        } catch {
+          failed.push(project.name);
+        }
+        setBulkRebuild({ done: i + 1, total: targets.length, currentId: null });
+      }
+      await fetchProjects();
+      const succeeded = targets.length - failed.length;
+      if (failed.length === 0) {
+        toast.success(`Rebuilt ${succeeded} project graph${succeeded === 1 ? '' : 's'}`);
+      } else {
+        toast.error(`Rebuilt ${succeeded} of ${targets.length}. Failed: ${failed.join(', ')}`);
+      }
+    } finally {
+      setBulkRebuild(null);
     }
   };
 
@@ -881,18 +915,24 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit project" onClick={() => openProjectEdit(row.original)}>
             <Pencil className="h-3.5 w-3.5" />
           </Button>
-          {row.original.path && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="Rebuild graph"
-              onClick={() => handleRebuild(row.original.id)}
-              disabled={rebuildingId === row.original.id}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${rebuildingId === row.original.id ? 'animate-spin' : ''}`} />
-            </Button>
-          )}
+          {row.original.path && (() => {
+            // Spins for a single-row rebuild and for whichever row the bulk run is on.
+            const isRebuilding =
+              rebuildingId === row.original.id || bulkRebuild?.currentId === row.original.id;
+            return (
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`h-7 w-7 p-0 transition-colors ${isRebuilding ? 'bg-primary/10 text-primary animate-pulse disabled:opacity-100' : ''}`}
+                title={isRebuilding ? 'Rebuilding graph…' : 'Rebuild graph'}
+                aria-busy={isRebuilding}
+                onClick={() => handleRebuild(row.original.id)}
+                disabled={isRebuilding || !!bulkRebuild}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isRebuilding ? 'animate-spin' : ''}`} />
+              </Button>
+            );
+          })()}
           <Button
             variant="ghost"
             size="sm"
@@ -944,6 +984,17 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             title={t('projects.refresh')}
           >
             <RefreshCw className={`h-4 w-4 ${(isLoading || isLoadingTasks) ? 'animate-spin' : ''}`} />
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={() => setConfirmBulkRebuild(true)}
+            disabled={!!bulkRebuild || isLoading || projects.length === 0}
+            title="Rebuild the code graph for every project"
+          >
+            <Sparkles className={`h-3.5 w-3.5 mr-1.5 ${bulkRebuild ? 'animate-pulse' : ''}`} />
+            {bulkRebuild ? `Rebuilding ${bulkRebuild.done}/${bulkRebuild.total}` : 'Rebuild all'}
           </Button>
           {/* View toggle */}
           <div className="flex items-center border rounded-md overflow-hidden">
@@ -1215,6 +1266,23 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       </Dialog>
 
       {/* Path Change Confirm */}
+      <AlertDialog open={confirmBulkRebuild} onOpenChange={setConfirmBulkRebuild}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rebuild all project graphs?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This rebuilds the code knowledge graph for all {projects.length} project
+              {projects.length === 1 ? '' : 's'}, one at a time. It can take a while and
+              puts sustained load on the server.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleBulkRebuild}>Rebuild all</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={confirmPathChange} onOpenChange={setConfirmPathChange}>
         <AlertDialogContent>
           <AlertDialogHeader>
