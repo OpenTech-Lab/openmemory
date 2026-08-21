@@ -1,6 +1,6 @@
 # OpenMemory — Agent Architecture Primitives
 
-Version: 0.2.0 (see [`version/0.2.0.md`](../../version/0.2.0.md))
+Version: 0.2.0 (see [`version/0.2.0.md`](../version/0.2.0.md))
 
 This document is a conceptual reference for contributors and agent-authors building on
 OpenMemory. It describes each storage/behavior primitive behind the ~70-tool MCP surface

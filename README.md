@@ -4,7 +4,7 @@ Local-first memory, planning, knowledge graphs, and secure integrations for AI a
 
 OpenMemory 0.2.0 combines persistent memory with project tasks, decision history, reusable workflows, registered resources, codebase graphs, design documents, cost forecasts, and credential-safe network tools. Data stays in your local services unless you explicitly configure an outbound workflow, LLM provider, HTTP request, or SSH action.
 
-Current release: **v0.2.0** · [Release notes](version/0.2.0.md) · [License](LICENSE)
+Current release: **v0.2.0** · [Release notes](docs/version/0.2.0.md) · [License](LICENSE)
 
 ## What is included
 
@@ -446,7 +446,7 @@ openmemory/
 ├── scripts/mem            command-line client
 ├── docker/                local editor/embed support
 ├── docs/                  architecture, design, and implementation notes
-├── version/               release summaries
+│   └── version/           release summaries
 └── docker-compose.yml     local service stack
 ```
 

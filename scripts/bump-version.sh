@@ -12,7 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVER_CARGO="${PROJECT_ROOT}/apps/server/Cargo.toml"
 WEB_PKG="${PROJECT_ROOT}/apps/web/package.json"
-VERSION_DIR="${PROJECT_ROOT}/version"
+VERSION_DIR="${PROJECT_ROOT}/docs/version"
+README="${PROJECT_ROOT}/README.md"
 
 INPUT_VERSION=""
 FORCE=false
@@ -126,6 +127,18 @@ echo "✓ Updated ${SERVER_CARGO}"
 sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" "${WEB_PKG}"
 echo "✓ Updated ${WEB_PKG}"
 
+# Update README release line
+VERSION_DIR_REL="${VERSION_DIR#${PROJECT_ROOT}/}"
+if grep -qE '^Current release: ' "${README}"; then
+  sed -i -E "/^Current release: /{
+    s#\*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*#**${TAG_NAME}**#
+    s#\[Release notes\]\([^)]*\)#[Release notes](${VERSION_DIR_REL}/${VERSION}.md)#
+  }" "${README}"
+  echo "✓ Updated ${README}"
+else
+  echo "⚠ No 'Current release:' line in ${README}; skipping README update"
+fi
+
 # Create version notes file
 mkdir -p "${VERSION_DIR}"
 VERSION_FILE="${VERSION_DIR}/${VERSION}.md"
@@ -154,7 +167,7 @@ find "${VERSION_DIR}" -maxdepth 1 -type f -name '*.md' ! -name "${VERSION}.md" -
 echo "✓ Wrote ${VERSION_FILE}"
 
 # Commit
-git -C "${PROJECT_ROOT}" add "${SERVER_CARGO}" "${WEB_PKG}"
+git -C "${PROJECT_ROOT}" add "${SERVER_CARGO}" "${WEB_PKG}" "${README}"
 git -C "${PROJECT_ROOT}" add -A "${VERSION_DIR}"
 
 if git -C "${PROJECT_ROOT}" diff --cached --quiet; then
