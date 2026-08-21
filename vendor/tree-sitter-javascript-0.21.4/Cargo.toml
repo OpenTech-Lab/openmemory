@@ -6,7 +6,7 @@
 # tree-sitter-javascript's original tilde pin. cc's build API this crate
 # uses (cc::Build::new()...compile()) is stable across the 1.x line, so this
 # is a manifest-only change with no effect on the compiled output. See
-# apps/server/README.md (env_ssh_execute section) for context.
+# vendor/README.md for the full rationale and removal criteria.
 #
 # Original (unpatched) upstream content follows, for reference:
 #

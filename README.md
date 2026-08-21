@@ -447,6 +447,7 @@ openmemory/
 ├── docker/                local editor/embed support
 ├── docs/                  architecture, design, and implementation notes
 │   └── version/           release summaries
+├── vendor/                patched third-party crates (see vendor/README.md)
 └── docker-compose.yml     local service stack
 ```
 
