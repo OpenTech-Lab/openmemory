@@ -100,6 +100,18 @@ export function EnvParamsPanel() {
 
   // Delete dialog
   const [deleteParam, setDeleteParam] = useState<EnvParam | null>(null);
+  const [deleteConfirmKey, setDeleteConfirmKey] = useState('');
+  const isDeleteConfirmed = !!deleteParam && deleteConfirmKey === deleteParam.key;
+
+  const openDelete = (param: EnvParam) => {
+    setDeleteConfirmKey('');
+    setDeleteParam(param);
+  };
+
+  const closeDelete = () => {
+    setDeleteParam(null);
+    setDeleteConfirmKey('');
+  };
 
   const fetchParams = useCallback(async () => {
     setIsLoading(true);
@@ -229,13 +241,13 @@ export function EnvParamsPanel() {
   };
 
   const handleDelete = async () => {
-    if (!deleteParam) return;
+    if (!deleteParam || !isDeleteConfirmed) return;
     try {
       const res = await callApi({ type: 'env.delete', key: deleteParam.key });
       const data = await res.json();
       if (data.error) { toast.error(data.error); return; }
       toast.success(`Parameter '${deleteParam.key}' deleted`);
-      setDeleteParam(null);
+      closeDelete();
       setPage(0);
       fetchParams();
     } catch {
@@ -357,7 +369,7 @@ export function EnvParamsPanel() {
                         size="icon"
                         className="h-8 w-8 text-destructive hover:text-destructive"
                         title="Delete"
-                        onClick={() => setDeleteParam(param)}
+                        onClick={() => openDelete(param)}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -639,7 +651,7 @@ export function EnvParamsPanel() {
       </Dialog>
 
       {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteParam} onOpenChange={() => setDeleteParam(null)}>
+      <AlertDialog open={!!deleteParam} onOpenChange={(open) => { if (!open) closeDelete(); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Parameter</AlertDialogTitle>
@@ -648,10 +660,31 @@ export function EnvParamsPanel() {
               Any agent or tool referencing this key will stop working.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="delete-confirm-key">
+              Type <code className="font-mono font-semibold">{deleteParam?.key}</code> to confirm
+            </Label>
+            <Input
+              id="delete-confirm-key"
+              autoComplete="off"
+              autoFocus
+              spellCheck={false}
+              value={deleteConfirmKey}
+              placeholder={deleteParam?.key}
+              onChange={(e) => setDeleteConfirmKey(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && isDeleteConfirmed) {
+                  e.preventDefault();
+                  handleDelete();
+                }
+              }}
+            />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
+              disabled={!isDeleteConfirmed}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
