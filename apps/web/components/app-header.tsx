@@ -55,24 +55,24 @@ export function AppHeader() {
         <DropdownMenuContent
           align="start"
           sideOffset={8}
-          className="ml-2 w-[calc(100vw-1rem)] max-w-[440px] rounded-sm border-border bg-background p-0 shadow-[0_18px_48px_rgba(3,10,20,0.28)]"
+          className="ml-2 w-[calc(100vw-1rem)] max-w-[400px] rounded-sm border-border bg-background p-0 shadow-[0_18px_48px_rgba(3,10,20,0.28)]"
         >
-          <div className="flex items-center justify-between border-b bg-muted/35 px-5 py-3.5">
+          <div className="flex items-center justify-between border-b bg-muted/35 px-3.5 py-2">
             <div>
               <p className="text-sm font-semibold">{t('header.services')}</p>
               <p className="text-xs text-muted-foreground">{t('header.chooseWorkspace')}</p>
             </div>
-            <span className="rounded-sm border bg-background px-2 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+            <span className="rounded-sm border bg-background px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
               {t('header.navigation')}
             </span>
           </div>
-          <div className="grid max-h-[min(72vh,640px)] grid-cols-1 gap-y-4 overflow-y-auto p-3">
+          <div className="grid max-h-[min(72vh,640px)] grid-cols-1 gap-y-2 overflow-y-auto p-2">
             {NAV_GROUPS.map((group) => (
               <DropdownMenuGroup key={group.label}>
-                <DropdownMenuLabel className="mb-1 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+                <DropdownMenuLabel className="mb-0.5 px-2 py-0 text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
                   {t(group.labelKey)}
                 </DropdownMenuLabel>
-                <div className="grid grid-cols-3 gap-1 sm:grid-cols-4">
+                <div className="grid grid-cols-4 gap-0.5 sm:grid-cols-5">
                   {group.items.map((item) => {
                     const isActive = isNavItemActive(pathname, item.href);
                     return (
@@ -82,12 +82,12 @@ export function AppHeader() {
                           aria-current={isActive ? 'page' : undefined}
                           aria-label={`${t(item.labelKey)}: ${t(item.descriptionKey)}`}
                           title={t(item.descriptionKey)}
-                          className="group/item flex flex-col items-center justify-center gap-1 rounded-lg px-1 py-2.5 text-center outline-none transition-colors hover:bg-muted/70"
+                          className="group/item flex flex-col items-center justify-center gap-1 rounded-md px-0.5 py-1.5 text-center outline-none transition-colors hover:bg-muted/70"
                         >
-                          <span className={`grid size-9 place-items-center rounded-lg ${isActive ? 'bg-[#ff9900] text-[#182536]' : 'bg-muted text-muted-foreground group-hover/item:text-foreground'}`}>
-                            <item.icon className="size-4" />
+                          <span className={`grid size-7 place-items-center rounded-md ${isActive ? 'bg-[#ff9900] text-[#182536]' : 'bg-muted text-muted-foreground group-hover/item:text-foreground'}`}>
+                            <item.icon className="size-3.5" />
                           </span>
-                          <span className="text-[11px] font-semibold leading-tight">{t(item.labelKey)}</span>
+                          <span className="text-[10px] font-semibold leading-tight">{t(item.labelKey)}</span>
                         </Link>
                       </DropdownMenuItem>
                     );
