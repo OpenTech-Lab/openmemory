@@ -98,3 +98,4 @@ temp/
 # package-lock.json
 # yarn.lock
 .gstack/
+.claude
