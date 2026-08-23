@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, FolderOpen, GitBranch, MessageSquare } from 'lucide-react';
+import { RefreshCw, FolderOpen, GitBranch, MessageSquare, Bot } from 'lucide-react';
 import { I18nText } from '@/lib/i18n';
 
 interface Session {
@@ -10,6 +10,7 @@ interface Session {
   project_name: string | null;
   git_branch: string | null;
   cwd: string | null;
+  agent_name: string | null;
   started_at: string | null;
   last_event_at: string | null;
   message_count: number;
@@ -70,6 +71,7 @@ export default function SessionsPage() {
                 <thead className="sticky top-0 bg-background border-b">
                   <tr className="text-left text-muted-foreground">
                     <th className="pb-2 pr-4 font-medium">Session</th>
+                    <th className="pb-2 pr-4 font-medium">AI Agent</th>
                     <th className="pb-2 pr-4 font-medium">Project</th>
                     <th className="pb-2 pr-4 font-medium">Branch</th>
                     <th className="pb-2 pr-4 font-medium">Messages</th>
@@ -86,6 +88,14 @@ export default function SessionsPage() {
                         >
                           {s.id}
                         </span>
+                      </td>
+                      <td className="py-2 pr-4">
+                        <div className="flex items-center gap-1.5">
+                          <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-xs truncate max-w-[140px]" title={s.agent_name ?? undefined}>
+                            {s.agent_name ?? '—'}
+                          </span>
+                        </div>
                       </td>
                       <td className="py-2 pr-4">
                         <div className="flex items-center gap-1.5">
