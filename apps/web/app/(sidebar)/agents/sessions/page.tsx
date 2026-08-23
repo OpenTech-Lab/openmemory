@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, FolderOpen, GitBranch, MessageSquare, Bot } from 'lucide-react';
+import { RefreshCw, FolderOpen, GitBranch, MessageSquare, Bot, Copy, Check } from 'lucide-react';
 import { I18nText } from '@/lib/i18n';
 
 interface Session {
@@ -20,6 +20,7 @@ interface Session {
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [copiedSessionId, setCopiedSessionId] = useState<string | null>(null);
 
   const fetchSessions = async () => {
     setIsLoading(true);
@@ -37,6 +38,18 @@ export default function SessionsPage() {
   useEffect(() => {
     fetchSessions();
   }, []);
+
+  const handleCopy = async (sessionId: string) => {
+    try {
+      await navigator.clipboard.writeText(sessionId);
+      setCopiedSessionId(sessionId);
+      window.setTimeout(() => {
+        setCopiedSessionId((current) => (current === sessionId ? null : current));
+      }, 1500);
+    } catch {
+      setCopiedSessionId(null);
+    }
+  };
 
   return (
     <div className="flex-1 overflow-auto p-4">
@@ -82,12 +95,29 @@ export default function SessionsPage() {
                   {sessions.map((s) => (
                     <tr key={s.id} className="hover:bg-muted/50 transition-colors">
                       <td className="py-2 pr-4">
-                        <span
-                          className="font-mono text-xs truncate inline-block max-w-[260px] align-middle"
-                          title={s.id}
-                        >
-                          {s.id}
-                        </span>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="font-mono text-xs truncate inline-block max-w-[260px] align-middle"
+                            title={s.id}
+                          >
+                            {s.id}
+                          </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            className="shrink-0 text-muted-foreground hover:text-foreground"
+                            onClick={() => handleCopy(s.id)}
+                            aria-label={copiedSessionId === s.id ? `Copied session ID ${s.id}` : `Copy session ID ${s.id}`}
+                            title={copiedSessionId === s.id ? 'Copied' : 'Copy session ID'}
+                          >
+                            {copiedSessionId === s.id ? (
+                              <Check className="h-3.5 w-3.5 text-emerald-500" aria-hidden="true" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                            )}
+                          </Button>
+                        </div>
                       </td>
                       <td className="py-2 pr-4">
                         <div className="flex items-center gap-1.5">
