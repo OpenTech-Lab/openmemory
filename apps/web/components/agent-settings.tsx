@@ -108,7 +108,7 @@ export function AgentSettings() {
   async function handleAdd() {
     const name = addName.trim();
     const path = addPath.trim();
-    if (!name || !path) { toast.error('Name and path are required'); return; }
+    if (!name || !path) { toast.error('Name and root path are required'); return; }
     setIsSaving(true);
     try {
       const res = await fetch('/api/agents', {
@@ -134,7 +134,7 @@ export function AgentSettings() {
   async function handleEdit() {
     if (!editAgent) return;
     const path = editPath.trim();
-    if (!path) { toast.error('Path is required'); return; }
+    if (!path) { toast.error('Root path is required'); return; }
     setIsSaving(true);
     try {
       const res = await fetch(`/api/agents/${editAgent.id}`, {
@@ -182,7 +182,7 @@ export function AgentSettings() {
               Watcher Agents
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
-              Choose which AI tools to record. The watcher reloads agent config every 60 seconds.
+              Add each AI tool&apos;s root directory. Supported settings and session files are discovered below it.
             </p>
           </div>
           <div className="flex gap-2">
@@ -204,7 +204,7 @@ export function AgentSettings() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Path</TableHead>
+                  <TableHead>Root path</TableHead>
                   <TableHead className="w-28">Record</TableHead>
                   <TableHead className="w-24 text-right">Actions</TableHead>
                 </TableRow>
@@ -241,7 +241,7 @@ export function AgentSettings() {
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7"
-                          title="Edit path"
+                          title="Edit root path"
                           onClick={() => {
                             setEditAgent(agent);
                             setEditPath(agent.path);
@@ -277,7 +277,7 @@ export function AgentSettings() {
           <DialogHeader>
             <DialogTitle>Add Custom Agent</DialogTitle>
             <DialogDescription>
-              Point the watcher at any directory containing JSONL session files.
+              Point the watcher at the AI tool&apos;s root directory. It will discover supported settings and session files below it.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -291,15 +291,15 @@ export function AgentSettings() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="add-path">Path</Label>
+              <Label htmlFor="add-path">Root path</Label>
               <Input
                 id="add-path"
-                placeholder="~/.myai/sessions"
+                placeholder="~/.myai"
                 value={addPath}
                 onChange={e => setAddPath(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Supports <code>~/</code> and <code>$HOME/</code> prefixes.
+                The watcher discovers supported settings and session files below this root. Supports <code>~/</code> and <code>$HOME/</code> prefixes.
               </p>
             </div>
             <div className="space-y-1.5">
@@ -326,11 +326,11 @@ export function AgentSettings() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Edit Agent — {editAgent?.name}</DialogTitle>
-            <DialogDescription>Update the path or description for this agent.</DialogDescription>
+            <DialogDescription>Update the root path or description for this agent.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label htmlFor="edit-path">Path</Label>
+              <Label htmlFor="edit-path">Root path</Label>
               <Input
                 id="edit-path"
                 value={editPath}

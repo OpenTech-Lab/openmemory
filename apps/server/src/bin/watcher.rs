@@ -49,6 +49,54 @@ async fn save_memory(client: &HttpClient, server_url: &str, content: String, tag
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_json_value_replaces_embedded_nulls() {
+        let mut value = serde_json::json!({
+            "nested": ["before\u{0000}after"]
+        });
+
+        sanitize_json_value(&mut value);
+
+        assert_eq!(value["nested"][0], "before\u{FFFD}after");
+    }
+
+    #[test]
+    fn root_filters_known_agent_metadata_from_session_files() {
+        let claude_root = Path::new("/home/tester/.claude");
+        assert!(is_session_file(
+            Path::new("/home/tester/.claude/projects/project/session.jsonl"),
+            claude_root,
+            "Claude Code"
+        ));
+        assert!(!is_session_file(
+            Path::new("/home/tester/.claude/history.jsonl"),
+            claude_root,
+            "Claude Code"
+        ));
+        assert!(!is_session_file(
+            Path::new("/home/tester/.claude/settings.jsonl"),
+            claude_root,
+            "Claude Code"
+        ));
+
+        let codex_root = Path::new("/home/tester/.codex");
+        assert!(is_session_file(
+            Path::new("/home/tester/.codex/sessions/2026/08/23/rollout.jsonl"),
+            codex_root,
+            "Codex CLI"
+        ));
+        assert!(!is_session_file(
+            Path::new("/home/tester/.codex/history.jsonl"),
+            codex_root,
+            "Codex CLI"
+        ));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code JSONL event types
 // ---------------------------------------------------------------------------
@@ -155,6 +203,31 @@ fn extract_content_text(content: &Value) -> Option<String> {
     }
 }
 
+/// PostgreSQL JSONB rejects JSON strings containing an embedded U+0000. Some
+/// coding tools preserve those characters in escaped JSONL payloads, so clean
+/// them before storing the otherwise valid event. Replacing them keeps the
+/// event searchable while allowing the rest of the session line to ingest.
+fn sanitize_json_value(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            if text.contains('\0') {
+                *text = text.replace('\0', "\u{FFFD}");
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sanitize_json_value(item);
+            }
+        }
+        Value::Object(object) => {
+            for item in object.values_mut() {
+                sanitize_json_value(item);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core file processing
 // ---------------------------------------------------------------------------
@@ -169,6 +242,124 @@ fn project_name_from_path(path: &Path) -> Option<String> {
     path.parent()?.file_name()?.to_str().map(String::from)
 }
 
+/// Resolve the session directory below an agent root when the tool has a
+/// known layout. If the expected subdirectory is absent, keep the configured
+/// root as the scan root so custom installations and legacy paths continue to
+/// work.
+fn session_scan_root(root: &Path, agent_name: &str) -> PathBuf {
+    let subdirectory = match agent_name {
+        "Claude Code" => Some("projects"),
+        "Codex CLI" => Some("sessions"),
+        "Gemini CLI" => Some("tmp"),
+        "Cursor" => Some("chats"),
+        _ => None,
+    };
+
+    let Some(subdirectory) = subdirectory else {
+        return root.to_path_buf();
+    };
+
+    // A user may still have an older configuration pointing directly at the
+    // tool's session directory (for example ~/.claude/projects). Do not look
+    // for a second nested `projects`/`sessions` directory in that case.
+    if root.file_name().and_then(|name| name.to_str()) == Some(subdirectory) {
+        return root.to_path_buf();
+    }
+
+    root.join(subdirectory)
+        .is_dir()
+        .then(|| root.join(subdirectory))
+        .unwrap_or_else(|| root.to_path_buf())
+}
+
+/// Return the root used for cursor keys. Claude used to store paths relative
+/// to ~/.claude/projects; keep that key shape when the configured root is now
+/// ~/.claude so existing cursors do not cause a full replay of old sessions.
+fn session_cursor_root(root: &Path, agent_name: &str) -> PathBuf {
+    if agent_name == "Claude Code"
+        && root.file_name().and_then(|name| name.to_str()) == Some(".claude")
+    {
+        let projects_root = root.join("projects");
+        if projects_root.is_dir() {
+            return projects_root;
+        }
+    }
+    root.to_path_buf()
+}
+
+/// Return whether a JSONL file is a candidate conversation log for an agent.
+/// Agent roots also contain indexes, histories, job timelines, settings, and
+/// (for some tools) databases. Only supported JSONL conversation files should
+/// enter the session parser.
+fn is_session_file(path: &Path, agent_root: &Path, agent_name: &str) -> bool {
+    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return false;
+    }
+
+    let file_name = path.file_name().and_then(|name| name.to_str());
+    if matches!(
+        file_name,
+        Some("history.jsonl" | "session_index.jsonl" | "timeline.jsonl")
+    ) {
+        return false;
+    }
+
+    let relative = path.strip_prefix(agent_root).unwrap_or(path);
+    let first_component = relative
+        .components()
+        .next()
+        .and_then(|component| component.as_os_str().to_str());
+
+    match agent_name {
+        // Claude stores conversation JSONL below ~/.claude/projects. A path
+        // already ending in `projects` is the legacy configuration and is
+        // accepted as-is.
+        "Claude Code"
+            if agent_root.file_name().and_then(|name| name.to_str()) == Some(".claude") =>
+        {
+            first_component == Some("projects")
+        }
+        // Codex stores rollout JSONL below ~/.codex/sessions. The same
+        // fallback preserves a directly configured ~/.codex/sessions root.
+        "Codex CLI" if agent_root.file_name().and_then(|name| name.to_str()) == Some(".codex") => {
+            first_component == Some("sessions")
+        }
+        _ => true,
+    }
+}
+
+/// Recursively collect supported session files below an agent root. Symlinked
+/// directories are intentionally not followed, preventing loops in a watched
+/// root while still handling ordinary nested tool layouts.
+async fn collect_session_files(
+    directory: &Path,
+    agent_root: &Path,
+    agent_name: &str,
+    files: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(current_directory) = directories.pop() {
+        let mut entries = tokio::fs::read_dir(&current_directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_type = match entry.file_type().await {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    warn!("cannot inspect {:?}: {error}", path);
+                    continue;
+                }
+            };
+
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if file_type.is_file() && is_session_file(&path, agent_root, agent_name) {
+                files.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Read new lines from `path` starting at `start_offset`, parse them, and
 /// write to the database inside per-line transactions.
 ///
@@ -178,12 +369,12 @@ async fn process_file(
     path: &Path,
     start_offset: i64,
     start_line: i32,
-    projects_root: &Path,
+    agent_root: &Path,
     agent_name: &str,
     memory: Option<(&HttpClient, &str, &PendingUserText)>,
 ) -> anyhow::Result<(i64, i32)> {
     let file_path_str = path
-        .strip_prefix(projects_root)
+        .strip_prefix(agent_root)
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned();
@@ -248,7 +439,7 @@ async fn process_file(
         }
 
         // Parse the JSONL line into our envelope
-        let raw_value: Value = match serde_json::from_str(trimmed) {
+        let mut raw_value: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(e) => {
                 warn!("skipping malformed JSONL line at offset {line_start}: {e}");
@@ -256,6 +447,7 @@ async fn process_file(
                 continue;
             }
         };
+        sanitize_json_value(&mut raw_value);
 
         let event: RawEvent = match serde_json::from_value(raw_value.clone()) {
             Ok(e) => e,
@@ -426,59 +618,50 @@ async fn process_file(
 // Startup catchup
 // ---------------------------------------------------------------------------
 
-async fn startup_catchup(db: &PgPool, projects_root: &Path, agent_name: &str) -> anyhow::Result<()> {
-    info!("startup catchup: scanning {:?}", projects_root);
+async fn startup_catchup(db: &PgPool, agent_root: &Path, agent_name: &str) -> anyhow::Result<()> {
+    let scan_root = session_scan_root(agent_root, agent_name);
+    let cursor_root = session_cursor_root(agent_root, agent_name);
+    info!("startup catchup: scanning {:?} ({})", scan_root, agent_name);
     let mut count = 0usize;
+    let mut session_files = Vec::new();
 
-    let mut project_dirs = tokio::fs::read_dir(projects_root).await?;
-    while let Ok(Some(project_entry)) = project_dirs.next_entry().await {
-        let project_path = project_entry.path();
-        if !project_path.is_dir() {
-            continue;
-        }
-        let mut session_files = match tokio::fs::read_dir(&project_path).await {
-            Ok(rd) => rd,
-            Err(_) => continue,
-        };
-        while let Ok(Some(entry)) = session_files.next_entry().await {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let file_path_str = path
-                .strip_prefix(projects_root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
+    collect_session_files(&scan_root, agent_root, agent_name, &mut session_files).await?;
+    session_files.sort();
 
-            let (offset, line_count) = get_cursor(db, &file_path_str).await;
-            let (new_offset, new_line_count) =
-                process_file(db, &path, offset, line_count, projects_root, agent_name, None)
-                    .await
-                    .unwrap_or_else(|e| {
-                        warn!("process_file error for {:?}: {e:#}", path);
-                        (offset, line_count)
-                    });
+    for path in session_files {
+        let file_path_str = path
+            .strip_prefix(&cursor_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
 
-            if new_offset != offset {
-                count += 1;
-                debug!(
-                    "catchup: {:?} offset {} → {}",
-                    path, offset, new_offset
-                );
-                let _ = update_cursor(
-                    db,
-                    &file_path_str,
-                    new_offset,
-                    None,
-                    new_line_count,
-                )
-                .await;
-            }
+        let (offset, line_count) = get_cursor(db, &file_path_str).await;
+        let (new_offset, new_line_count) =
+            process_file(db, &path, offset, line_count, &cursor_root, agent_name, None)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("process_file error for {:?}: {e:#}", path);
+                    (offset, line_count)
+                });
+
+        if new_offset != offset {
+            count += 1;
+            debug!(
+                "catchup: {:?} offset {} → {}",
+                path, offset, new_offset
+            );
+            let _ = update_cursor(
+                db,
+                &file_path_str,
+                new_offset,
+                None,
+                new_line_count,
+            )
+            .await;
         }
     }
 
-    info!("startup catchup complete: {count} files updated");
+    info!("startup catchup complete: {count} files updated for {agent_name}");
     Ok(())
 }
 
@@ -489,7 +672,9 @@ async fn startup_catchup(db: &PgPool, projects_root: &Path, agent_name: &str) ->
 /// Expand leading `~/` or `$HOME/` to the actual home directory.
 fn expand_path(p: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    if p.starts_with("~/") {
+    if p == "~" {
+        PathBuf::from(&home)
+    } else if p.starts_with("~/") {
         PathBuf::from(&home).join(&p[2..])
     } else if p.starts_with("$HOME/") {
         PathBuf::from(&home).join(&p[6..])
@@ -555,16 +740,18 @@ async fn main() -> anyhow::Result<()> {
         }
     })?;
 
-    // Load enabled agents; fall back to CLAUDE_PROJECTS_DIR if table missing/empty.
+    // Load enabled agents; fall back to a Claude tool root if the table is
+    // missing/empty. CLAUDE_PROJECTS_DIR remains supported for old deployments.
     let initial_agents = match load_enabled_agents(&db).await {
         Ok(agents) if !agents.is_empty() => agents,
         Ok(_) | Err(_) => {
-            warn!("no enabled agents in DB; falling back to CLAUDE_PROJECTS_DIR");
+            warn!("no enabled agents in DB; falling back to Claude agent root");
             let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-            let root = std::env::var("CLAUDE_PROJECTS_DIR")
+            let root = std::env::var("CLAUDE_AGENT_ROOT")
+                .or_else(|_| std::env::var("CLAUDE_PROJECTS_DIR"))
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(&home).join(".claude").join("projects"));
-            vec![("Claude Code (fallback)".to_string(), root)]
+                .unwrap_or_else(|_| PathBuf::from(&home).join(".claude"));
+            vec![("Claude Code".to_string(), root)]
         }
     };
 
@@ -657,15 +844,12 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
 
-                        for path in event.paths {
-                            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                                continue;
-                            }
-                            match event.kind {
-                                EventKind::Create(_) | EventKind::Modify(_) => {}
-                                _ => continue,
-                            }
+                        match event.kind {
+                            EventKind::Create(_) | EventKind::Modify(_) => {}
+                            _ => continue,
+                        }
 
+                        for path in event.paths {
                             // Find which watched root this file belongs to.
                             let root_and_name = {
                                 let roots = watched_roots.lock().await;
@@ -676,8 +860,14 @@ async fn main() -> anyhow::Result<()> {
                             };
                             let (root, agent_name) = match root_and_name {
                                 Some((r, n)) => (r, n),
-                                None => (path.parent().unwrap_or(&path).to_owned(), "Unknown".to_string()),
+                                None => continue,
                             };
+
+                            if !is_session_file(&path, &root, &agent_name) {
+                                continue;
+                            }
+
+                            let cursor_root = session_cursor_root(&root, &agent_name);
 
                             let db2 = db.clone();
                             let in_flight2 = Arc::clone(&in_flight);
@@ -695,13 +885,13 @@ async fn main() -> anyhow::Result<()> {
                                 }
 
                                 let file_path_str = path
-                                    .strip_prefix(&root)
+                                    .strip_prefix(&cursor_root)
                                     .unwrap_or(&path)
                                     .to_string_lossy()
                                     .into_owned();
 
                                 let (offset, line_count) = get_cursor(&db2, &file_path_str).await;
-                                match process_file(&db2, &path, offset, line_count, &root, &agent_name, Some((&http2, &server_url2, &pending2))).await {
+                                match process_file(&db2, &path, offset, line_count, &cursor_root, &agent_name, Some((&http2, &server_url2, &pending2))).await {
                                     Ok((new_offset, new_lines)) if new_offset > offset => {
                                         info!(
                                             "ingested {:?}: +{} bytes, +{} lines",

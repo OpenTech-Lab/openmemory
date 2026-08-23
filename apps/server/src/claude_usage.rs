@@ -166,6 +166,12 @@ mod tests {
     }
 
     #[test]
+    fn credentials_path_for_claude_root() {
+        let got = credentials_path_for("~/.claude", fake_resolve);
+        assert_eq!(got, Some(PathBuf::from("/home/tester/.claude/.credentials.json")));
+    }
+
+    #[test]
     fn credentials_path_for_gemini_agent_is_none() {
         let got = credentials_path_for("~/.gemini/projects", fake_resolve);
         assert_eq!(got, None);

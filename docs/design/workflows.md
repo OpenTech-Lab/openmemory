@@ -117,7 +117,7 @@ Automatically saves AI conversation turns as memories.
 
 ```mermaid
 flowchart TD
-    FS["Host filesystem\n~/.claude/projects/**/*.jsonl\n~/.gemini/**/*.jsonl\n~/.codex/**/*.jsonl"]
+    FS["Host filesystem\nconfigured agent roots\nClaude: ~/.claude → projects/**/*.jsonl\nCodex: ~/.codex → sessions/**/*.jsonl"]
 
     INOTIFY["inotify watcher\n(or polling fallback)"]
     PARSE["Parse JSONL line\nDeserialize event_type"]

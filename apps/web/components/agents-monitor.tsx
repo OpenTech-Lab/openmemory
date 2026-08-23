@@ -209,62 +209,83 @@ export function AgentsMonitor() {
               return (
                 <div
                   key={agent.agent_id}
-                  className="flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-sm"
+                  className="overflow-hidden rounded-md border text-sm"
                 >
-                  <StatusDot status={status} agent={agent} />
-                  <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground mt-0.5" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <Link
-                        href={`/agents/${agent.agent_id}`}
-                        className="truncate font-medium hover:underline"
-                      >
-                        {agent.agent_name}
-                      </Link>
-                      <span
-                        className={`text-xs font-medium ${STATUS_TEXT_CLASS[status]}`}
-                        title={status === 'Error' && usage?.state ? usage.state : undefined}
-                      >
-                        {status}
-                      </span>
-                      {agent.is_builtin && (
-                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                          built-in
-                        </Badge>
+                  <div className="flex items-start gap-2 border-b bg-background px-2.5 py-2">
+                    <StatusDot status={status} agent={agent} />
+                    <Bot className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <Link
+                          href={`/agents/${agent.agent_id}`}
+                          className="truncate font-medium hover:underline"
+                        >
+                          {agent.agent_name}
+                        </Link>
+                        <span
+                          className={`text-xs font-medium ${STATUS_TEXT_CLASS[status]}`}
+                          title={status === 'Error' && usage?.state ? usage.state : undefined}
+                        >
+                          {status}
+                        </span>
+                        {agent.is_builtin && (
+                          <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                            built-in
+                          </Badge>
+                        )}
+                        {!agent.enabled && (
+                          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                            disabled
+                          </Badge>
+                        )}
+                      </div>
+                      {status === 'Error' && usage?.state && (
+                        <p className="truncate text-[10px] text-destructive">{usage.state}</p>
                       )}
-                      {!agent.enabled && (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                          disabled
-                        </Badge>
-                      )}
+                      <p className="truncate text-xs text-muted-foreground">
+                        Last seen{' '}
+                        {agent.last_active_at
+                          ? formatDistanceToNow(new Date(agent.last_active_at), { addSuffix: true })
+                          : 'never'}
+                        {' · '}
+                        {agent.session_count.toLocaleString()} session{agent.session_count !== 1 ? 's' : ''}
+                        {' · '}
+                        {agent.message_count.toLocaleString()} msg{agent.message_count !== 1 ? '' : ''}
+                      </p>
                     </div>
-                    {status === 'Error' && usage?.state && (
-                      <p className="truncate text-[10px] text-destructive">{usage.state}</p>
-                    )}
-                    <p className="truncate text-xs text-muted-foreground">
-                      Last seen{' '}
-                      {agent.last_active_at
-                        ? formatDistanceToNow(new Date(agent.last_active_at), { addSuffix: true })
-                        : 'never'}
-                      {' · '}
-                      {agent.session_count.toLocaleString()} session{agent.session_count !== 1 ? 's' : ''}
-                      {' · '}
-                      {agent.message_count.toLocaleString()} msg{agent.message_count !== 1 ? '' : ''}
-                    </p>
-                    {activeSessions.length > 0 && (
-                      <div className="mt-1 space-y-0.5 border-l-2 pl-2">
+                  </div>
+                  {activeSessions.length > 0 && (
+                    <div className="bg-muted/30 p-1.5">
+                      <div className="mb-1 flex items-center justify-between gap-2 px-0.5">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Running sessions
+                        </span>
+                        <span className="text-[10px] tabular-nums text-muted-foreground">
+                          {activeSessions.length}
+                        </span>
+                      </div>
+                      <div className="max-h-32 space-y-1 overflow-y-auto">
                         {activeSessions.map((session) => (
-                          <p key={session.id} className="truncate text-[11px] text-muted-foreground">
-                            {session.project_name ?? session.cwd ?? 'unknown'}
-                            {session.git_branch ? ` · ${session.git_branch}` : ''}
-                            {session.last_event_at
-                              ? ` · ${formatDistanceToNow(new Date(session.last_event_at), { addSuffix: true })}`
-                              : ''}
-                          </p>
+                          <div
+                            key={session.id}
+                            className="rounded-sm border border-border/60 bg-background/70 px-1.5 py-1"
+                          >
+                            <p className="truncate text-[11px] font-medium text-foreground">
+                              {session.project_name ?? session.cwd ?? `Session ${session.id.slice(0, 8)}`}
+                            </p>
+                            {(session.git_branch || session.last_event_at) && (
+                              <p className="truncate text-[10px] text-muted-foreground">
+                                {session.git_branch ?? 'Active'}
+                                {session.last_event_at
+                                  ? ` · ${formatDistanceToNow(new Date(session.last_event_at), { addSuffix: true })}`
+                                  : ''}
+                              </p>
+                            )}
+                          </div>
                         ))}
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

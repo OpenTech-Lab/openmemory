@@ -231,10 +231,11 @@ services:
   # Mode 3: Session Watcher — passively records AI agent conversations
   # from tool log directories into PostgreSQL without agent involvement.
   #
-  # Supported tools (enabled automatically if the directory exists on the host):
-  #   Claude Code  ~/.claude/projects/**/*.jsonl
-  #   Gemini CLI   ~/.gemini/**/*.jsonl
-  #   Codex CLI    ~/.codex/**/*.jsonl
+  # Supported tool roots (enabled automatically if the directory exists on the host):
+  #   Claude Code  ~/.claude       (sessions below projects/**/*.jsonl)
+  #   Gemini CLI   ~/.gemini       (supported JSONL below the root)
+  #   Codex CLI    ~/.codex        (sessions below sessions/**/*.jsonl)
+  #   Cursor       ~/.cursor       (chat store is SQLite and not ingested yet)
   #
   # Run with:  docker compose --profile watcher up -d
   # Combined:  docker compose --profile api --profile watcher up -d
@@ -261,6 +262,7 @@ services:
       - ${HOME}/.claude:/home-sessions/.claude:ro
       - ${HOME}/.gemini:/home-sessions/.gemini:ro
       - ${HOME}/.codex:/home-sessions/.codex:ro
+      - ${HOME}/.cursor:/home-sessions/.cursor:ro
       - ${HOME}/.config/github-copilot:/home-sessions/.config/github-copilot:ro
     depends_on:
       postgres:

@@ -380,9 +380,9 @@ enabled by default, GitHub Copilot disabled pending a configured log path,
 `session.rs:151-159`).
 
 **Lifetime and ownership.** Append-only; not deleted by normal operation. Populated
-exclusively by the `openmemory-watcher` background process reading
-`~/.claude/projects/**/*.jsonl` (and Gemini/Codex equivalents) via inotify or polling — see
-[workflows.md §5](./workflows.md).
+exclusively by the `openmemory-watcher` background process reading configured AI-agent roots
+(`~/.claude` discovers `projects/**/*.jsonl`; Codex discovers `sessions/**/*.jsonl`) via inotify
+or polling — see [workflows.md §5](./workflows.md).
 
 **Relationship to memory.** The watcher pairs each user turn with its assistant reply and
 POSTs it to `memory.save` tagged `[session, project_name]` — this is the *only* place
@@ -448,7 +448,7 @@ This is the *ingestion* direction: raw observation becomes progressively more st
 
 ```mermaid
 flowchart LR
-    FS["~/.claude/projects/**/*.jsonl"]
+    FS["Configured agent root\n~/.claude → projects/**/*.jsonl"]
     WATCH["openmemory-watcher\n(inotify/poll)"]
     SESS[("sessions +\nsession_messages")]
     MEM_SAVE["memory.save\n(user+assistant pair,\ntags=[session,project])"]

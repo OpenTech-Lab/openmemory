@@ -33,7 +33,7 @@ graph TB
     end
 
     subgraph HostFS["Host Filesystem (read-only)"]
-        JSONL[~/.claude/projects/**/*.jsonl\n~/.gemini/**/*.jsonl\n~/.codex/**/*.jsonl]
+        JSONL[Agent roots\n~/.claude → projects/**/*.jsonl\n~/.gemini\n~/.codex → sessions/**/*.jsonl]
     end
 
     CC -->|stdio JSON-RPC| MCP_STDIO

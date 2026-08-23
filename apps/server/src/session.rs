@@ -147,13 +147,15 @@ pub async fn run_session_migrations(db: &PgPool) -> anyhow::Result<()> {
     .await
     .context("failed to create watcher_agents table")?;
 
-    // Seed built-in agents — idempotent, never overwrites user changes
+    // Seed built-in agents — idempotent, never overwrites user changes.
+    // `path` is the tool root, not a tool-specific session subdirectory. The
+    // watcher resolves the supported settings/session locations below it.
     sqlx::query(
         r#"
         INSERT INTO watcher_agents (name, path, enabled, is_builtin, description) VALUES
-          ('Claude Code',     '~/.claude/projects',        TRUE,  TRUE, 'Claude Code conversation sessions'),
-          ('Gemini CLI',      '~/.gemini',                 TRUE,  TRUE, 'Gemini CLI sessions'),
-          ('Codex CLI',       '~/.codex',                  TRUE,  TRUE, 'OpenAI Codex CLI sessions'),
+          ('Claude Code',     '~/.claude',                 TRUE,  TRUE, 'Claude Code settings and conversation sessions'),
+          ('Gemini CLI',      '~/.gemini',                 TRUE,  TRUE, 'Gemini CLI settings and conversation sessions'),
+          ('Codex CLI',       '~/.codex',                  TRUE,  TRUE, 'OpenAI Codex CLI settings and conversation sessions'),
           ('GitHub Copilot',  '~/.config/github-copilot',  FALSE, TRUE, 'GitHub Copilot — no local JSONL logs; enable if a custom log path is configured')
         ON CONFLICT (name) DO NOTHING
         "#,
@@ -161,6 +163,25 @@ pub async fn run_session_migrations(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await
     .context("failed to seed watcher_agents")?;
+
+    // Migration: older installs stored the Claude and Cursor session
+    // subdirectories. Convert only those exact defaults; a custom path set by
+    // a user is left untouched.
+    sqlx::query(
+        "UPDATE watcher_agents SET path = '~/.claude' \
+         WHERE name = 'Claude Code' AND is_builtin = TRUE AND path = '~/.claude/projects'",
+    )
+    .execute(db)
+    .await
+    .context("failed to migrate Claude Code watcher root")?;
+
+    sqlx::query(
+        "UPDATE watcher_agents SET path = '~/.cursor' \
+         WHERE name = 'Cursor' AND path = '~/.cursor/chats'",
+    )
+    .execute(db)
+    .await
+    .context("failed to migrate Cursor watcher root")?;
 
     info!("session watcher migrations complete");
     Ok(())

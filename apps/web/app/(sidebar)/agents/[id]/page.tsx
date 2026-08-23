@@ -117,7 +117,7 @@ export default function AgentDetailPage() {
             </CardHeader>
             <CardContent className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
               <div>
-                <p className="text-muted-foreground text-xs">Path</p>
+                <p className="text-muted-foreground text-xs">Root path</p>
                 <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{agent.path}</code>
               </div>
               <div>

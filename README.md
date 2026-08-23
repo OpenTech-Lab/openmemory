@@ -19,7 +19,7 @@ Current release: **v0.2.0** · [Release notes](docs/version/0.2.0.md) · [Licens
 | Reusable workflows | Stored HTTP and agent-assisted processes with resumable execution |
 | Design workspace | Text, Mermaid, draw.io, React Flow, and OpenPencil documents with budget forecasts |
 | Asset library | Searchable image, video, and live-code candidates, optionally scoped to projects |
-| Session recording | Passive history for Claude Code, Gemini CLI, Codex CLI, and configurable JSONL agent paths |
+| Session recording | Passive history for Claude Code, Gemini CLI, Codex CLI, and configurable AI-agent roots |
 | Web dashboard | Memory, agents, projects, files, source control, designs, lessons, workflows, and settings |
 
 ## Quick start

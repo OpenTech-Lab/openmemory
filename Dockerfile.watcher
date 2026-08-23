@@ -21,8 +21,9 @@ RUN groupadd --system --gid 10001 app \
 
 COPY --from=builder /build/target/release/openmemory-watcher /usr/local/bin/openmemory-watcher
 
-# Default: watch $HOME/.claude/projects (override with CLAUDE_PROJECTS_DIR)
-ENV CLAUDE_PROJECTS_DIR=/claude-sessions/projects
+# Default: watch the Claude tool root (override with CLAUDE_AGENT_ROOT).
+# CLAUDE_PROJECTS_DIR remains supported as a legacy fallback.
+ENV CLAUDE_AGENT_ROOT=/home-sessions/.claude
 
 # Optional: set WATCHER_POLL_INTERVAL_SEC=30 to enable periodic re-scan
 # alongside inotify (recommended for Docker Desktop / macOS / NFS mounts).
