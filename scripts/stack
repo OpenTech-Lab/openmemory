@@ -16,7 +16,12 @@
 # OPEN_PENCIL_PATH in docker-compose.yml — a sibling checkout by default.
 set -euo pipefail
 
-OPENMEMORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Exported, not just set: docker-compose.yml interpolates ${OPENMEMORY_ROOT} for
+# open-pencil's `dockerfile:` (which resolves against that service's own sibling
+# checkout, not this repo). compose() runs docker compose in a subshell, and a
+# non-exported shell variable never reaches it — the build then fails looking for
+# ../open-pencil/docker/open-pencil/Dockerfile.
+export OPENMEMORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QA_AUTOMATION_PATH="${QA_AUTOMATION_PATH:-${OPENMEMORY_ROOT}/../qa-automation}"
 : "${COMPOSE_PROFILES:=api,watcher}"
 export COMPOSE_PROFILES
