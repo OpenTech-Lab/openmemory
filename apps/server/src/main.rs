@@ -144,6 +144,7 @@ struct CreateProjectGraphPayload {
     path: Option<String>,
     description: Option<String>,
     version_status: Option<String>,
+    folder_id: Option<Uuid>,
 }
 
 /// Deserializes a present-but-possibly-null JSON field into `Some(value)`,
@@ -165,6 +166,21 @@ struct UpdateProjectGraphPayload {
     #[serde(default, deserialize_with = "deserialize_some")]
     description: Option<Option<String>>,
     version_status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    folder_id: Option<Option<Uuid>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateProjectFolderPayload {
+    name: String,
+    parent_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateProjectFolderPayload {
+    name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    parent_id: Option<Option<Uuid>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1646,6 +1662,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents/:id/stats", get(get_agent_stats))
         .route("/agents/:id/stats/timeseries", get(get_agent_stats_timeseries))
         .route("/agents/:id/claude-usage", get(get_agent_claude_usage))
+        .route("/project-folders", get(list_project_folders).post(create_project_folder))
+        .route("/project-folders/:id", patch(update_project_folder).delete(delete_project_folder))
         .route("/projects", get(list_project_graphs).post(create_project_graph))
         .route("/projects/:id", get(get_project_graph).put(update_project_graph).delete(delete_project_graph))
         .route("/projects/:id/rebuild", post(rebuild_project_graph))
@@ -1965,6 +1983,30 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     .await
     .ok();
 
+    // Nested project folders (GitLab-style groups) used to organize projects.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_folders (
+            id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            name       TEXT        NOT NULL CHECK (length(btrim(name)) > 0),
+            parent_id  UUID        REFERENCES project_folders(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_folders table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_folders_parent_id ON project_folders(parent_id)")
+        .execute(db).await.ok();
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_folders_parent_name \
+         ON project_folders (COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(name))",
+    )
+    .execute(db).await.ok();
+
     // project_graphs table for knowledge graph storage
     sqlx::query(
         r#"
@@ -1980,6 +2022,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
             graph_hash      TEXT,
             graph_file_size BIGINT,
             imported_at     TIMESTAMPTZ,
+            folder_id       UUID        REFERENCES project_folders(id) ON DELETE SET NULL,
             created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
@@ -2002,6 +2045,28 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("ALTER TABLE project_graphs ALTER COLUMN path DROP NOT NULL")
         .execute(db).await.ok();
     sqlx::query("ALTER TABLE project_graphs ALTER COLUMN canonical_path DROP NOT NULL")
+        .execute(db).await.ok();
+
+    sqlx::query("ALTER TABLE project_graphs ADD COLUMN IF NOT EXISTS folder_id UUID")
+        .execute(db).await.ok();
+    sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'project_graphs_folder_id_fkey'
+                  AND conrelid = 'project_graphs'::regclass
+            ) THEN
+                ALTER TABLE project_graphs
+                    ADD CONSTRAINT project_graphs_folder_id_fkey
+                    FOREIGN KEY (folder_id) REFERENCES project_folders(id) ON DELETE SET NULL;
+            END IF;
+        END $$
+        "#,
+    )
+    .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_graphs_folder_id ON project_graphs(folder_id)")
         .execute(db).await.ok();
 
     // Manual version-status label for a project (active/maintenance/archived/deprecated)
@@ -5287,6 +5352,250 @@ async fn delete_forecast_profile(
     }
 }
 
+#[derive(Debug, Serialize, FromRow)]
+struct ProjectFolderRow {
+    id: Uuid,
+    name: String,
+    parent_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+async fn folder_would_create_cycle(
+    db: &PgPool,
+    folder_id: Uuid,
+    new_parent_id: Uuid,
+) -> std::result::Result<bool, sqlx::Error> {
+    let mut current = new_parent_id;
+    loop {
+        if current == folder_id {
+            return Ok(true);
+        }
+        let parent = sqlx::query_scalar::<_, Option<Uuid>>(
+            "SELECT parent_id FROM project_folders WHERE id = $1",
+        )
+        .bind(current)
+        .fetch_optional(db)
+        .await?;
+        match parent {
+            Some(Some(parent_id)) => current = parent_id,
+            Some(None) | None => return Ok(false),
+        }
+    }
+}
+
+async fn list_project_folders(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match sqlx::query_as::<_, ProjectFolderRow>(
+        "SELECT id, name, parent_id, created_at, updated_at \
+         FROM project_folders ORDER BY lower(name), created_at",
+    )
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(folders) => Json(serde_json::json!({"folders": folders})).into_response(),
+        Err(e) => {
+            error!("list_project_folders error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_folder(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateProjectFolderPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let name = payload.name.trim().to_string();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name must be non-empty"}))).into_response();
+    }
+    if let Some(parent_id) = payload.parent_id {
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM project_folders WHERE id = $1)")
+            .bind(parent_id)
+            .fetch_one(&state.db)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "parent folder not found"}))).into_response(),
+            Err(e) => {
+                error!("create_project_folder parent lookup error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        }
+    }
+
+    match sqlx::query_as::<_, ProjectFolderRow>(
+        "INSERT INTO project_folders (name, parent_id) VALUES ($1, $2) \
+         RETURNING id, name, parent_id, created_at, updated_at",
+    )
+    .bind(name)
+    .bind(payload.parent_id)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(folder) => (StatusCode::CREATED, Json(folder)).into_response(),
+        Err(e) if e.to_string().contains("unique") => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "a folder with this name already exists here"})),
+        ).into_response(),
+        Err(e) => {
+            error!("create_project_folder error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_folder(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateProjectFolderPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    if let Some(name) = payload.name.as_ref() {
+        if name.trim().is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "name must be non-empty"}))).into_response();
+        }
+    }
+    if let Some(Some(parent_id)) = payload.parent_id {
+        if parent_id == id {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "a folder cannot contain itself"}))).into_response();
+        }
+        let parent_exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM project_folders WHERE id = $1)")
+            .bind(parent_id)
+            .fetch_one(&state.db)
+            .await;
+        match parent_exists {
+            Ok(true) => {}
+            Ok(false) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "parent folder not found"}))).into_response(),
+            Err(e) => {
+                error!("update_project_folder parent lookup error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        }
+        match folder_would_create_cycle(&state.db, id, parent_id).await {
+            Ok(true) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "moving the folder here would create a cycle"}))).into_response(),
+            Ok(false) => {}
+            Err(e) => {
+                error!("update_project_folder cycle check error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        }
+    }
+
+    let name = payload.name.as_ref().map(|value| value.trim().to_string());
+    let parent_id_set = payload.parent_id.is_some();
+    let parent_id = payload.parent_id.flatten();
+    match sqlx::query_as::<_, ProjectFolderRow>(
+        "UPDATE project_folders SET \
+           name = COALESCE($1, name), \
+           parent_id = CASE WHEN $2 THEN $3 ELSE parent_id END, \
+           updated_at = NOW() \
+         WHERE id = $4 \
+         RETURNING id, name, parent_id, created_at, updated_at",
+    )
+    .bind(name)
+    .bind(parent_id_set)
+    .bind(parent_id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(folder)) => Json(folder).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project folder not found"}))).into_response(),
+        Err(e) if e.to_string().contains("unique") => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "a folder with this name already exists here"})),
+        ).into_response(),
+        Err(e) => {
+            error!("update_project_folder error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn delete_project_folder(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!("delete_project_folder transaction error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+    let folder = sqlx::query("SELECT name, parent_id FROM project_folders WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await;
+    let Some(folder) = (match folder {
+        Ok(folder) => folder,
+        Err(e) => {
+            error!("delete_project_folder lookup error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    }) else {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project folder not found"}))).into_response();
+    };
+    let parent_id: Option<Uuid> = folder.try_get("parent_id").unwrap_or(None);
+
+    if let Err(e) = sqlx::query("UPDATE project_folders SET parent_id = $2, updated_at = NOW() WHERE parent_id = $1")
+        .bind(id)
+        .bind(parent_id)
+        .execute(&mut *tx)
+        .await
+    {
+        error!("delete_project_folder child update error: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+    if let Err(e) = sqlx::query("UPDATE project_graphs SET folder_id = $2, updated_at = NOW() WHERE folder_id = $1")
+        .bind(id)
+        .bind(parent_id)
+        .execute(&mut *tx)
+        .await
+    {
+        error!("delete_project_folder project update error: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+    let deleted = sqlx::query("DELETE FROM project_folders WHERE id = $1 RETURNING name")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await;
+    let name: String = match deleted {
+        Ok(Some(row)) => row.try_get("name").unwrap_or_default(),
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "project folder not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_folder delete error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+    if let Err(e) = tx.commit().await {
+        error!("delete_project_folder commit error: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    }
+    Json(serde_json::json!({"deleted": id, "name": name, "projects_moved": true})).into_response()
+}
+
 async fn list_project_graphs(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -5303,7 +5612,7 @@ async fn list_project_graphs(
            FROM project_tasks GROUP BY project_id \
          ) \
          SELECT pg.id, pg.name, pg.path, pg.canonical_path, pg.description, pg.node_count, pg.edge_count, \
-           pg.graph_hash, pg.graph_file_size, pg.imported_at, pg.created_at, pg.updated_at, pg.version_status, \
+           pg.graph_hash, pg.graph_file_size, pg.imported_at, pg.folder_id, pg.created_at, pg.updated_at, pg.version_status, \
            CASE \
              WHEN COALESCE(tf.has_open_bug, false)     THEN 'bug_detected' \
              WHEN COALESCE(tf.has_open_feature, false) THEN 'feature_updating' \
@@ -5344,6 +5653,20 @@ async fn create_project_graph(
     if !VALID_VERSION_STATUSES.contains(&version_status.as_str()) {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid version_status"}))).into_response();
     }
+    if let Some(folder_id) = payload.folder_id {
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM project_folders WHERE id = $1)")
+            .bind(folder_id)
+            .fetch_one(&state.db)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "project folder not found"}))).into_response(),
+            Err(e) => {
+                error!("create_project_graph folder lookup error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
+        }
+    }
 
     let (graph_data, graph_hash, file_size, path_stored, canonical_stored, node_count, edge_count) =
         if let Some(ref p) = payload.path {
@@ -5374,14 +5697,14 @@ async fn create_project_graph(
     let row = if canonical_stored.is_some() {
         sqlx::query(
             "INSERT INTO project_graphs \
-             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at, version_status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10) \
+             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, imported_at, version_status, folder_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10, $11) \
              ON CONFLICT (canonical_path) DO UPDATE SET \
                name = $1, description = $4, graph_data = $5, graph_hash = $6, \
                graph_file_size = $7, node_count = $8, edge_count = $9, \
-               imported_at = NOW(), updated_at = NOW() \
+               imported_at = NOW(), folder_id = $11, updated_at = NOW() \
              RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                       graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status, \
+                       graph_hash, graph_file_size, imported_at, folder_id, created_at, updated_at, version_status, \
                        (xmax = 0) AS was_inserted"
         )
         .bind(&payload.name)
@@ -5394,21 +5717,23 @@ async fn create_project_graph(
         .bind(node_count)
         .bind(edge_count)
         .bind(&version_status)
+        .bind(payload.folder_id)
         .fetch_one(&state.db)
         .await
     } else {
         sqlx::query(
             "INSERT INTO project_graphs \
-             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, version_status) \
-             VALUES ($1, NULL, NULL, $2, $3, NULL, 0, 0, 0, $4) \
+             (name, path, canonical_path, description, graph_data, graph_hash, graph_file_size, node_count, edge_count, version_status, folder_id) \
+             VALUES ($1, NULL, NULL, $2, $3, NULL, 0, 0, 0, $4, $5) \
              RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                       graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status, \
+                       graph_hash, graph_file_size, imported_at, folder_id, created_at, updated_at, version_status, \
                        TRUE AS was_inserted"
         )
         .bind(&payload.name)
         .bind(&payload.description)
         .bind(serde_json::json!({}))
         .bind(&version_status)
+        .bind(payload.folder_id)
         .fetch_one(&state.db)
         .await
     };
@@ -5428,6 +5753,7 @@ async fn create_project_graph(
                 "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
                 "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
+                "folder_id": r.try_get::<Option<Uuid>, _>("folder_id").ok().flatten().map(|u| u.to_string()),
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
                 "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
@@ -5460,7 +5786,7 @@ async fn get_project_graph(
            FROM project_tasks WHERE project_id = $1 GROUP BY project_id \
          ) \
          SELECT pg.id, pg.name, pg.path, pg.canonical_path, pg.description, pg.node_count, pg.edge_count, \
-           pg.graph_data, pg.graph_hash, pg.graph_file_size, pg.imported_at, pg.created_at, pg.updated_at, pg.version_status, \
+           pg.graph_data, pg.graph_hash, pg.graph_file_size, pg.imported_at, pg.folder_id, pg.created_at, pg.updated_at, pg.version_status, \
            CASE \
              WHEN COALESCE(tf.has_open_bug, false)     THEN 'bug_detected' \
              WHEN COALESCE(tf.has_open_feature, false) THEN 'feature_updating' \
@@ -5506,6 +5832,7 @@ async fn get_project_graph(
                 "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
                 "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
+                "folder_id": r.try_get::<Option<Uuid>, _>("folder_id").ok().flatten().map(|u| u.to_string()),
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
                 "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),
@@ -5539,6 +5866,20 @@ async fn update_project_graph(
     if let Some(ref vs) = payload.version_status {
         if !VALID_VERSION_STATUSES.contains(&vs.as_str()) {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid version_status"}))).into_response();
+        }
+    }
+    if let Some(Some(folder_id)) = payload.folder_id {
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM project_folders WHERE id = $1)")
+            .bind(folder_id)
+            .fetch_one(&state.db)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "project folder not found"}))).into_response(),
+            Err(e) => {
+                error!("update_project_graph folder lookup error: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            }
         }
     }
 
@@ -5598,6 +5939,8 @@ async fn update_project_graph(
     let (new_path, new_canonical) = path_change.unwrap_or((None, None));
     let description_set = payload.description.is_some();
     let new_description = payload.description.flatten();
+    let folder_id_set = payload.folder_id.is_some();
+    let folder_id = payload.folder_id.flatten();
 
     let row = sqlx::query(
         "WITH updated AS ( \
@@ -5613,10 +5956,11 @@ async fn update_project_graph(
              edge_count = CASE WHEN $4 THEN 0 ELSE edge_count END, \
              imported_at = CASE WHEN $4 THEN NULL ELSE imported_at END, \
              version_status = COALESCE($8, version_status), \
+             folder_id = CASE WHEN $9 THEN $10 ELSE folder_id END, \
              updated_at = NOW() \
            WHERE id = $7 \
            RETURNING id, name, path, canonical_path, description, node_count, edge_count, \
-                     graph_hash, graph_file_size, imported_at, created_at, updated_at, version_status \
+                     graph_hash, graph_file_size, imported_at, folder_id, created_at, updated_at, version_status \
          ), \
          task_flags AS ( \
            SELECT project_id, \
@@ -5641,6 +5985,8 @@ async fn update_project_graph(
     .bind(&new_canonical)
     .bind(id)
     .bind(&payload.version_status)
+    .bind(folder_id_set)
+    .bind(folder_id)
     .fetch_one(&state.db)
     .await;
 
@@ -5663,6 +6009,7 @@ async fn update_project_graph(
                 "graph_hash": r.try_get::<Option<String>, _>("graph_hash").ok().flatten(),
                 "graph_file_size": r.try_get::<Option<i64>, _>("graph_file_size").ok().flatten(),
                 "imported_at": r.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("imported_at").ok().flatten(),
+                "folder_id": r.try_get::<Option<Uuid>, _>("folder_id").ok().flatten().map(|u| u.to_string()),
                 "created_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
                 "updated_at": r.try_get::<chrono::DateTime<chrono::Utc>, _>("updated_at").ok(),
                 "version_status": r.try_get::<String, _>("version_status").unwrap_or_else(|_| "active".to_string()),

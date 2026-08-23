@@ -22,6 +22,7 @@ pub struct ProjectGraphRow {
     pub graph_hash: Option<String>,
     pub graph_file_size: Option<i64>,
     pub imported_at: Option<DateTime<Utc>>,
+    pub folder_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub version_status: String,

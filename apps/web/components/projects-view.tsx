@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -34,9 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { DataTable } from '@/components/ui/data-table';
-import { ColumnDef } from '@tanstack/react-table';
-import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, Trash2, Repeat2, History, Sparkles, CornerDownRight, ListChecks } from 'lucide-react';
+import { Plus, RefreshCw, LayoutList, Columns3, Bot, User, GripVertical, Pencil, FolderInput, Trash2, Repeat2, History, Sparkles, CornerDownRight, ListChecks } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -50,22 +47,8 @@ import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 import { TaskNotesPanel } from '@/components/task-notes-panel';
 import { useI18n } from '@/lib/i18n';
-
-interface Project {
-  id: string;
-  name: string;
-  path: string | null;
-  description: string | null;
-  node_count: number;
-  edge_count: number;
-  graph_hash: string | null;
-  imported_at: string | null;
-  created_at: string;
-  updated_at: string;
-  task_count?: number;
-  version_status: string;
-  effective_version_status: string;
-}
+import { ProjectTreeView } from '@/components/project-tree-view';
+import type { Project, ProjectFolder } from '@/lib/project-types';
 
 interface Task {
   id: string;
@@ -137,37 +120,6 @@ const VERSION_STATUS_LABELS: Record<string, string> = {
   deprecated: 'Deprecated',
 };
 
-const VERSION_STATUS_COLORS: Record<string, string> = {
-  active: 'border-green-500 text-green-600 dark:text-green-400',
-  maintenance: 'border-blue-400 text-blue-600 dark:text-blue-400',
-  archived: 'border-border text-muted-foreground',
-  deprecated: 'border-destructive text-destructive',
-};
-
-const EFFECTIVE_STATUS_EXTRA_LABELS: Record<string, string> = {
-  bug_detected: 'Bug Detected',
-  feature_updating: 'Feature Updating',
-};
-
-const EFFECTIVE_STATUS_EXTRA_COLORS: Record<string, string> = {
-  bug_detected: 'border-red-500 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30',
-  feature_updating: 'border-blue-500 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30',
-};
-
-function timeAgo(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
-}
-
 function matchesBoardKeyword(item: Task | Routine, query: string): boolean {
   if (!query) return true;
   return [
@@ -181,18 +133,49 @@ function matchesBoardKeyword(item: Task | Routine, query: string): boolean {
   ].some((field) => field.toLowerCase().includes(query));
 }
 
+function flattenFolderOptions(folders: ProjectFolder[], excludedId?: string | null): Array<{ id: string; label: string }> {
+  const childrenByParent = new Map<string | null, ProjectFolder[]>();
+  for (const folder of folders) {
+    const children = childrenByParent.get(folder.parent_id) ?? [];
+    children.push(folder);
+    childrenByParent.set(folder.parent_id, children);
+  }
+  const excluded = new Set<string>();
+  if (excludedId) {
+    const stack = [excludedId];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (excluded.has(current)) continue;
+      excluded.add(current);
+      for (const child of childrenByParent.get(current) ?? []) stack.push(child.id);
+    }
+  }
+  const options: Array<{ id: string; label: string }> = [];
+  const visit = (parentId: string | null, depth: number) => {
+    for (const folder of (childrenByParent.get(parentId) ?? []).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (excluded.has(folder.id)) continue;
+      options.push({ id: folder.id, label: `${'— '.repeat(depth)}${folder.name}` });
+      visit(folder.id, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return options;
+}
+
 export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const router = useRouter();
   const { t } = useI18n();
 
   const [projects, setProjects] = useState<Project[]>([]);
+  const [folders, setFolders] = useState<ProjectFolder[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
-  const [taskCounts, setTaskCounts] = useState<Record<string, number>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [boardFilter, setBoardFilter] = useState<string>('all');
   const [boardSearchQuery, setBoardSearchQuery] = useState('');
+  const [projectSearchQuery, setProjectSearchQuery] = useState('');
+  const [selectedFolderId, setSelectedFolderId] = useState<string>('all');
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskSheetMode, setTaskSheetMode] = useState<'view' | 'edit'>('view');
@@ -216,7 +199,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
 
   // Create project dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [createForm, setCreateForm] = useState({ name: '', path: '', description: '', version_status: 'active' });
+  const [createForm, setCreateForm] = useState({ name: '', path: '', description: '', version_status: 'active', folder_id: null as string | null });
   const [isCreating, setIsCreating] = useState(false);
   const [rebuildingId, setRebuildingId] = useState<string | null>(null);
   const [confirmBulkRebuild, setConfirmBulkRebuild] = useState(false);
@@ -226,10 +209,22 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
 
   // Edit project dialog
   const [editingProject, setEditingProject] = useState<Project | null>(null);
-  const [projectEditForm, setProjectEditForm] = useState({ name: '', path: '', description: '', version_status: 'active' });
+  const [projectEditForm, setProjectEditForm] = useState({ name: '', path: '', description: '', version_status: 'active', folder_id: null as string | null });
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [confirmPathChange, setConfirmPathChange] = useState(false);
+
+  // Move project dialog
+  const [movingProject, setMovingProject] = useState<Project | null>(null);
+  const [moveProjectFolderId, setMoveProjectFolderId] = useState<string | null>(null);
+  const [isMovingProject, setIsMovingProject] = useState(false);
+
+  // Nested project-folder dialogs
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [editingFolder, setEditingFolder] = useState<ProjectFolder | null>(null);
+  const [folderForm, setFolderForm] = useState({ name: '', parent_id: null as string | null });
+  const [isSavingFolder, setIsSavingFolder] = useState(false);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<ProjectFolder | null>(null);
 
   // Create task dialog
   const [showTaskDialog, setShowTaskDialog] = useState(false);
@@ -258,9 +253,14 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const fetchProjects = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/projects');
-      const data = await res.json();
-      setProjects(data.projects ?? []);
+      const [projectRes, folderRes] = await Promise.all([
+        fetch('/api/projects'),
+        fetch('/api/project-folders'),
+      ]);
+      if (!projectRes.ok || !folderRes.ok) throw new Error('failed to load project explorer');
+      const [projectData, folderData] = await Promise.all([projectRes.json(), folderRes.json()]);
+      setProjects(projectData.projects ?? []);
+      setFolders(folderData.folders ?? []);
     } catch {
       toast.error('Failed to load projects');
     } finally {
@@ -274,7 +274,6 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     try {
       const allTasks: Task[] = [];
       const allRoutines: Routine[] = [];
-      const counts: Record<string, number> = {};
       await Promise.all(
         projectList.map(async (p) => {
           const [taskRes, routineRes] = await Promise.all([
@@ -287,12 +286,10 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
           const prs: Routine[] = (routineData.routines ?? []).map((r: Routine) => ({ ...r, project_name: p.name }));
           allTasks.push(...pts);
           allRoutines.push(...prs);
-          counts[p.id] = pts.length;
         })
       );
       setTasks(allTasks);
       setRoutines(allRoutines);
-      setTaskCounts(counts);
     } catch {
       toast.error('Failed to load tasks');
     } finally {
@@ -314,7 +311,11 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     if (!createForm.name.trim()) { toast.error('Name is required'); return; }
     setIsCreating(true);
     try {
-      const body: Record<string, string> = { name: createForm.name, version_status: createForm.version_status };
+      const body: Record<string, string | null> = {
+        name: createForm.name,
+        version_status: createForm.version_status,
+        folder_id: createForm.folder_id,
+      };
       if (createForm.path.trim()) body.path = createForm.path.trim();
       if (createForm.description.trim()) body.description = createForm.description.trim();
       const res = await fetch('/api/projects', {
@@ -328,7 +329,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
         return;
       }
       setShowCreateDialog(false);
-      setCreateForm({ name: '', path: '', description: '', version_status: 'active' });
+      setCreateForm({ name: '', path: '', description: '', version_status: 'active', folder_id: null });
       fetchProjects();
       toast.success('Project created');
     } catch {
@@ -397,6 +398,64 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     }
   };
 
+  const openCreateFolder = (parentId: string | null) => {
+    setEditingFolder(null);
+    setFolderForm({ name: '', parent_id: parentId });
+    setFolderDialogOpen(true);
+  };
+
+  const openEditFolder = (folder: ProjectFolder) => {
+    setEditingFolder(folder);
+    setFolderForm({ name: folder.name, parent_id: folder.parent_id });
+    setFolderDialogOpen(true);
+  };
+
+  const handleSaveFolder = async () => {
+    if (!folderForm.name.trim()) { toast.error('Folder name is required'); return; }
+    setIsSavingFolder(true);
+    try {
+      const url = editingFolder ? `/api/project-folders/${editingFolder.id}` : '/api/project-folders';
+      const res = await fetch(url, {
+        method: editingFolder ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: folderForm.name.trim(), parent_id: folderForm.parent_id }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        toast.error(body.error ?? `Failed to ${editingFolder ? 'update' : 'create'} folder`);
+        return;
+      }
+      setFolderDialogOpen(false);
+      setEditingFolder(null);
+      await fetchProjects();
+      toast.success(editingFolder ? 'Folder updated' : 'Folder created');
+    } catch {
+      toast.error(`Failed to ${editingFolder ? 'update' : 'create'} folder`);
+    } finally {
+      setIsSavingFolder(false);
+    }
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!confirmDeleteFolder) return;
+    const folder = confirmDeleteFolder;
+    try {
+      const res = await fetch(`/api/project-folders/${folder.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        toast.error(body.error ?? 'Failed to delete folder');
+        return;
+      }
+      if (selectedFolderId === folder.id) setSelectedFolderId(folder.parent_id ?? 'all');
+      await fetchProjects();
+      toast.success(`Folder “${folder.name}” removed; projects were kept safe`);
+    } catch {
+      toast.error('Failed to delete folder');
+    } finally {
+      setConfirmDeleteFolder(null);
+    }
+  };
+
   const openProjectEdit = (project: Project) => {
     setEditingProject(project);
     setProjectEditForm({
@@ -404,7 +463,38 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       path: project.path ?? '',
       description: project.description ?? '',
       version_status: project.version_status ?? 'active',
+      folder_id: project.folder_id ?? null,
     });
+  };
+
+  const openProjectMove = (project: Project) => {
+    setMovingProject(project);
+    setMoveProjectFolderId(project.folder_id ?? null);
+  };
+
+  const handleMoveProject = async () => {
+    if (!movingProject) return;
+    const project = movingProject;
+    setIsMovingProject(true);
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_id: moveProjectFolderId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        toast.error(body.error ?? 'Failed to move project');
+        return;
+      }
+      setMovingProject(null);
+      await fetchProjects();
+      toast.success(`Moved “${project.name}”`);
+    } catch {
+      toast.error('Failed to move project');
+    } finally {
+      setIsMovingProject(false);
+    }
   };
 
   const handleVersionStatusChange = async (id: string, version_status: string) => {
@@ -441,6 +531,7 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
           path: projectEditForm.path.trim() || null,
           description: projectEditForm.description.trim() || null,
           version_status: projectEditForm.version_status,
+          folder_id: projectEditForm.folder_id,
         }),
       });
       if (!res.ok) {
@@ -824,129 +915,6 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     }
   };
 
-  const columns: ColumnDef<Project>[] = [
-    {
-      accessorKey: 'name',
-      header: 'Name',
-      cell: ({ row }) => (
-        <div className="flex items-center gap-2">
-          <Link href={`/projects/${row.original.id}`} className="font-medium hover:underline">
-            {row.original.name}
-          </Link>
-          {(taskCounts[row.original.id] ?? 0) > 0 && (
-            <Badge variant="secondary" className="text-xs">
-              {taskCounts[row.original.id]} task{taskCounts[row.original.id] !== 1 ? 's' : ''}
-            </Badge>
-          )}
-        </div>
-      ),
-    },
-    {
-      accessorKey: 'path',
-      header: 'Path',
-      cell: ({ row }) =>
-        row.original.path ? (
-          <span className="text-xs text-muted-foreground font-mono truncate max-w-[200px] block">
-            {row.original.path}
-          </span>
-        ) : (
-          <span className="text-xs text-muted-foreground italic">No path</span>
-        ),
-    },
-    {
-      accessorKey: 'version_status',
-      header: 'Version Status',
-      cell: ({ row }) => {
-        const eff = row.original.effective_version_status ?? row.original.version_status ?? 'active';
-        const isComputed = eff === 'bug_detected' || eff === 'feature_updating';
-        if (isComputed) {
-          return (
-            <span
-              className={`inline-flex items-center gap-1 h-7 px-2 rounded-md border text-xs font-medium ${EFFECTIVE_STATUS_EXTRA_COLORS[eff]}`}
-              title={`Automatic — based on an open ${eff === 'bug_detected' ? "'bug'" : "'feature'"} labeled task. Manual status is still ${VERSION_STATUS_LABELS[row.original.version_status] ?? row.original.version_status}.`}
-            >
-              <Sparkles className="h-3 w-3" />
-              {EFFECTIVE_STATUS_EXTRA_LABELS[eff]}
-            </span>
-          );
-        }
-        return (
-          <Select
-            value={row.original.version_status ?? 'active'}
-            onValueChange={v => handleVersionStatusChange(row.original.id, v)}
-            disabled={updatingStatusId === row.original.id}
-          >
-            <SelectTrigger className={`h-7 w-36 text-xs ${VERSION_STATUS_COLORS[row.original.version_status] ?? ''}`}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(VERSION_STATUS_LABELS).map(([value, label]) => (
-                <SelectItem key={value} value={value}>{label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        );
-      },
-    },
-    {
-      accessorKey: 'node_count',
-      header: 'Nodes',
-      cell: ({ row }) => <Badge variant="secondary">{row.original.node_count.toLocaleString()}</Badge>,
-    },
-    {
-      accessorKey: 'edge_count',
-      header: 'Edges',
-      cell: ({ row }) => <Badge variant="outline">{row.original.edge_count.toLocaleString()}</Badge>,
-    },
-    {
-      accessorKey: 'updated_at',
-      header: 'Last Updated',
-      cell: ({ row }) => (
-        <span className="text-xs text-muted-foreground" title={new Date(row.original.updated_at).toLocaleString()}>
-          {timeAgo(row.original.updated_at)}
-        </span>
-      ),
-    },
-    {
-      id: 'actions',
-      header: () => <div className="text-right">Actions</div>,
-      cell: ({ row }) => (
-        <div className="flex items-center justify-end gap-1">
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit project" onClick={() => openProjectEdit(row.original)}>
-            <Pencil className="h-3.5 w-3.5" />
-          </Button>
-          {row.original.path && (() => {
-            // Spins for a single-row rebuild and for whichever row the bulk run is on.
-            const isRebuilding =
-              rebuildingId === row.original.id || bulkRebuild?.currentId === row.original.id;
-            return (
-              <Button
-                variant="ghost"
-                size="sm"
-                className={`h-7 w-7 p-0 transition-colors ${isRebuilding ? 'bg-primary/10 text-primary animate-pulse disabled:opacity-100' : ''}`}
-                title={isRebuilding ? 'Rebuilding graph…' : 'Rebuild graph'}
-                aria-busy={isRebuilding}
-                onClick={() => handleRebuild(row.original.id)}
-                disabled={isRebuilding || !!bulkRebuild}
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isRebuilding ? 'animate-spin' : ''}`} />
-              </Button>
-            );
-          })()}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0 text-destructive"
-            title="Delete project"
-            onClick={() => setConfirmDeleteId(row.original.id)}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      ),
-    },
-  ];
-
   const boardQuery = boardSearchQuery.trim().toLowerCase();
   const filteredTasks = useMemo(
     () => tasks.filter((task) => (boardFilter === 'all' || task.project_id === boardFilter) && matchesBoardKeyword(task, boardQuery)),
@@ -964,6 +932,11 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     { key: 'done', label: 'Done' },
     { key: 'cancelled', label: 'Cancelled' },
   ];
+  const folderOptions = useMemo(() => flattenFolderOptions(folders), [folders]);
+  const editFolderOptions = useMemo(
+    () => flattenFolderOptions(folders, editingFolder?.id),
+    [editingFolder?.id, folders],
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -1022,30 +995,35 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       {/* Content */}
       <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
         {view === 'list' ? (
-          <div className="h-full overflow-auto p-6">
+          <div className="h-full min-h-0 overflow-hidden">
             {isLoading ? (
               <div className="flex items-center justify-center h-32">
                 <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
-            ) : projects.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                <p>{t('projects.noProjects')}</p>
-                <p className="text-sm mt-1">{t('projects.createHint')}</p>
-              </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                <div className="flex justify-start">
-                  <Button size="sm" onClick={() => setShowCreateDialog(true)}>
-                    <Plus className="h-4 w-4 mr-1" /> Project
-                  </Button>
-                </div>
-                <DataTable
-                  columns={columns}
-                  data={projects}
-                  searchKey="name"
-                  searchPlaceholder="Search projects..."
-                />
-              </div>
+              <ProjectTreeView
+                projects={projects}
+                folders={folders}
+                selectedFolderId={selectedFolderId}
+                onSelectedFolderChange={setSelectedFolderId}
+                searchQuery={projectSearchQuery}
+                onSearchQueryChange={setProjectSearchQuery}
+                onCreateProject={(folderId) => {
+                  setCreateForm((form) => ({ ...form, folder_id: folderId }));
+                  setShowCreateDialog(true);
+                }}
+                onCreateFolder={openCreateFolder}
+                onEditFolder={openEditFolder}
+                onDeleteFolder={setConfirmDeleteFolder}
+                onEditProject={openProjectEdit}
+                onMoveProject={openProjectMove}
+                onDeleteProject={(project) => setConfirmDeleteId(project.id)}
+                onRebuildProject={(project) => handleRebuild(project.id)}
+                onVersionStatusChange={handleVersionStatusChange}
+                rebuildingId={rebuildingId}
+                bulkRebuildActive={!!bulkRebuild}
+                updatingStatusId={updatingStatusId}
+              />
             )}
           </div>
         ) : (
@@ -1187,6 +1165,19 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               />
             </div>
             <div>
+              <Label>Project Folder <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Select
+                value={createForm.folder_id ?? 'unfiled'}
+                onValueChange={value => setCreateForm(f => ({ ...f, folder_id: value === 'unfiled' ? null : value }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Unfiled" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unfiled">Unfiled</SelectItem>
+                  {folderOptions.map(folder => <SelectItem key={folder.id} value={folder.id}>{folder.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>Version Status</Label>
               <Select value={createForm.version_status} onValueChange={v => setCreateForm(f => ({ ...f, version_status: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1244,6 +1235,19 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               />
             </div>
             <div>
+              <Label>Project Folder</Label>
+              <Select
+                value={projectEditForm.folder_id ?? 'unfiled'}
+                onValueChange={value => setProjectEditForm(f => ({ ...f, folder_id: value === 'unfiled' ? null : value }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Unfiled" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unfiled">Unfiled</SelectItem>
+                  {folderOptions.map(folder => <SelectItem key={folder.id} value={folder.id}>{folder.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>Version Status</Label>
               <Select value={projectEditForm.version_status} onValueChange={v => setProjectEditForm(f => ({ ...f, version_status: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1260,6 +1264,90 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             <Button onClick={handleSaveProject} disabled={isSavingProject}>
               {isSavingProject && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
               Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move Project Dialog */}
+      <Dialog
+        open={!!movingProject}
+        onOpenChange={open => {
+          if (!open && !isMovingProject) setMovingProject(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Move Project</DialogTitle>
+            <DialogDescription>
+              Choose a destination folder for “{movingProject?.name}”.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label>Destination folder</Label>
+            <Select
+              value={moveProjectFolderId ?? 'unfiled'}
+              onValueChange={value => setMoveProjectFolderId(value === 'unfiled' ? null : value)}
+            >
+              <SelectTrigger><SelectValue placeholder="Unfiled" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unfiled">Unfiled</SelectItem>
+                {folderOptions.map(folder => <SelectItem key={folder.id} value={folder.id}>{folder.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMovingProject(null)} disabled={isMovingProject}>{t('projects.cancel')}</Button>
+            <Button onClick={handleMoveProject} disabled={isMovingProject}>
+              {isMovingProject && <RefreshCw className="h-4 w-4 animate-spin mr-2" />}
+              <FolderInput className="h-4 w-4 mr-2" />
+              Move project
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create / Edit Folder Dialog */}
+      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingFolder ? 'Rename or move folder' : 'New project folder'}</DialogTitle>
+            <DialogDescription>
+              Folders can contain other folders and projects, so you can mirror your GitLab group structure.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Name</Label>
+              <Input
+                value={folderForm.name}
+                onChange={event => setFolderForm(form => ({ ...form, name: event.target.value }))}
+                placeholder="platform"
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label>Parent folder</Label>
+              <Select
+                value={folderForm.parent_id ?? 'root'}
+                onValueChange={value => setFolderForm(form => ({ ...form, parent_id: value === 'root' ? null : value }))}
+              >
+                <SelectTrigger><SelectValue placeholder="Workspace root" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="root">Workspace root</SelectItem>
+                  {(editingFolder ? editFolderOptions : folderOptions).map(folder => (
+                    <SelectItem key={folder.id} value={folder.id}>{folder.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {editingFolder && <p className="mt-1.5 text-xs text-muted-foreground">Moving a folder also moves its nested tree.</p>}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFolderDialogOpen(false)}>{t('projects.cancel')}</Button>
+            <Button onClick={handleSaveFolder} disabled={isSavingFolder}>
+              {isSavingFolder && <RefreshCw className="mr-2 size-4 animate-spin" />}
+              {editingFolder ? 'Save folder' : 'Create folder'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1911,6 +1999,27 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Folder Confirm */}
+      <AlertDialog open={!!confirmDeleteFolder} onOpenChange={open => !open && setConfirmDeleteFolder(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove folder “{confirmDeleteFolder?.name}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The folder will be removed, but its projects and subfolders will be kept and moved to the folder&apos;s parent. Nothing on disk is affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteFolder}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove folder
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -56,6 +56,28 @@ impl McpServer {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS project_folders (
+                id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+                name       TEXT        NOT NULL CHECK (length(btrim(name)) > 0),
+                parent_id  UUID        REFERENCES project_folders(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&db)
+        .await
+        .context("failed to create project_folders table")?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_folders_parent_id ON project_folders(parent_id)")
+            .execute(&db).await.ok();
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_folders_parent_name \
+             ON project_folders (COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(name))",
+        )
+        .execute(&db).await.ok();
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS project_graphs (
                 id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 name            TEXT        NOT NULL,
@@ -68,6 +90,8 @@ impl McpServer {
                 graph_hash      TEXT,
                 graph_file_size BIGINT,
                 imported_at     TIMESTAMPTZ,
+                folder_id       UUID REFERENCES project_folders(id) ON DELETE SET NULL,
+                version_status  TEXT        NOT NULL DEFAULT 'active',
                 created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
@@ -95,6 +119,39 @@ impl McpServer {
             .await
             .ok();
         sqlx::query("ALTER TABLE project_graphs ALTER COLUMN canonical_path DROP NOT NULL")
+            .execute(&db)
+            .await
+            .ok();
+
+        sqlx::query("ALTER TABLE project_graphs ADD COLUMN IF NOT EXISTS version_status TEXT NOT NULL DEFAULT 'active'")
+            .execute(&db)
+            .await
+            .ok();
+
+        sqlx::query("ALTER TABLE project_graphs ADD COLUMN IF NOT EXISTS folder_id UUID")
+            .execute(&db)
+            .await
+            .ok();
+        sqlx::query(
+            r#"
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'project_graphs_folder_id_fkey'
+                      AND conrelid = 'project_graphs'::regclass
+                ) THEN
+                    ALTER TABLE project_graphs
+                        ADD CONSTRAINT project_graphs_folder_id_fkey
+                        FOREIGN KEY (folder_id) REFERENCES project_folders(id) ON DELETE SET NULL;
+                END IF;
+            END $$
+            "#,
+        )
+        .execute(&db)
+        .await
+        .ok();
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_graphs_folder_id ON project_graphs(folder_id)")
             .execute(&db)
             .await
             .ok();

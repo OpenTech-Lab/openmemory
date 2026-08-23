@@ -59,7 +59,8 @@ impl McpServer {
     ) -> Result<serde_json::Value> {
         let rows: Vec<project_graphs::ProjectGraphRow> = sqlx::query_as(
             r#"SELECT id, name, path, canonical_path, description, node_count, edge_count,
-                      graph_hash, graph_file_size, imported_at, created_at, updated_at
+                      graph_hash, graph_file_size, imported_at, folder_id, created_at, updated_at,
+                      version_status, version_status AS effective_version_status
                FROM project_graphs ORDER BY created_at DESC"#,
         )
         .fetch_all(&self.db)
