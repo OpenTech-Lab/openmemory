@@ -8,6 +8,7 @@ mod indexer;
 mod library;
 mod mcp_app;
 mod project_graphs;
+mod qa;
 mod resources;
 mod workflows;
 

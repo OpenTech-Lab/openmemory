@@ -39,6 +39,7 @@ import { ProjectCommitGraph } from '@/components/project-commit-graph';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 import { LessonsPanel } from '@/components/lessons-panel';
+import { QaPanel } from '@/components/qa-panel';
 
 const ProjectDesignPanel = dynamic(
   () => import('@/components/project-design-panel').then(m => m.ProjectDesignPanel),
@@ -149,7 +150,7 @@ export default function ProjectDetailPage() {
   // project to have a filesystem path (`hasGraph`, computed once `project` loads below) — for a
   // path-less project those three panes render nothing, so a separate effect further down falls
   // back to Docs (the next tab that works without a path) once we know which case we're in.
-  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'design' | 'files' | 'history'>('files');
+  const [activeTab, setActiveTab] = useState<'graph' | 'tasks' | 'routines' | 'lessons' | 'qa' | 'design' | 'files' | 'history'>('files');
 
   // Graph query
   const [queryInput, setQueryInput] = useState('');
@@ -186,6 +187,7 @@ export default function ProjectDetailPage() {
   // purely to feed the tab badges without lifting those panels' full state up to this page.
   const [designCount, setDesignCount] = useState(0);
   const [lessonCount, setLessonCount] = useState(0);
+  const [qaCount, setQaCount] = useState(0);
 
   const fetchProject = useCallback(async () => {
     setIsLoading(true);
@@ -269,6 +271,16 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchQaCount = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${id}/qa/runs`);
+      const data = await res.json();
+      setQaCount(data.runs?.length ?? 0);
+    } catch {
+      // Badge-only fetch — a failure here shouldn't surface a toast on top of the panel's own.
+    }
+  }, [id]);
+
   useEffect(() => { fetchProject(); }, [fetchProject]);
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
   useEffect(() => { fetchRoutines(); }, [fetchRoutines]);
@@ -277,6 +289,7 @@ export default function ProjectDetailPage() {
   // made while that tab was open, without prop-drilling a refresh callback into either panel.
   useEffect(() => { fetchDesignCount(); }, [fetchDesignCount, activeTab]);
   useEffect(() => { fetchLessonCount(); }, [fetchLessonCount, activeTab]);
+  useEffect(() => { fetchQaCount(); }, [fetchQaCount, activeTab]);
 
   // The Files/Graph/History tabs only render content for a project with a filesystem path
   // (hasGraph below) — a path-less project landing on the Files default would otherwise show a
@@ -708,6 +721,12 @@ export default function ProjectDetailPage() {
         >
           Lessons {lessonCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{lessonCount}</span>}
         </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'qa' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('qa')}
+        >
+          QA {qaCount > 0 && <span className="ml-1 text-xs bg-muted rounded-full px-1.5 py-0.5">{qaCount}</span>}
+        </button>
         {hasGraph && (
           <button
             className={`px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'graph' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
@@ -1003,6 +1022,14 @@ export default function ProjectDetailPage() {
         {activeTab === 'lessons' && (
           <div className="flex flex-col h-full p-6 overflow-auto">
             <LessonsPanel key={`${id}-${syncVersion}`} projectId={id} />
+          </div>
+        )}
+
+        {/* QA tab — no overflow-auto here: QaPanel is a two-pane layout that owns its own
+            scrolling (min-h-0 + overflow-y-auto per pane), so this wrapper only bounds height. */}
+        {activeTab === 'qa' && (
+          <div className="flex h-full min-h-0 flex-col p-6">
+            <QaPanel key={`${id}-${syncVersion}`} projectId={id} />
           </div>
         )}
 

@@ -40,6 +40,7 @@ EXPOSE 18080
 # whatever UID:GID docker-compose substitutes at runtime.
 RUN mkdir -p /data/design-blobs && chmod 0777 /data/design-blobs
 RUN mkdir -p /data/library-blobs && chmod 0777 /data/library-blobs
+RUN mkdir -p /data/qa-blobs && chmod 0777 /data/qa-blobs
 
 USER 10001:10001
 CMD ["openmemory-server"]

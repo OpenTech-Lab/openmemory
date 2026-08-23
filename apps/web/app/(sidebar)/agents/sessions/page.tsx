@@ -69,6 +69,7 @@ export default function SessionsPage() {
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-background border-b">
                   <tr className="text-left text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">Session</th>
                     <th className="pb-2 pr-4 font-medium">Project</th>
                     <th className="pb-2 pr-4 font-medium">Branch</th>
                     <th className="pb-2 pr-4 font-medium">Messages</th>
@@ -78,6 +79,14 @@ export default function SessionsPage() {
                 <tbody className="divide-y divide-border">
                   {sessions.map((s) => (
                     <tr key={s.id} className="hover:bg-muted/50 transition-colors">
+                      <td className="py-2 pr-4">
+                        <span
+                          className="font-mono text-xs truncate inline-block max-w-[260px] align-middle"
+                          title={s.id}
+                        >
+                          {s.id}
+                        </span>
+                      </td>
                       <td className="py-2 pr-4">
                         <div className="flex items-center gap-1.5">
                           <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />

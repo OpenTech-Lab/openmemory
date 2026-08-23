@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Bring up OpenMemory together with the sibling qa-automation checkout.
+#
+# The two stay SEPARATE compose projects on purpose. Merging them — via
+# `include:` or `-f a.yml -f b.yml` — is not viable: both compose files define
+# top-level `postgres` and `redis`, and Compose merges same-named services
+# silently rather than erroring, producing a chimera service. Merging also
+# re-prefixes every volume to the new project name, orphaning the existing
+# qa-platform_{postgres,redis,minio}_data volumes.
+#
+# Two projects means qa-automation stays an independent repo at its own path,
+# keeps its own .env, its own volumes, and its own blast radius: `down` on one
+# cannot touch the other.
+#
+# Path override follows the same convention as DRAWIO_WEBAPP_PATH and
+# OPEN_PENCIL_PATH in docker-compose.yml — a sibling checkout by default.
+set -euo pipefail
+
+OPENMEMORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QA_AUTOMATION_PATH="${QA_AUTOMATION_PATH:-${OPENMEMORY_ROOT}/../qa-automation}"
+: "${COMPOSE_PROFILES:=api,watcher}"
+export COMPOSE_PROFILES
+
+usage() {
+  cat <<'USAGE'
+usage: scripts/stack <up|down|ps|logs|build|config> [extra docker compose args]
+
+  up      start both stacks detached
+  down    stop both stacks (containers only; volumes are never removed here)
+  ps      show containers for both stacks
+  logs    follow logs for both stacks
+  build   build images for both stacks
+  config  print the resolved compose config for both stacks
+
+env:
+  QA_AUTOMATION_PATH   qa-automation checkout (default: ../qa-automation)
+  COMPOSE_PROFILES     OpenMemory profiles (default: api,watcher)
+  SKIP_QA=1            operate on OpenMemory only
+USAGE
+}
+
+have_qa() {
+  [[ "${SKIP_QA:-0}" != "1" && -f "${QA_AUTOMATION_PATH}/docker-compose.yml" ]]
+}
+
+# Run a compose command in a stack directory, echoing it first.
+compose() {
+  local dir="$1"; shift
+  echo "==> [$(basename "${dir}")] docker compose $*"
+  ( cd "${dir}" && docker compose "$@" )
+}
+
+cmd="${1:-}"; [[ $# -gt 0 ]] && shift || true
+
+case "${cmd}" in
+  up)     args=(up -d) ;;
+  down)   args=(down) ;;
+  ps)     args=(ps) ;;
+  logs)   args=(logs -f) ;;
+  build)  args=(build) ;;
+  config) args=(config) ;;
+  ""|-h|--help|help) usage; exit 0 ;;
+  *) echo "unknown command: ${cmd}" >&2; usage >&2; exit 2 ;;
+esac
+
+compose "${OPENMEMORY_ROOT}" "${args[@]}" "$@"
+
+if have_qa; then
+  # COMPOSE_PROFILES is an OpenMemory concept; qa-automation has no profiles and
+  # would filter every service out if it inherited a non-empty value.
+  COMPOSE_PROFILES="" compose "$(cd "${QA_AUTOMATION_PATH}" && pwd)" "${args[@]}" "$@"
+elif [[ "${SKIP_QA:-0}" != "1" ]]; then
+  echo "==> qa-automation not found at ${QA_AUTOMATION_PATH} — skipped" >&2
+fi

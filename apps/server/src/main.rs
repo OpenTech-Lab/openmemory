@@ -10,6 +10,8 @@ mod falkordb;
 mod forecasts;
 mod library;
 mod llm;
+mod qa;
+mod qa_blobs;
 mod resources;
 mod workflows;
 mod project_sync;
@@ -28,7 +30,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use std::collections::{HashMap, HashSet};
@@ -444,6 +446,55 @@ struct ListDesignsParams {
 }
 
 const PROJECT_DESIGN_COLUMNS: &str = "id, project_id, title, kind, diagram_type, source, notes, tags, sort_order, status, created_by, created_at, updated_at";
+
+#[derive(Debug, Deserialize)]
+struct CreateQaRunPayload {
+    title: String,
+    task_id: Option<Uuid>,
+    status: Option<String>,
+    summary: Option<String>,
+    target: Option<String>,
+    external_ref: Option<String>,
+    created_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateQaRunPayload {
+    title: Option<String>,
+    status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    summary: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    target: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    task_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    external_ref: Option<Option<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListQaRunsParams {
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateQaEvidencePayload {
+    kind: String,
+    caption: Option<String>,
+    body: Option<String>,
+    captured_at: Option<DateTime<Utc>>,
+    sort_order: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateQaEvidencePayload {
+    #[serde(default, deserialize_with = "deserialize_some")]
+    caption: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    body: Option<Option<String>>,
+    sort_order: Option<i32>,
+    captured_at: Option<DateTime<Utc>>,
+}
 
 #[derive(Debug, Deserialize)]
 struct ListLessonsParams {
@@ -1642,6 +1693,26 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/designs/:design_id/budgets", get(list_design_budgets).post(create_design_budget))
         .route("/projects/:id/designs/:design_id/budgets/:budget_id", axum::routing::put(update_design_budget).delete(delete_design_budget))
         .route("/projects/:id/design-assets", get(list_project_design_assets))
+        .route("/projects/:id/qa/runs", get(list_project_qa_runs).post(create_project_qa_run))
+        .route(
+            "/projects/:id/qa/runs/:run_id",
+            get(get_project_qa_run).patch(update_project_qa_run).delete(delete_project_qa_run),
+        )
+        .route("/projects/:id/qa/runs/:run_id/evidence", post(create_project_qa_evidence))
+        .route(
+            "/projects/:id/qa/evidence/:evidence_id",
+            patch(update_project_qa_evidence).delete(delete_project_qa_evidence),
+        )
+        .route(
+            "/projects/:id/qa/evidence/:evidence_id/blob",
+            get(qa_blobs::get_qa_evidence_blob)
+                .put(qa_blobs::put_qa_evidence_blob)
+                // Scoped to this route only (not the whole router): a little above
+                // MAX_QA_BLOB_BYTES so axum only rejects truly oversized bodies,
+                // leaving the handler's own check to return the documented JSON error
+                // for anything between the two thresholds.
+                .layer(axum::extract::DefaultBodyLimit::max(qa::MAX_QA_BLOB_BYTES + 1024)),
+        )
         .route("/forecast-profiles", get(list_forecast_profiles).post(create_forecast_profile))
         .route("/forecast-profiles/:id", axum::routing::put(update_forecast_profile).delete(delete_forecast_profile))
         .route("/workflows", get(list_workflows).post(create_workflow))
@@ -2143,6 +2214,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
 
     design_budgets::ensure_table(db).await?;
     library::ensure_library_table(db).await?;
+    qa::ensure_qa_tables(db).await?;
 
     workflows::ensure_table(db).await?;
 
@@ -7430,6 +7502,242 @@ async fn delete_project_design(
         Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
         Err(e) => {
             error!("delete_project_design error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_project_qa_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(params): Query<ListQaRunsParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::list_runs(&state.db, project_id, params.status.as_deref(), None, None).await {
+        Ok(runs) => Json(serde_json::json!({"runs": runs, "total": runs.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_qa_runs error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_qa_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateQaRunPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::create_run(
+        &state.db,
+        project_id,
+        payload.task_id,
+        &payload.title,
+        payload.status.as_deref(),
+        payload.summary.as_deref(),
+        payload.target.as_deref(),
+        payload.external_ref.as_deref(),
+        payload.created_by.as_deref(),
+    )
+    .await
+    {
+        Ok(run) => (StatusCode::CREATED, Json(serde_json::json!(run))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_project_qa_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, run_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let run = match qa::get_run(&state.db, run_id, Some(project_id)).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA run not found"}))).into_response(),
+        Err(e) => {
+            error!("get_project_qa_run error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    match qa::list_evidence(&state.db, run_id).await {
+        Ok(evidence) => Json(serde_json::json!({"run": run, "evidence": evidence})).into_response(),
+        Err(e) => {
+            error!("get_project_qa_run evidence error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_qa_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, run_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateQaRunPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let result = qa::update_run(
+        &state.db,
+        run_id,
+        Some(project_id),
+        payload.title.as_deref(),
+        payload.status.as_deref(),
+        payload.summary.as_ref().map(|s| s.as_deref()),
+        payload.target.as_ref().map(|s| s.as_deref()),
+        payload.task_id,
+        payload.external_ref.as_ref().map(|s| s.as_deref()),
+    )
+    .await;
+
+    match result {
+        Ok(Some(run)) => Json(serde_json::json!(run)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA run not found"}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// Template for delete-plus-unlink is `delete_project_design` above: the evidence
+/// ids are fetched (`qa::delete_run`, internally) before the row is gone, and a
+/// missing blob file on cleanup is not an error — the row is the source of truth.
+async fn delete_project_qa_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, run_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::delete_run(&state.db, run_id, Some(project_id)).await {
+        Ok(Some(evidence_ids)) => {
+            let root = qa::blob_root();
+            for eid in evidence_ids {
+                let blob = qa::blob_path(&root, eid);
+                if let Err(e) = tokio::fs::remove_file(&blob).await {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        error!("delete_project_qa_run blob cleanup error: {e}");
+                    }
+                }
+            }
+            Json(serde_json::json!({"deleted": run_id})).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA run not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_qa_run error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_qa_evidence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, run_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<CreateQaEvidencePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    // Confirm the run belongs to this project before attaching evidence to it —
+    // the same ownership-before-write principle the blob routes apply to files,
+    // applied here to the row (mirrors the task-notes routes' task_exists check).
+    match qa::get_run(&state.db, run_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA run not found"}))).into_response(),
+        Err(e) => {
+            error!("create_project_qa_evidence run lookup error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    }
+
+    match qa::add_evidence(
+        &state.db,
+        run_id,
+        &payload.kind,
+        payload.caption.as_deref(),
+        payload.body.as_deref(),
+        payload.captured_at,
+        payload.sort_order,
+    )
+    .await
+    {
+        Ok(evidence) => (StatusCode::CREATED, Json(serde_json::json!(evidence))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_project_qa_evidence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, evidence_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateQaEvidencePayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let result = qa::update_evidence(
+        &state.db,
+        evidence_id,
+        Some(project_id),
+        payload.caption.as_ref().map(|s| s.as_deref()),
+        payload.body.as_ref().map(|s| s.as_deref()),
+        payload.sort_order,
+        payload.captured_at,
+    )
+    .await;
+
+    match result {
+        Ok(Some(evidence)) => Json(serde_json::json!(evidence)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA evidence not found"}))).into_response(),
+        Err(e) => {
+            error!("update_project_qa_evidence error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// Deleting evidence removes its blob file the same way `delete_project_design`
+/// removes a design's: best-effort, tolerant of the file already being gone
+/// (text evidence never had one; an image's blob may have never been PUT).
+async fn delete_project_qa_evidence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, evidence_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::delete_evidence(&state.db, evidence_id, Some(project_id)).await {
+        Ok(true) => {
+            let blob = qa::blob_path(&qa::blob_root(), evidence_id);
+            if let Err(e) = tokio::fs::remove_file(&blob).await {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    error!("delete_project_qa_evidence blob cleanup error: {e}");
+                }
+            }
+            Json(serde_json::json!({"deleted": evidence_id})).into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA evidence not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_qa_evidence error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }

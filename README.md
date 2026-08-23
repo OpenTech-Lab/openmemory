@@ -276,7 +276,7 @@ The design workspace supports:
 
 ## MCP tool reference
 
-OpenMemory 0.2.0 exposes 69 MCP tools:
+OpenMemory 0.2.0 exposes 78 MCP tools:
 
 | Group | Tools |
 |---|---|
@@ -292,8 +292,10 @@ OpenMemory 0.2.0 exposes 69 MCP tools:
 | Projects and tasks | `project_list`, `project_create`, `project_task_list`, `project_task_create`, `project_task_note_list`, `project_task_note_create`, `project_task_note_decide`, `project_task_update`, `project_task_delete` |
 | Lessons | `lesson_create`, `lesson_list`, `lesson_update`, `lesson_delete` |
 | Routines | `routine_check`, `routine_list`, `routine_create` |
+| QA | `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` |
 
-See [the bundled OpenMemory skill](skills/openmemory/SKILL.md) for agent operating guidance and safety rules.
+See [the bundled OpenMemory skill](skills/openmemory/SKILL.md) for agent operating guidance and safety rules,
+and [the QA run skill](skills/qa-run/SKILL.md) for the workflow that records a QA pass and its evidence.
 
 ## CLI reference
 
@@ -345,6 +347,20 @@ mem sessions messages <uuid> --limit 200
 docker compose logs openmemory-watcher
 ```
 
+## Companion stacks
+
+`scripts/stack` brings up OpenMemory alongside a sibling [qa-automation](https://github.com/OpenTech-Lab/qa-automation) checkout with one command:
+
+```bash
+./scripts/stack up      # start both
+./scripts/stack ps      # containers for both
+./scripts/stack down    # stop both (volumes are never removed)
+```
+
+The checkout stays an independent repository at its own path — nothing is vendored in. Override the location with `QA_AUTOMATION_PATH` (default `../qa-automation`), the same convention `DRAWIO_WEBAPP_PATH` and `OPEN_PENCIL_PATH` use. `SKIP_QA=1` operates on OpenMemory only, and a missing checkout is skipped with a warning rather than an error. `COMPOSE_PROFILES` selects the OpenMemory profiles (default `api,watcher`); it is not passed to the companion stack.
+
+The two remain **separate Compose projects** deliberately. Do not merge them with `include:` or `-f a.yml -f b.yml`: both files define top-level `postgres` and `redis`, and Compose merges same-named services silently instead of erroring, yielding one container with OpenMemory's image and qa-automation's credentials. Merging also re-prefixes every volume to the combined project name, orphaning the existing `qa-platform_{postgres,redis,minio}_data` volumes. Separate projects also keep the blast radius apart — `down` on one cannot touch the other.
+
 ## Architecture
 
 See [docs/design/primitives.md](docs/design/primitives.md) for a conceptual reference on
@@ -373,7 +389,7 @@ flowchart LR
 | OpenSearch 2.18 | full memory content and BM25 search |
 | Redis 7 | optional search-result cache |
 | FalkorDB | temporal entities/facts and memory relationships |
-| Docker volumes | design and uploaded library blobs |
+| Docker volumes | design, QA evidence, and uploaded library blobs |
 
 ## Security
 
@@ -443,6 +459,7 @@ openmemory/
 ├── apps/server/           Rust API, MCP server, and watcher
 ├── apps/web/              Next.js dashboard
 ├── skills/openmemory/     bundled agent skill
+├── skills/qa-run/         QA run + evidence recording skill
 ├── scripts/mem            command-line client
 ├── docker/                local editor/embed support
 ├── docs/                  architecture, design, and implementation notes
@@ -453,7 +470,7 @@ openmemory/
 
 ## Backup and recovery
 
-Back up the Docker volumes for PostgreSQL, OpenSearch, FalkorDB, design blobs, and library blobs. Redis is a cache and is not required for recovery. Preserve `OPENMEMORY_SECRET_KEY`; losing it makes encrypted environment values unrecoverable.
+Back up the Docker volumes for PostgreSQL, OpenSearch, FalkorDB, design blobs, QA evidence blobs, and library blobs. Redis is a cache and is not required for recovery. Preserve `OPENMEMORY_SECRET_KEY`; losing it makes encrypted environment values unrecoverable.
 
 Project `.openmemory/` exports are useful Git-friendly mirrors of planning/design data, but they are not a complete database backup.
 

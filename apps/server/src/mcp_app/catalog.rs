@@ -1255,6 +1255,109 @@ impl McpServer {
                         },
                         "required": ["project_id", "title"]
                     }
+                },
+                {
+                    "name": "qa_run_create",
+                    "description": "Record a QA run in OpenMemory's project QA log. This stores a result; it does not execute tests — use qa-automation's qa_run_test_plan for that.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "title": {"type": "string", "description": "What this run tested"},
+                            "task_id": {"type": "string", "description": "Optional UUID of the task this run verifies"},
+                            "status": {"type": "string", "description": "in_progress | passed | failed | blocked (default: in_progress)"},
+                            "summary": {"type": "string", "description": "Optional prose verdict"},
+                            "target": {"type": "string", "description": "What was tested: URL, build id, device"},
+                            "external_ref": {"type": "string", "description": "Optional id of a corresponding qa-automation TestRun"},
+                            "created_by": {"type": "string", "description": "agent | human (default: agent)"}
+                        },
+                        "required": ["project_id", "title"]
+                    }
+                },
+                {
+                    "name": "qa_run_update",
+                    "description": "Update a QA run in OpenMemory's project QA log — title, status, summary, target, task_id, or external_ref. Only provided fields are changed; pass null for summary/target/task_id/external_ref to clear them. Leaving status anything other than passed/failed/blocked is a bug, not a valid end state for a finished run.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {"type": "string", "description": "UUID of the QA run"},
+                            "title": {"type": "string"},
+                            "status": {"type": "string", "description": "in_progress | passed | failed | blocked"},
+                            "summary": {"type": ["string", "null"], "description": "New summary, or null to clear"},
+                            "target": {"type": ["string", "null"], "description": "New target, or null to clear"},
+                            "task_id": {"type": ["string", "null"], "description": "UUID of a task to link, or null to unlink"},
+                            "external_ref": {"type": ["string", "null"], "description": "New external_ref, or null to clear"}
+                        },
+                        "required": ["run_id"]
+                    }
+                },
+                {
+                    "name": "qa_run_list",
+                    "description": "List QA runs recorded in OpenMemory's project QA log, newest first.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "status": {"type": "string", "description": "Filter by in_progress | passed | failed | blocked"},
+                            "task_id": {"type": "string", "description": "Filter to runs linked to this task"},
+                            "limit": {"type": "integer", "description": "Max results (default 200)"}
+                        },
+                        "required": ["project_id"]
+                    }
+                },
+                {
+                    "name": "qa_run_delete",
+                    "description": "Delete a QA run and its evidence rows permanently, including their blob files on disk.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {"type": "string", "description": "UUID of the QA run"}
+                        },
+                        "required": ["run_id"]
+                    }
+                },
+                {
+                    "name": "qa_evidence_add",
+                    "description": "Attach evidence (a screenshot or a dated text note) to a QA run in OpenMemory's project QA log. For kind=image, pass file_path — a local file path to a png/jpeg/webp screenshot already on disk (must resolve under the home directory; symlinks pointing outside are rejected). This reads the file and uploads it; do not base64-encode image bytes into an argument.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {"type": "string", "description": "UUID of the QA run"},
+                            "kind": {"type": "string", "description": "image | text"},
+                            "caption": {"type": "string", "description": "Optional caption shown with the evidence"},
+                            "body": {"type": "string", "description": "The note text; required when kind=text, omit for kind=image"},
+                            "file_path": {"type": "string", "description": "Local path to the screenshot file; required when kind=image"},
+                            "captured_at": {"type": "string", "description": "Optional RFC3339 timestamp for when the evidence was captured (default: now)"},
+                            "sort_order": {"type": "integer", "description": "Optional render order within the run (default 0)"}
+                        },
+                        "required": ["run_id", "kind"]
+                    }
+                },
+                {
+                    "name": "qa_evidence_update",
+                    "description": "Update a QA evidence item's caption, body, sort_order, or captured_at. Only provided fields are changed; pass null for caption/body to clear them.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "evidence_id": {"type": "string", "description": "UUID of the evidence item"},
+                            "caption": {"type": ["string", "null"], "description": "New caption, or null to clear"},
+                            "body": {"type": ["string", "null"], "description": "New note text, or null to clear"},
+                            "sort_order": {"type": "integer", "description": "New render order within the run"},
+                            "captured_at": {"type": "string", "description": "New RFC3339 capture timestamp"}
+                        },
+                        "required": ["evidence_id"]
+                    }
+                },
+                {
+                    "name": "qa_evidence_delete",
+                    "description": "Delete a QA evidence item permanently, including its blob file on disk if it has one.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "evidence_id": {"type": "string", "description": "UUID of the evidence item"}
+                        },
+                        "required": ["evidence_id"]
+                    }
                 }
             ]
         }))

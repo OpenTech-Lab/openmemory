@@ -230,6 +230,10 @@ impl McpServer {
         sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS routine_id UUID REFERENCES project_routines(id) ON DELETE SET NULL")
             .execute(&db).await.ok();
 
+        // Lands here, not up near project_designs/library, because its FK to
+        // project_tasks requires that table to already exist.
+        qa::ensure_qa_tables(&db).await?;
+
         // OpenSearch connection
         let opensearch_url =
             std::env::var("OPENSEARCH_URL").unwrap_or_else(|_| "http://localhost:9201".to_string());

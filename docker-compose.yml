@@ -197,6 +197,7 @@ services:
       - ${HOME}:${HOME}:rw
       - design-blobs:/data/design-blobs
       - library-blobs:/data/library-blobs
+      - qa-blobs:/data/qa-blobs
     environment:
       # Git uses HOME to locate the host user's configured author identity for Source Control commits.
       HOME: ${HOME}
@@ -210,6 +211,7 @@ services:
       OPENMEMORY_HOME_DIR: ${HOME}
       OPENMEMORY_DESIGN_BLOB_DIR: /data/design-blobs
       OPENMEMORY_LIBRARY_BLOB_DIR: /data/library-blobs
+      OPENMEMORY_QA_BLOB_DIR: /data/qa-blobs
     depends_on:
       postgres:
         condition: service_healthy
@@ -272,3 +274,4 @@ volumes:
   falkordb_data:
   design-blobs:
   library-blobs:
+  qa-blobs:
