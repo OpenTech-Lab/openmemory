@@ -464,8 +464,19 @@ struct ListDesignsParams {
 const PROJECT_DESIGN_COLUMNS: &str = "id, project_id, title, kind, diagram_type, source, notes, tags, sort_order, status, created_by, created_at, updated_at";
 
 #[derive(Debug, Deserialize)]
+struct CreateQaEventPayload {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateQaEventPayload {
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CreateQaRunPayload {
     title: String,
+    event_id: Option<Uuid>,
     task_id: Option<Uuid>,
     status: Option<String>,
     summary: Option<String>,
@@ -479,6 +490,8 @@ struct UpdateQaRunPayload {
     title: Option<String>,
     status: Option<String>,
     #[serde(default, deserialize_with = "deserialize_some")]
+    event_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
     summary: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_some")]
     target: Option<Option<String>>,
@@ -491,6 +504,7 @@ struct UpdateQaRunPayload {
 #[derive(Debug, Deserialize)]
 struct ListQaRunsParams {
     status: Option<String>,
+    event_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -510,6 +524,31 @@ struct UpdateQaEvidencePayload {
     body: Option<Option<String>>,
     sort_order: Option<i32>,
     captured_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateQaPlanPayload {
+    name: String,
+    kind: Option<String>,
+    language: Option<String>,
+    description: Option<String>,
+    body: Option<String>,
+    created_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateQaPlanPayload {
+    name: Option<String>,
+    kind: Option<String>,
+    language: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    description: Option<Option<String>>,
+    body: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListQaPlansParams {
+    kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1711,6 +1750,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/projects/:id/designs/:design_id/budgets", get(list_design_budgets).post(create_design_budget))
         .route("/projects/:id/designs/:design_id/budgets/:budget_id", axum::routing::put(update_design_budget).delete(delete_design_budget))
         .route("/projects/:id/design-assets", get(list_project_design_assets))
+        .route("/projects/:id/qa/events", get(list_project_qa_events).post(create_project_qa_event))
+        .route(
+            "/projects/:id/qa/events/:event_id",
+            patch(update_project_qa_event).delete(delete_project_qa_event),
+        )
         .route("/projects/:id/qa/runs", get(list_project_qa_runs).post(create_project_qa_run))
         .route(
             "/projects/:id/qa/runs/:run_id",
@@ -1730,6 +1774,11 @@ async fn main() -> anyhow::Result<()> {
                 // leaving the handler's own check to return the documented JSON error
                 // for anything between the two thresholds.
                 .layer(axum::extract::DefaultBodyLimit::max(qa::MAX_QA_BLOB_BYTES + 1024)),
+        )
+        .route("/projects/:id/qa/plans", get(list_project_qa_plans).post(create_project_qa_plan))
+        .route(
+            "/projects/:id/qa/plans/:plan_id",
+            get(get_project_qa_plan).patch(update_project_qa_plan).delete(delete_project_qa_plan),
         )
         .route("/forecast-profiles", get(list_forecast_profiles).post(create_forecast_profile))
         .route("/forecast-profiles/:id", axum::routing::put(update_forecast_profile).delete(delete_forecast_profile))
@@ -7864,10 +7913,80 @@ async fn list_project_qa_runs(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    match qa::list_runs(&state.db, project_id, params.status.as_deref(), None, None).await {
+    match qa::list_runs(&state.db, project_id, params.status.as_deref(), None, params.event_id, None).await {
         Ok(runs) => Json(serde_json::json!({"runs": runs, "total": runs.len()})).into_response(),
         Err(e) => {
             error!("list_project_qa_runs error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_project_qa_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::list_events(&state.db, project_id).await {
+        Ok(events) => Json(serde_json::json!({"events": events, "total": events.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_qa_events error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_qa_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateQaEventPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::create_event(&state.db, project_id, &payload.name).await {
+        Ok(event) => (StatusCode::CREATED, Json(serde_json::json!(event))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_project_qa_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, event_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateQaEventPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::update_event(&state.db, event_id, Some(project_id), payload.name.as_deref()).await {
+        Ok(Some(event)) => Json(serde_json::json!(event)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA event not found"}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_project_qa_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, event_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::delete_event(&state.db, event_id, Some(project_id)).await {
+        Ok(true) => Json(serde_json::json!({"deleted": event_id, "runs_ungrouped": true})).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA event not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_qa_event error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }
@@ -7886,6 +8005,7 @@ async fn create_project_qa_run(
     match qa::create_run(
         &state.db,
         project_id,
+        payload.event_id,
         payload.task_id,
         &payload.title,
         payload.status.as_deref(),
@@ -7944,6 +8064,7 @@ async fn update_project_qa_run(
         Some(project_id),
         payload.title.as_deref(),
         payload.status.as_deref(),
+        payload.event_id,
         payload.summary.as_ref().map(|s| s.as_deref()),
         payload.target.as_ref().map(|s| s.as_deref()),
         payload.task_id,
@@ -8085,6 +8206,121 @@ async fn delete_project_qa_evidence(
         Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA evidence not found"}))).into_response(),
         Err(e) => {
             error!("delete_project_qa_evidence error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn list_project_qa_plans(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(params): Query<ListQaPlansParams>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::list_plans(&state.db, project_id, params.kind.as_deref()).await {
+        Ok(plans) => Json(serde_json::json!({"plans": plans, "total": plans.len()})).into_response(),
+        Err(e) => {
+            error!("list_project_qa_plans error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_qa_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateQaPlanPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::create_plan(
+        &state.db,
+        project_id,
+        &payload.name,
+        payload.kind.as_deref(),
+        payload.language.as_deref(),
+        payload.description.as_deref(),
+        payload.body.as_deref(),
+        payload.created_by.as_deref(),
+    )
+    .await
+    {
+        Ok(plan) => (StatusCode::CREATED, Json(serde_json::json!(plan))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_project_qa_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(plan)) => Json(serde_json::json!(plan)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(e) => {
+            error!("get_project_qa_plan error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn update_project_qa_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateQaPlanPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let result = qa::update_plan(
+        &state.db,
+        plan_id,
+        Some(project_id),
+        payload.name.as_deref(),
+        payload.kind.as_deref(),
+        payload.language.as_deref(),
+        payload.description.as_ref().map(|s| s.as_deref()),
+        payload.body.as_deref(),
+    )
+    .await;
+
+    match result {
+        Ok(Some(plan)) => Json(serde_json::json!(plan)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// Unlike `delete_project_qa_run`/`delete_project_qa_evidence`, a plan has no
+/// blob file on disk to clean up — it is source text stored entirely in the row.
+async fn delete_project_qa_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::delete_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(true) => Json(serde_json::json!({"deleted": plan_id})).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(e) => {
+            error!("delete_project_qa_plan error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }

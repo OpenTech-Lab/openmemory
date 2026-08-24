@@ -6,6 +6,15 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 WORKDIR /build
 COPY . .
 
+# Cap build parallelism so a rebuild doesn't saturate the host. Unset/0 means
+# "use every core", which on a many-core workstation makes the machine
+# unusable for the several minutes a release build takes. `docker compose
+# build` has no --cpus flag (unlike `docker run`), so the ceiling has to be
+# expressed here rather than on the command line.
+#   docker compose build --build-arg CARGO_BUILD_JOBS=6 openmemory-server
+ARG CARGO_BUILD_JOBS=""
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+
 RUN cargo build --release --bin openmemory-server
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────

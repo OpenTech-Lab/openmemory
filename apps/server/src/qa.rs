@@ -37,6 +37,8 @@ pub const MAX_QA_BLOB_BYTES: usize = 32 * 1024 * 1024;
 pub const RUN_STATUSES: [&str; 4] = ["in_progress", "passed", "failed", "blocked"];
 pub const EVIDENCE_KINDS: [&str; 2] = ["image", "text"];
 pub const CREATED_BY_VALUES: [&str; 2] = ["agent", "human"];
+pub const PLAN_KINDS: [&str; 4] = ["jest", "playwright", "maestro", "other"];
+pub const PLAN_LANGUAGES: [&str; 5] = ["typescript", "javascript", "yaml", "python", "other"];
 
 /// Directory holding uploaded evidence images, overridable for tests and local runs.
 pub fn blob_root() -> PathBuf {
@@ -81,9 +83,19 @@ pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaEventView {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct QaRunView {
     pub id: Uuid,
     pub project_id: Uuid,
+    pub event_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
     pub title: String,
     pub status: String,
@@ -111,12 +123,72 @@ pub struct QaEvidenceView {
     pub created_at: DateTime<Utc>,
 }
 
+/// A QA plan is a named, editable test-script *template* (Jest / Playwright /
+/// Maestro source text) stored per project. It is not a run and OpenMemory
+/// never executes it — see the module doc comment. Not to be confused with
+/// the sibling qa-automation service's `qa_create_test_plan`, which does.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaPlanView {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub language: String,
+    pub description: Option<String>,
+    pub body: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Format a QA plan list for MCP text responses, mirroring `library::format_list_text`.
+pub fn format_plan_list_text(plans: &[QaPlanView]) -> String {
+    let mut lines = Vec::new();
+    if plans.is_empty() {
+        lines.push("No QA plans.".to_string());
+        lines.push("Add with qa_plan_create.".to_string());
+    } else {
+        lines.push(format!("QA plans ({}):", plans.len()));
+        for p in plans {
+            let desc = p
+                .description
+                .as_deref()
+                .map(|d| format!(" — {}", d))
+                .unwrap_or_default();
+            lines.push(format!(
+                "• {} ({}/{}) [{}]{}",
+                p.name, p.kind, p.language, p.id, desc
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
 pub async fn ensure_qa_tables(db: &PgPool) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_qa_events (
+            id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id  UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            name        TEXT        NOT NULL CHECK (length(btrim(name)) > 0),
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_qa_events table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_events_project_created ON project_qa_events(project_id, created_at DESC)")
+        .execute(db).await.ok();
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS project_qa_runs (
             id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
             project_id    UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            event_id      UUID        REFERENCES project_qa_events(id) ON DELETE SET NULL,
             task_id       UUID        REFERENCES project_tasks(id) ON DELETE SET NULL,
             title         TEXT        NOT NULL,
             status        TEXT        NOT NULL DEFAULT 'in_progress'
@@ -136,7 +208,14 @@ pub async fn ensure_qa_tables(db: &PgPool) -> Result<()> {
     .await
     .context("failed to create project_qa_runs table")?;
 
+    // Existing installations predate QA events. Keep their runs intact and
+    // make the new relationship nullable so they remain visible as ungrouped.
+    sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS event_id UUID REFERENCES project_qa_events(id) ON DELETE SET NULL")
+        .execute(db).await.ok();
+
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_project_id ON project_qa_runs(project_id)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_event_id ON project_qa_runs(event_id)")
         .execute(db).await.ok();
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_task_id ON project_qa_runs(task_id)")
         .execute(db).await.ok();
@@ -166,7 +245,115 @@ pub async fn ensure_qa_tables(db: &PgPool) -> Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_evidence_run_sort ON project_qa_evidence(run_id, sort_order)")
         .execute(db).await.ok();
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_qa_plans (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id   UUID        NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            name         TEXT        NOT NULL CHECK (length(btrim(name)) > 0),
+            kind         TEXT        NOT NULL DEFAULT 'jest'
+                             CHECK (kind IN ('jest','playwright','maestro','other')),
+            language     TEXT        NOT NULL DEFAULT 'typescript'
+                             CHECK (language IN ('typescript','javascript','yaml','python','other')),
+            description  TEXT,
+            body         TEXT        NOT NULL DEFAULT '',
+            created_by   TEXT        NOT NULL DEFAULT 'agent' CHECK (created_by IN ('agent','human')),
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_qa_plans table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_plans_project_updated ON project_qa_plans(project_id, updated_at DESC)")
+        .execute(db).await.ok();
+
     Ok(())
+}
+
+fn validate_event_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        anyhow::bail!("event name must not be empty");
+    }
+    Ok(())
+}
+
+pub async fn create_event(db: &PgPool, project_id: Uuid, name: &str) -> Result<QaEventView> {
+    validate_event_name(name)?;
+    let row: QaEventView = sqlx::query_as(
+        "INSERT INTO project_qa_events (project_id, name) VALUES ($1, $2) RETURNING *",
+    )
+    .bind(project_id)
+    .bind(name.trim())
+    .fetch_one(db)
+    .await
+    .context("failed to create QA event")?;
+    Ok(row)
+}
+
+pub async fn list_events(db: &PgPool, project_id: Uuid) -> Result<Vec<QaEventView>> {
+    sqlx::query_as(
+        "SELECT * FROM project_qa_events WHERE project_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .context("failed to list QA events")
+}
+
+pub async fn update_event(
+    db: &PgPool,
+    event_id: Uuid,
+    project_id: Option<Uuid>,
+    name: Option<&str>,
+) -> Result<Option<QaEventView>> {
+    if let Some(value) = name {
+        validate_event_name(value)?;
+    }
+    sqlx::query_as(
+        r#"
+        UPDATE project_qa_events
+        SET name = COALESCE($1, name), updated_at = now()
+        WHERE id = $2 AND ($3::uuid IS NULL OR project_id = $3)
+        RETURNING *
+        "#,
+    )
+    .bind(name.map(str::trim))
+    .bind(event_id)
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to update QA event")
+}
+
+pub async fn delete_event(db: &PgPool, event_id: Uuid, project_id: Option<Uuid>) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM project_qa_events WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+    )
+    .bind(event_id)
+    .bind(project_id)
+    .execute(db)
+    .await
+    .context("failed to delete QA event")?;
+    Ok(result.rows_affected() > 0)
+}
+
+async fn validate_event_for_project(db: &PgPool, event_id: Uuid, project_id: Uuid) -> Result<()> {
+    let event_project_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT project_id FROM project_qa_events WHERE id = $1",
+    )
+    .bind(event_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to validate QA event")?;
+
+    match event_project_id {
+        Some(owner) if owner == project_id => Ok(()),
+        Some(_) => anyhow::bail!("event must belong to the same project as the QA run"),
+        None => anyhow::bail!("QA event not found"),
+    }
 }
 
 fn validate_status(status: &str) -> Result<()> {
@@ -190,10 +377,32 @@ fn validate_evidence_kind(kind: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_plan_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        anyhow::bail!("plan name must not be empty");
+    }
+    Ok(())
+}
+
+fn validate_plan_kind(kind: &str) -> Result<()> {
+    if !PLAN_KINDS.contains(&kind) {
+        anyhow::bail!("kind must be one of: jest, playwright, maestro, other");
+    }
+    Ok(())
+}
+
+fn validate_plan_language(language: &str) -> Result<()> {
+    if !PLAN_LANGUAGES.contains(&language) {
+        anyhow::bail!("language must be one of: typescript, javascript, yaml, python, other");
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_run(
     db: &PgPool,
     project_id: Uuid,
+    event_id: Option<Uuid>,
     task_id: Option<Uuid>,
     title: &str,
     status: Option<&str>,
@@ -209,16 +418,20 @@ pub async fn create_run(
     validate_status(status)?;
     let created_by = created_by.unwrap_or("agent");
     validate_created_by(created_by)?;
+    if let Some(event_id) = event_id {
+        validate_event_for_project(db, event_id, project_id).await?;
+    }
 
     let row: QaRunView = sqlx::query_as(
         r#"
         INSERT INTO project_qa_runs
-            (project_id, task_id, title, status, summary, target, external_ref, created_by, finished_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $4 = 'in_progress' THEN NULL ELSE now() END)
+            (project_id, event_id, task_id, title, status, summary, target, external_ref, created_by, finished_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $5 = 'in_progress' THEN NULL ELSE now() END)
         RETURNING *
         "#,
     )
     .bind(project_id)
+    .bind(event_id)
     .bind(task_id)
     .bind(title)
     .bind(status)
@@ -237,6 +450,7 @@ pub async fn list_runs(
     project_id: Uuid,
     status: Option<&str>,
     task_id: Option<Uuid>,
+    event_id: Option<Uuid>,
     limit: Option<i64>,
 ) -> Result<Vec<QaRunView>> {
     let limit = limit.unwrap_or(200).clamp(1, 500);
@@ -246,13 +460,15 @@ pub async fn list_runs(
         WHERE project_id = $1
           AND ($2::text IS NULL OR status = $2)
           AND ($3::uuid IS NULL OR task_id = $3)
+          AND ($4::uuid IS NULL OR event_id = $4)
         ORDER BY started_at DESC
-        LIMIT $4
+        LIMIT $5
         "#,
     )
     .bind(project_id)
     .bind(status)
     .bind(task_id)
+    .bind(event_id)
     .bind(limit)
     .fetch_all(db)
     .await
@@ -287,7 +503,8 @@ pub async fn run_project_id(db: &PgPool, run_id: Uuid) -> Result<Option<Uuid>> {
     Ok(row.map(|(pid,)| pid))
 }
 
-/// Tri-state update fields (`summary`, `target`, `task_id`, `external_ref`) follow
+/// Tri-state update fields (`summary`, `target`, `task_id`, `external_ref`,
+/// `event_id`) follow
 /// the same `Option<Option<T>>` idiom as `UpdateTaskPayload`/`UpdateDesignPayload`
 /// in `main.rs`: `None` = leave untouched, `Some(None)` = clear to NULL,
 /// `Some(Some(v))` = set. `project_id` is the scoping switch described on
@@ -301,6 +518,7 @@ pub async fn update_run(
     project_id: Option<Uuid>,
     title: Option<&str>,
     status: Option<&str>,
+    event_id: Option<Option<Uuid>>,
     summary: Option<Option<&str>>,
     target: Option<Option<&str>>,
     task_id: Option<Option<Uuid>>,
@@ -310,6 +528,18 @@ pub async fn update_run(
         validate_status(s)?;
     }
 
+    if let Some(Some(event_id)) = event_id {
+        let run_project_id = match project_id {
+            Some(project_id) => project_id,
+            None => run_project_id(db, run_id)
+                .await?
+                .with_context(|| format!("QA run '{}' not found", run_id))?,
+        };
+        validate_event_for_project(db, event_id, run_project_id).await?;
+    }
+
+    let event_id_set = event_id.is_some();
+    let event_id_val = event_id.flatten();
     let summary_set = summary.is_some();
     let summary_val = summary.flatten();
     let target_set = target.is_some();
@@ -324,22 +554,25 @@ pub async fn update_run(
         UPDATE project_qa_runs SET
             title = COALESCE($1, title),
             status = COALESCE($2, status),
-            summary = CASE WHEN $3 THEN $4 ELSE summary END,
-            target = CASE WHEN $5 THEN $6 ELSE target END,
-            task_id = CASE WHEN $7 THEN $8 ELSE task_id END,
-            external_ref = CASE WHEN $9 THEN $10 ELSE external_ref END,
+            event_id = CASE WHEN $3 THEN $4 ELSE event_id END,
+            summary = CASE WHEN $5 THEN $6 ELSE summary END,
+            target = CASE WHEN $7 THEN $8 ELSE target END,
+            task_id = CASE WHEN $9 THEN $10 ELSE task_id END,
+            external_ref = CASE WHEN $11 THEN $12 ELSE external_ref END,
             finished_at = CASE
                 WHEN $2::text IS NULL THEN finished_at
                 WHEN $2 = 'in_progress' THEN NULL
                 ELSE COALESCE(finished_at, now())
             END,
             updated_at = now()
-        WHERE id = $11 AND ($12::uuid IS NULL OR project_id = $12)
+        WHERE id = $13 AND ($14::uuid IS NULL OR project_id = $14)
         RETURNING *
         "#,
     )
     .bind(title)
     .bind(status)
+    .bind(event_id_set)
+    .bind(event_id_val)
     .bind(summary_set)
     .bind(summary_val)
     .bind(target_set)
@@ -514,6 +747,146 @@ pub async fn delete_evidence(db: &PgPool, evidence_id: Uuid, project_id: Option<
     Ok(result.rows_affected() > 0)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn create_plan(
+    db: &PgPool,
+    project_id: Uuid,
+    name: &str,
+    kind: Option<&str>,
+    language: Option<&str>,
+    description: Option<&str>,
+    body: Option<&str>,
+    created_by: Option<&str>,
+) -> Result<QaPlanView> {
+    validate_plan_name(name)?;
+    let kind = kind.unwrap_or("jest");
+    validate_plan_kind(kind)?;
+    let language = language.unwrap_or("typescript");
+    validate_plan_language(language)?;
+    let created_by = created_by.unwrap_or("agent");
+    validate_created_by(created_by)?;
+    let body = body.unwrap_or("");
+
+    let row: QaPlanView = sqlx::query_as(
+        r#"
+        INSERT INTO project_qa_plans (project_id, name, kind, language, description, body, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+        "#,
+    )
+    .bind(project_id)
+    .bind(name.trim())
+    .bind(kind)
+    .bind(language)
+    .bind(description)
+    .bind(body)
+    .bind(created_by)
+    .fetch_one(db)
+    .await
+    .context("failed to create QA plan")?;
+    Ok(row)
+}
+
+pub async fn list_plans(db: &PgPool, project_id: Uuid, kind: Option<&str>) -> Result<Vec<QaPlanView>> {
+    let rows: Vec<QaPlanView> = sqlx::query_as(
+        r#"
+        SELECT * FROM project_qa_plans
+        WHERE project_id = $1
+          AND ($2::text IS NULL OR kind = $2)
+        ORDER BY updated_at DESC
+        "#,
+    )
+    .bind(project_id)
+    .bind(kind)
+    .fetch_all(db)
+    .await
+    .context("failed to list QA plans")?;
+    Ok(rows)
+}
+
+/// `project_id: None` skips project scoping (the MCP tools address a plan
+/// directly by id); `Some(id)` requires the plan to belong to that project (the
+/// HTTP routes, which must 404 rather than leak a foreign plan).
+pub async fn get_plan(db: &PgPool, plan_id: Uuid, project_id: Option<Uuid>) -> Result<Option<QaPlanView>> {
+    let row: Option<QaPlanView> = sqlx::query_as(
+        "SELECT * FROM project_qa_plans WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+    )
+    .bind(plan_id)
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to fetch QA plan")?;
+    Ok(row)
+}
+
+/// `name`/`kind`/`language`/`body` are NOT NULL columns, so a plain
+/// `Option<&str>` + `COALESCE` says everything needed: `None` = leave
+/// untouched, `Some(v)` = set. `description` is nullable, so it follows the
+/// `Option<Option<T>>` tri-state used elsewhere in this module (`None` = leave
+/// untouched, `Some(None)` = clear to NULL, `Some(Some(v))` = set).
+/// `project_id` is the scoping switch described on `get_plan`.
+pub async fn update_plan(
+    db: &PgPool,
+    plan_id: Uuid,
+    project_id: Option<Uuid>,
+    name: Option<&str>,
+    kind: Option<&str>,
+    language: Option<&str>,
+    description: Option<Option<&str>>,
+    body: Option<&str>,
+) -> Result<Option<QaPlanView>> {
+    if let Some(value) = name {
+        validate_plan_name(value)?;
+    }
+    if let Some(value) = kind {
+        validate_plan_kind(value)?;
+    }
+    if let Some(value) = language {
+        validate_plan_language(value)?;
+    }
+
+    let description_set = description.is_some();
+    let description_val = description.flatten();
+
+    let row: Option<QaPlanView> = sqlx::query_as(
+        r#"
+        UPDATE project_qa_plans SET
+            name = COALESCE($1, name),
+            kind = COALESCE($2, kind),
+            language = COALESCE($3, language),
+            description = CASE WHEN $4 THEN $5 ELSE description END,
+            body = COALESCE($6, body),
+            updated_at = now()
+        WHERE id = $7 AND ($8::uuid IS NULL OR project_id = $8)
+        RETURNING *
+        "#,
+    )
+    .bind(name.map(str::trim))
+    .bind(kind)
+    .bind(language)
+    .bind(description_set)
+    .bind(description_val)
+    .bind(body)
+    .bind(plan_id)
+    .bind(project_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to update QA plan")?;
+    Ok(row)
+}
+
+pub async fn delete_plan(db: &PgPool, plan_id: Uuid, project_id: Option<Uuid>) -> Result<bool> {
+    let result = sqlx::query(
+        "DELETE FROM project_qa_plans WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+    )
+    .bind(plan_id)
+    .bind(project_id)
+    .execute(db)
+    .await
+    .context("failed to delete QA plan")?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +963,12 @@ mod tests {
     }
 
     #[test]
+    fn validates_event_name() {
+        assert!(validate_event_name("before deploy v1.0.0").is_ok());
+        assert!(validate_event_name("  ").unwrap_err().to_string().contains("event name"));
+    }
+
+    #[test]
     fn validates_created_by() {
         assert!(validate_created_by("human").is_ok());
         assert!(validate_created_by("robot").is_err());
@@ -599,5 +978,23 @@ mod tests {
     fn validates_evidence_kind() {
         assert!(validate_evidence_kind("text").is_ok());
         assert!(validate_evidence_kind("video").is_err());
+    }
+
+    #[test]
+    fn validates_plan_name() {
+        assert!(validate_plan_name("Login flow").is_ok());
+        assert!(validate_plan_name("  ").unwrap_err().to_string().contains("plan name"));
+    }
+
+    #[test]
+    fn validates_plan_kind() {
+        assert!(validate_plan_kind("playwright").is_ok());
+        assert!(validate_plan_kind("cypress").is_err());
+    }
+
+    #[test]
+    fn validates_plan_language() {
+        assert!(validate_plan_language("typescript").is_ok());
+        assert!(validate_plan_language("rust").is_err());
     }
 }

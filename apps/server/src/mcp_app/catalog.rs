@@ -1257,6 +1257,52 @@ impl McpServer {
                     }
                 },
                 {
+                    "name": "qa_event_create",
+                    "description": "Create a named QA event to group related QA runs, such as 'before deploy v1.0.0'.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "name": {"type": "string", "description": "Human-readable event name"}
+                        },
+                        "required": ["project_id", "name"]
+                    }
+                },
+                {
+                    "name": "qa_event_list",
+                    "description": "List named QA events for a project. Runs can reference an event_id to appear under it in the QA UI.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"}
+                        },
+                        "required": ["project_id"]
+                    }
+                },
+                {
+                    "name": "qa_event_update",
+                    "description": "Rename a QA event used to group related runs.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string", "description": "UUID of the QA event"},
+                            "name": {"type": "string", "description": "New human-readable event name"}
+                        },
+                        "required": ["event_id", "name"]
+                    }
+                },
+                {
+                    "name": "qa_event_delete",
+                    "description": "Delete a QA event without deleting its runs or evidence; its runs become ungrouped.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string", "description": "UUID of the QA event"}
+                        },
+                        "required": ["event_id"]
+                    }
+                },
+                {
                     "name": "qa_run_create",
                     "description": "Record a QA run in OpenMemory's project QA log. This stores a result; it does not execute tests — use qa-automation's qa_run_test_plan for that.",
                     "inputSchema": {
@@ -1264,6 +1310,7 @@ impl McpServer {
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "title": {"type": "string", "description": "What this run tested"},
+                            "event_id": {"type": "string", "description": "Optional UUID of the QA event that groups this run"},
                             "task_id": {"type": "string", "description": "Optional UUID of the task this run verifies"},
                             "status": {"type": "string", "description": "in_progress | passed | failed | blocked (default: in_progress)"},
                             "summary": {"type": "string", "description": "Optional prose verdict"},
@@ -1276,13 +1323,14 @@ impl McpServer {
                 },
                 {
                     "name": "qa_run_update",
-                    "description": "Update a QA run in OpenMemory's project QA log — title, status, summary, target, task_id, or external_ref. Only provided fields are changed; pass null for summary/target/task_id/external_ref to clear them. Leaving status anything other than passed/failed/blocked is a bug, not a valid end state for a finished run.",
+                    "description": "Update a QA run in OpenMemory's project QA log — title, status, event_id, summary, target, task_id, or external_ref. Only provided fields are changed; pass null for event_id/summary/target/task_id/external_ref to clear them. Leaving status anything other than passed/failed/blocked is a bug, not a valid end state for a finished run.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "run_id": {"type": "string", "description": "UUID of the QA run"},
                             "title": {"type": "string"},
                             "status": {"type": "string", "description": "in_progress | passed | failed | blocked"},
+                            "event_id": {"type": ["string", "null"], "description": "UUID of a QA event to group under, or null to ungroup"},
                             "summary": {"type": ["string", "null"], "description": "New summary, or null to clear"},
                             "target": {"type": ["string", "null"], "description": "New target, or null to clear"},
                             "task_id": {"type": ["string", "null"], "description": "UUID of a task to link, or null to unlink"},
@@ -1299,6 +1347,7 @@ impl McpServer {
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "status": {"type": "string", "description": "Filter by in_progress | passed | failed | blocked"},
+                            "event_id": {"type": "string", "description": "Filter to runs in this QA event"},
                             "task_id": {"type": "string", "description": "Filter to runs linked to this task"},
                             "limit": {"type": "integer", "description": "Max results (default 200)"}
                         },
@@ -1357,6 +1406,62 @@ impl McpServer {
                             "evidence_id": {"type": "string", "description": "UUID of the evidence item"}
                         },
                         "required": ["evidence_id"]
+                    }
+                },
+                {
+                    "name": "qa_plan_create",
+                    "description": "Create a QA plan: a named, editable test-script template (Jest, Playwright, or Maestro source text) stored for a project. This is a template for a human or agent to edit — OpenMemory never executes it. Unrelated to qa-automation's qa_create_test_plan/qa_run_test_plan, which do execute tests; do not confuse the two.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "name": {"type": "string", "description": "Human-readable plan name"},
+                            "kind": {"type": "string", "description": "jest | playwright | maestro | other (default: jest)"},
+                            "language": {"type": "string", "description": "typescript | javascript | yaml | python | other (default: typescript)"},
+                            "description": {"type": "string", "description": "Optional prose description of what this plan covers"},
+                            "body": {"type": "string", "description": "The test-script source text (default: empty)"},
+                            "created_by": {"type": "string", "description": "agent | human (default: agent)"}
+                        },
+                        "required": ["project_id", "name"]
+                    }
+                },
+                {
+                    "name": "qa_plan_list",
+                    "description": "List QA plans (editable test-script templates, not runs) recorded for a project, most recently updated first.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "kind": {"type": "string", "description": "Filter by jest | playwright | maestro | other"}
+                        },
+                        "required": ["project_id"]
+                    }
+                },
+                {
+                    "name": "qa_plan_update",
+                    "description": "Update a QA plan's name, kind, language, description, or body. Only provided fields are changed; pass null for description to clear it.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string", "description": "UUID of the QA plan"},
+                            "name": {"type": "string"},
+                            "kind": {"type": "string", "description": "jest | playwright | maestro | other"},
+                            "language": {"type": "string", "description": "typescript | javascript | yaml | python | other"},
+                            "description": {"type": ["string", "null"], "description": "New description, or null to clear"},
+                            "body": {"type": "string", "description": "New test-script source text"}
+                        },
+                        "required": ["plan_id"]
+                    }
+                },
+                {
+                    "name": "qa_plan_delete",
+                    "description": "Delete a QA plan permanently. Plans have no blob file on disk, so this only removes the database row.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string", "description": "UUID of the QA plan"}
+                        },
+                        "required": ["plan_id"]
                     }
                 }
             ]

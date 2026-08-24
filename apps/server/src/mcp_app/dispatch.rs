@@ -86,6 +86,10 @@ impl McpServer {
             "routine_check" => self.routine_check(arguments).await,
             "routine_list" => self.routine_list(arguments).await,
             "routine_create" => self.routine_create(arguments).await,
+            "qa_event_create" => self.qa_event_create(arguments).await,
+            "qa_event_list" => self.qa_event_list(arguments).await,
+            "qa_event_update" => self.qa_event_update(arguments).await,
+            "qa_event_delete" => self.qa_event_delete(arguments).await,
             "qa_run_create" => self.qa_run_create(arguments).await,
             "qa_run_update" => self.qa_run_update(arguments).await,
             "qa_run_list" => self.qa_run_list(arguments).await,
@@ -93,6 +97,10 @@ impl McpServer {
             "qa_evidence_add" => self.qa_evidence_add(arguments).await,
             "qa_evidence_update" => self.qa_evidence_update(arguments).await,
             "qa_evidence_delete" => self.qa_evidence_delete(arguments).await,
+            "qa_plan_create" => self.qa_plan_create(arguments).await,
+            "qa_plan_list" => self.qa_plan_list(arguments).await,
+            "qa_plan_update" => self.qa_plan_update(arguments).await,
+            "qa_plan_delete" => self.qa_plan_delete(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
         }
     }

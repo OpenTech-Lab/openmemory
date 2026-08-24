@@ -1,7 +1,7 @@
 # Project QA Tab — Design
 
 Date: 2026-08-22
-Status: approved, pending implementation plan
+Status: approved and implemented; event grouping added 2026-08-24
 
 ## Purpose
 
@@ -62,6 +62,7 @@ path as the other `ensure_*_table` functions.
 |---|---|---|
 | `id` | `UUID PK DEFAULT gen_random_uuid()` | |
 | `project_id` | `UUID NOT NULL` | `REFERENCES project_graphs(id) ON DELETE CASCADE` |
+| `event_id` | `UUID NULL` | `REFERENCES project_qa_events(id) ON DELETE SET NULL`; groups runs under a release/deployment checkpoint |
 | `task_id` | `UUID NULL` | `REFERENCES project_tasks(id) ON DELETE SET NULL` |
 | `title` | `TEXT NOT NULL` | |
 | `status` | `TEXT NOT NULL DEFAULT 'in_progress'` | `CHECK (status IN ('in_progress','passed','failed','blocked'))` |
@@ -74,7 +75,7 @@ path as the other `ensure_*_table` functions.
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 | `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 
-Indexes: `(project_id)`, `(task_id)`, `(project_id, started_at DESC)`.
+Indexes: `(project_id)`, `(event_id)`, `(task_id)`, `(project_id, started_at DESC)`.
 
 `project_id` targets `project_graphs(id)` because that is OpenMemory's project
 registry table — the same target `project_tasks.project_id` uses. It is not named
@@ -82,6 +83,20 @@ registry table — the same target `project_tasks.project_id` uses. It is not na
 
 `task_id` is `ON DELETE SET NULL`, deliberately **not** `CASCADE`: deleting a task
 must not destroy the evidence that the work was verified.
+
+### `project_qa_events`
+
+| column | type | notes |
+|---|---|---|
+| `id` | `UUID PK DEFAULT gen_random_uuid()` | |
+| `project_id` | `UUID NOT NULL` | `REFERENCES project_graphs(id) ON DELETE CASCADE` |
+| `name` | `TEXT NOT NULL` | Human-readable checkpoint name, e.g. `before deploy v1.0.0` |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+| `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+
+Deleting an event uses `ON DELETE SET NULL`: its QA runs and evidence remain
+available in the ungrouped section. Existing runs are therefore backward
+compatible and appear as ungrouped until an event is assigned.
 
 ### `project_qa_evidence`
 
@@ -159,6 +174,10 @@ segment `{id}` — it silently never matches, with no error at startup or compil
 | `DELETE` | `/projects/{id}/qa/evidence/{evidence_id}` | delete row and its blob |
 | `PUT` | `/projects/{id}/qa/evidence/{evidence_id}/blob` | upload image bytes |
 | `GET` | `/projects/{id}/qa/evidence/{evidence_id}/blob` | fetch image bytes |
+| `GET` | `/projects/{id}/qa/events` | list named QA events |
+| `POST` | `/projects/{id}/qa/events` | create an event |
+| `PATCH` | `/projects/{id}/qa/events/{event_id}` | rename an event |
+| `DELETE` | `/projects/{id}/qa/events/{event_id}` | delete the event and leave runs ungrouped |
 
 Evidence routes are addressed by `evidence_id` directly rather than nested under
 `/runs/{run_id}/`, because an evidence UUID is already globally unique and the
@@ -181,9 +200,13 @@ and routing entries in `dispatch.rs` — the established three-file pattern used
 
 | tool | arguments |
 |---|---|
-| `qa_run_create` | `project_id`, `title`, optional `task_id`, `status`, `summary`, `target`, `external_ref`, `created_by` |
-| `qa_run_update` | `run_id`, any of `title`/`status`/`summary`/`target`/`task_id`/`external_ref` |
-| `qa_run_list` | `project_id`, optional `status`, `task_id`, `limit` |
+| `qa_event_create` | `project_id`, `name` |
+| `qa_event_list` | `project_id` |
+| `qa_event_update` | `event_id`, `name` |
+| `qa_event_delete` | `event_id` |
+| `qa_run_create` | `project_id`, `title`, optional `event_id`, `task_id`, `status`, `summary`, `target`, `external_ref`, `created_by` |
+| `qa_run_update` | `run_id`, any of `title`/`status`/`event_id`/`summary`/`target`/`task_id`/`external_ref` |
+| `qa_run_list` | `project_id`, optional `status`, `event_id`, `task_id`, `limit` |
 | `qa_run_delete` | `run_id` |
 | `qa_evidence_add` | `run_id`, `kind`, optional `caption`, `body`, `file_path`, `captured_at`, `sort_order` |
 | `qa_evidence_update` | `evidence_id`, any of `caption`/`body`/`sort_order`/`captured_at` |
@@ -225,11 +248,16 @@ union (line 152), one nav button matching the existing hand-rolled tab buttons
 (lines 681-721), and one render branch delegating to a new component. That file is
 already 1187 lines; QA content must not go inline.
 
-New `apps/web/components/qa-panel.tsx`, following `components/lessons-panel.tsx`:
+New `apps/web/components/qa-panel.tsx`, following `components/lessons-panel.tsx` and
+the project History panel's sidebar/timeline language:
 
+- **Event index** — all runs, ungrouped runs, and named QA events with counts;
+  events can be created, renamed, or deleted without deleting their runs.
+- **Bulk grouping** — select several runs, move them to an existing event, or
+  create a new event and move the selected runs into it in one action.
 - **Run list** — verdict badge, title, target, `started_at`, evidence count, and a
   chip linking to the originating task when `task_id` is set. Filter control for
-  verdict.
+  verdict and event-scoped navigation.
 - **Run detail** — evidence timeline in `sort_order`, image thumbnails and text
   notes interleaved, each showing `captured_at`.
 - **Lightbox** — click a thumbnail for the full-size image with its caption and

@@ -11,11 +11,24 @@ names. Keep them straight:
 | Server | Tools | Role |
 |---|---|---|
 | **qa-automation** | `qa_list_projects`, `qa_create_test_plan`, `qa_run_test_plan`, `qa_get_report`, … | **Executes** tests and returns a verdict |
-| **OpenMemory** | `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` | **Records** what was tested, the verdict, and the evidence |
+| **OpenMemory** | `qa_event_create`, `qa_event_list`, `qa_event_update`, `qa_event_delete`, `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` | **Records** what was tested, the verdict, the event grouping, and the evidence |
+| **OpenMemory** | `qa_plan_create`, `qa_plan_list`, `qa_plan_update`, `qa_plan_delete` | **Stores** reusable test-script templates as source text. Never executes them. |
 
 `qa_run_test_plan` (qa-automation) starts a test. `qa_run_create` (OpenMemory)
 files a record. They are not the same operation and neither substitutes for the
 other.
+
+The same trap exists one word apart for plans, and it is the easier of the two to
+fall into:
+
+- **`qa_create_test_plan`** (qa-automation) registers checks that will actually be
+  **executed** by the worker.
+- **`qa_plan_create`** (OpenMemory) saves a **template** — Jest, Playwright or
+  Maestro source text — into the project's QA tab. Nothing runs it, ever.
+
+If you want a test to run, you want qa-automation. If you want a script to still
+exist next week, you want OpenMemory. Reaching for `qa_plan_create` and then
+waiting for a verdict is the specific mistake this table exists to prevent.
 
 ## The convention
 
@@ -33,6 +46,12 @@ were given). The test plan comes from the task's own description — what change
 what surface it touches, what "working" means for it. Write down the concrete
 checks before running anything; a plan invented after seeing the results is not a
 test plan.
+
+Check `qa_plan_list` first: the project may already hold a template for this
+surface, in which case adapt it rather than writing one from scratch. If you end
+up writing something reusable, save it with `qa_plan_create` so the next run
+starts from it instead of from nothing. These are stored templates only — see the
+table above before expecting one to execute.
 
 ### 2. Execute through qa-automation
 
@@ -58,15 +77,35 @@ test needs), save them to disk, and pass those paths to `qa_evidence_add`.
 
 ### 4. Write the record back
 
+If several checks belong to one release or deployment checkpoint, create one
+QA event first and pass its `event_id` to every run. For example:
+
+```json
+qa_event_create { "project_id": "<uuid>", "name": "before deploy v1.0.0" }
 ```
-qa_run_create   →  qa_evidence_add (× n)  →  qa_run_update
+
+Then include the returned event id when creating each run:
+
+```json
+qa_run_create {
+  "project_id": "<uuid>",
+  "event_id": "<qa-event-uuid>",
+  "title": "Checkout flow smoke test",
+  "task_id": "<uuid of the qa task>",
+  "target": "https://staging.example.com/checkout",
+  "external_ref": "<qa-automation run id>",
+  "status": "in_progress"
+}
 ```
+
+`qa_run_create → qa_evidence_add (× n) → qa_run_update`
 
 **Create the run first**, at the start of the pass, not at the end:
 
 ```json
 qa_run_create {
   "project_id": "<uuid>",
+  "event_id": "<qa-event-uuid>",
   "title": "Checkout flow after payment-provider swap",
   "task_id": "<uuid of the qa task>",
   "target": "https://staging.example.com/checkout",
@@ -113,7 +152,9 @@ Finally move the task to `done`.
 
 ## Reading and correcting past runs
 
-- `qa_run_list` with `project_id` (optionally `status` or `task_id`) — newest first.
+- `qa_event_list` with `project_id` — find existing release/deployment checkpoints.
+- `qa_run_list` with `project_id` (optionally `status`, `event_id`, or `task_id`) — newest first.
+- `qa_run_update` with `event_id` (or `event_id: null`) — move an existing run into or out of an event.
 - `qa_evidence_update` — fix a caption, note text, `sort_order`, or `captured_at`.
 - `qa_evidence_delete` / `qa_run_delete` — permanent, and they unlink the blob
   files from disk. There is no undo and no separate backup of the blob volume.

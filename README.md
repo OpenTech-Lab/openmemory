@@ -276,7 +276,7 @@ The design workspace supports:
 
 ## MCP tool reference
 
-OpenMemory 0.2.0 exposes 78 MCP tools:
+OpenMemory 0.2.0 exposes 86 MCP tools:
 
 | Group | Tools |
 |---|---|
@@ -292,7 +292,8 @@ OpenMemory 0.2.0 exposes 78 MCP tools:
 | Projects and tasks | `project_list`, `project_create`, `project_task_list`, `project_task_create`, `project_task_note_list`, `project_task_note_create`, `project_task_note_decide`, `project_task_update`, `project_task_delete` |
 | Lessons | `lesson_create`, `lesson_list`, `lesson_update`, `lesson_delete` |
 | Routines | `routine_check`, `routine_list`, `routine_create` |
-| QA | `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` |
+| QA | `qa_event_create`, `qa_event_list`, `qa_event_update`, `qa_event_delete`, `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` |
+| QA plans | `qa_plan_create`, `qa_plan_list`, `qa_plan_update`, `qa_plan_delete` — store test-script templates; OpenMemory never executes them |
 
 See [the bundled OpenMemory skill](skills/openmemory/SKILL.md) for agent operating guidance and safety rules,
 and [the QA run skill](skills/qa-run/SKILL.md) for the workflow that records a QA pass and its evidence.

@@ -135,6 +135,78 @@ async fn delete_qa_evidence_via_api(project_id: Uuid, evidence_id: Uuid) -> Resu
 }
 
 impl McpServer {
+    pub(super) async fn qa_event_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let name = args["name"].as_str().context("missing name")?;
+        let event = qa::create_event(&self.db, project_id, name).await?;
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Created QA event '{}' [{}] for project {}", event.name, event.id, event.project_id)
+            }]
+        }))
+    }
+
+    pub(super) async fn qa_event_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let events = qa::list_events(&self.db, project_id).await?;
+        let text = if events.is_empty() {
+            "No QA events.".to_string()
+        } else {
+            let mut lines = vec![format!("QA events ({}):", events.len())];
+            for event in &events {
+                lines.push(format!("• {} — {}", event.name, event.id));
+            }
+            lines.join("\n")
+        };
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    pub(super) async fn qa_event_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let event_id: Uuid = args["event_id"]
+            .as_str()
+            .context("missing event_id")?
+            .parse()
+            .context("invalid event_id UUID")?;
+        let name = args["name"].as_str().context("missing name")?;
+        match qa::update_event(&self.db, event_id, None, Some(name)).await? {
+            Some(event) => Ok(json!({
+                "content": [{ "type": "text", "text": format!("Updated QA event '{}' [{}].", event.name, event.id) }]
+            })),
+            None => anyhow::bail!("QA event '{}' not found", event_id),
+        }
+    }
+
+    pub(super) async fn qa_event_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let event_id: Uuid = args["event_id"]
+            .as_str()
+            .context("missing event_id")?
+            .parse()
+            .context("invalid event_id UUID")?;
+        let run_count: i64 = sqlx::query_scalar("SELECT count(*) FROM project_qa_runs WHERE event_id = $1")
+            .bind(event_id)
+            .fetch_one(&self.db)
+            .await
+            .context("failed to count QA event runs")?;
+        if !qa::delete_event(&self.db, event_id, None).await? {
+            anyhow::bail!("QA event '{}' not found", event_id);
+        }
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Deleted QA event {}. {} run(s) are now ungrouped.", event_id, run_count)
+            }]
+        }))
+    }
+
     pub(super) async fn qa_run_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
         let project_id: Uuid = args["project_id"]
             .as_str()
@@ -142,6 +214,10 @@ impl McpServer {
             .parse()
             .context("invalid project_id UUID")?;
         let title = args["title"].as_str().context("missing title")?;
+        let event_id: Option<Uuid> = match args["event_id"].as_str() {
+            Some(s) => Some(s.parse().context("invalid event_id UUID")?),
+            None => None,
+        };
         let task_id: Option<Uuid> = match args["task_id"].as_str() {
             Some(s) => Some(s.parse().context("invalid task_id UUID")?),
             None => None,
@@ -153,7 +229,7 @@ impl McpServer {
         let created_by = args["created_by"].as_str();
 
         let run = qa::create_run(
-            &self.db, project_id, task_id, title, status, summary, target, external_ref, created_by,
+            &self.db, project_id, event_id, task_id, title, status, summary, target, external_ref, created_by,
         )
         .await?;
 
@@ -175,9 +251,13 @@ impl McpServer {
             Some(s) => Some(s.parse().context("invalid task_id UUID")?),
             None => None,
         };
+        let event_id: Option<Uuid> = match args["event_id"].as_str() {
+            Some(s) => Some(s.parse().context("invalid event_id UUID")?),
+            None => None,
+        };
         let limit = args["limit"].as_i64();
 
-        let runs = qa::list_runs(&self.db, project_id, status, task_id, limit).await?;
+        let runs = qa::list_runs(&self.db, project_id, status, task_id, event_id, limit).await?;
         let text = if runs.is_empty() {
             "No QA runs.".to_string()
         } else {
@@ -208,6 +288,13 @@ impl McpServer {
         let summary: Option<Option<&str>> = args.get("summary").map(|v| v.as_str());
         let target: Option<Option<&str>> = args.get("target").map(|v| v.as_str());
         let external_ref: Option<Option<&str>> = args.get("external_ref").map(|v| v.as_str());
+        let event_id: Option<Option<Uuid>> = match args.get("event_id") {
+            None => None,
+            Some(v) if v.is_null() => Some(None),
+            Some(v) => Some(Some(
+                v.as_str().context("event_id must be a string")?.parse().context("invalid event_id UUID")?,
+            )),
+        };
         let task_id: Option<Option<Uuid>> = match args.get("task_id") {
             None => None,
             Some(v) if v.is_null() => Some(None),
@@ -216,7 +303,7 @@ impl McpServer {
             )),
         };
 
-        match qa::update_run(&self.db, run_id, None, title, status, summary, target, task_id, external_ref).await? {
+        match qa::update_run(&self.db, run_id, None, title, status, event_id, summary, target, task_id, external_ref).await? {
             Some(run) => {
                 let text = format!("Updated QA run '{}' [{}] — status={}", run.title, run.id, run.status);
                 Ok(json!({ "content": [{ "type": "text", "text": text }] }))
@@ -334,5 +421,71 @@ impl McpServer {
         delete_qa_evidence_via_api(project_id, evidence_id).await?;
 
         Ok(json!({ "content": [{ "type": "text", "text": format!("Deleted QA evidence {}", evidence_id) }] }))
+    }
+
+    pub(super) async fn qa_plan_create(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let name = args["name"].as_str().context("missing name")?;
+        let kind = args["kind"].as_str();
+        let language = args["language"].as_str();
+        let description = args["description"].as_str();
+        let body = args["body"].as_str();
+        let created_by = args["created_by"].as_str();
+
+        let plan = qa::create_plan(&self.db, project_id, name, kind, language, description, body, created_by).await?;
+
+        let text = format!(
+            "Created QA plan '{}' [{}] kind={} language={} for project {}",
+            plan.name, plan.id, plan.kind, plan.language, plan.project_id
+        );
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    pub(super) async fn qa_plan_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let kind = args["kind"].as_str();
+
+        let plans = qa::list_plans(&self.db, project_id, kind).await?;
+        let text = qa::format_plan_list_text(&plans);
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    pub(super) async fn qa_plan_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let plan_id: Uuid = args["plan_id"].as_str().context("missing plan_id")?.parse().context("invalid plan_id UUID")?;
+        let name = args["name"].as_str();
+        let kind = args["kind"].as_str();
+        let language = args["language"].as_str();
+        let body = args["body"].as_str();
+        // `args.get(key)` distinguishes "key absent" (None: leave untouched) from
+        // "key present" (Some(...), whether null — clear — or a string — set),
+        // matching the `Option<Option<T>>` tri-state the HTTP PATCH payloads use.
+        let description: Option<Option<&str>> = args.get("description").map(|v| v.as_str());
+
+        match qa::update_plan(&self.db, plan_id, None, name, kind, language, description, body).await? {
+            Some(plan) => {
+                let text = format!(
+                    "Updated QA plan '{}' [{}] kind={} language={}",
+                    plan.name, plan.id, plan.kind, plan.language
+                );
+                Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+            }
+            None => anyhow::bail!("QA plan '{}' not found", plan_id),
+        }
+    }
+
+    pub(super) async fn qa_plan_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let plan_id: Uuid = args["plan_id"].as_str().context("missing plan_id")?.parse().context("invalid plan_id UUID")?;
+        if !qa::delete_plan(&self.db, plan_id, None).await? {
+            anyhow::bail!("QA plan '{}' not found", plan_id);
+        }
+        Ok(json!({ "content": [{ "type": "text", "text": format!("Deleted QA plan {}", plan_id) }] }))
     }
 }

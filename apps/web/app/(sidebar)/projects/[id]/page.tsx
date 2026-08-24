@@ -39,7 +39,7 @@ import { ProjectCommitGraph } from '@/components/project-commit-graph';
 import { LabelChipInput } from '@/components/label-chip-input';
 import { TASK_LABEL_COLORS, CUSTOM_LABEL_COLOR } from '@/lib/task-labels';
 import { LessonsPanel } from '@/components/lessons-panel';
-import { QaPanel } from '@/components/qa-panel';
+import { QaSection } from '@/components/qa-section';
 
 const ProjectDesignPanel = dynamic(
   () => import('@/components/project-design-panel').then(m => m.ProjectDesignPanel),
@@ -1028,8 +1028,8 @@ export default function ProjectDetailPage() {
         {/* QA tab — no overflow-auto here: QaPanel is a two-pane layout that owns its own
             scrolling (min-h-0 + overflow-y-auto per pane), so this wrapper only bounds height. */}
         {activeTab === 'qa' && (
-          <div className="flex h-full min-h-0 flex-col p-6">
-            <QaPanel key={`${id}-${syncVersion}`} projectId={id} />
+          <div className="flex h-full min-h-0 w-full min-w-0 flex-col p-4">
+            <QaSection key={`${id}-${syncVersion}`} projectId={id} />
           </div>
         )}
 
