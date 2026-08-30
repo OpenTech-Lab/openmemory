@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   ChevronRight,
@@ -43,6 +43,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { TablePagination } from '@/components/ui/table-pagination';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useIsMobile } from '@/hooks/use-mobile';
 import type { Project, ProjectFolder } from '@/lib/project-types';
@@ -244,6 +245,8 @@ export function ProjectTreeView({
 }: ProjectTreeViewProps) {
   const isMobile = useIsMobile();
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string> | null>(null);
+  const [projectPage, setProjectPage] = useState(0);
+  const [projectPageSize, setProjectPageSize] = useState(10);
 
   const foldersById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
   const childrenByParent = useMemo(() => {
@@ -288,6 +291,22 @@ export function ProjectTreeView({
     if (selectedFolderId === 'unfiled') return filteredProjects.filter((project) => !project.folder_id);
     return filteredProjects.filter((project) => project.folder_id === selectedFolderId);
   }, [filteredProjects, selectedFolderId]);
+
+  // Start at the first page whenever the active view changes, and keep the
+  // current page valid when a project is removed or a filter reduces the list.
+  useEffect(() => {
+    setProjectPage(0);
+  }, [searchQuery, selectedFolderId]);
+
+  useEffect(() => {
+    const lastPage = Math.max(0, Math.ceil(displayedProjects.length / projectPageSize) - 1);
+    setProjectPage((page) => Math.min(page, lastPage));
+  }, [displayedProjects.length, projectPageSize]);
+
+  const pagedProjects = useMemo(
+    () => displayedProjects.slice(projectPage * projectPageSize, (projectPage + 1) * projectPageSize),
+    [displayedProjects, projectPage, projectPageSize],
+  );
 
   const selectedFolder = selectedFolderId !== 'all' && selectedFolderId !== 'unfiled'
     ? foldersById.get(selectedFolderId)
@@ -422,7 +441,7 @@ export function ProjectTreeView({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {displayedProjects.length > 0 ? displayedProjects.map((project) => {
+              {pagedProjects.length > 0 ? pagedProjects.map((project) => {
                 const effectiveStatus = project.effective_version_status ?? project.version_status ?? 'active';
                 const isComputed = effectiveStatus === 'bug_detected' || effectiveStatus === 'feature_updating';
                 const isRebuilding = rebuildingId === project.id;
@@ -549,6 +568,15 @@ export function ProjectTreeView({
               )}
             </TableBody>
           </Table>
+        </div>
+        <div className="shrink-0 border-t bg-background px-4 py-2.5 sm:px-5">
+          <TablePagination
+            page={projectPage}
+            pageSize={projectPageSize}
+            totalRows={displayedProjects.length}
+            onPageChange={setProjectPage}
+            onPageSizeChange={setProjectPageSize}
+          />
         </div>
         <div className="flex shrink-0 items-center justify-between border-t bg-muted/10 px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
           <span>{displayedProjects.length} project{displayedProjects.length === 1 ? '' : 's'} shown{searchQuery ? ` · ${projects.length} total` : ''}</span>

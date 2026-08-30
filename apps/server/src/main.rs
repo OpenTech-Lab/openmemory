@@ -6,6 +6,7 @@ mod crypto;
 mod design_ai;
 mod design_blobs;
 mod design_budgets;
+mod design_revisions;
 mod falkordb;
 mod forecasts;
 mod library;
@@ -1749,6 +1750,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/projects/:id/designs/:design_id/budgets", get(list_design_budgets).post(create_design_budget))
         .route("/projects/:id/designs/:design_id/budgets/:budget_id", axum::routing::put(update_design_budget).delete(delete_design_budget))
+        .route("/projects/:id/designs/:design_id/revisions", get(list_design_revisions).post(create_design_revision))
+        .route("/projects/:id/designs/:design_id/revisions/:revision_num", get(get_design_revision))
         .route("/projects/:id/design-assets", get(list_project_design_assets))
         .route("/projects/:id/qa/events", get(list_project_qa_events).post(create_project_qa_event))
         .route(
@@ -2327,6 +2330,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
         .execute(db).await.ok();
 
     design_budgets::ensure_table(db).await?;
+    design_revisions::ensure_table(db).await?;
     library::ensure_library_table(db).await?;
     qa::ensure_qa_tables(db).await?;
 
@@ -7727,6 +7731,74 @@ async fn delete_design_budget(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateRevisionPayload {
+    label: String,
+}
+
+async fn list_design_revisions(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match design_belongs_to_project(&state.db, project_id, design_id).await {
+        Ok(false) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(true) => {}
+    }
+    match design_revisions::list(&state.db, design_id).await {
+        Ok(revisions) => Json(serde_json::json!({"revisions": revisions})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn get_design_revision(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id, revision_num)): Path<(Uuid, Uuid, i32)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    match design_belongs_to_project(&state.db, project_id, design_id).await {
+        Ok(false) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(true) => {}
+    }
+    match design_revisions::get(&state.db, design_id, revision_num).await {
+        Ok(Some(revision)) => Json(serde_json::json!(revision)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "revision not found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// Explicit "Snapshot" button: always cuts a new revision (bypassing the autosave dedup
+/// check) and stamps it with a user-chosen milestone label.
+async fn create_design_revision(
+    State(state): State<AppState>, headers: HeaderMap,
+    Path((project_id, design_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<CreateRevisionPayload>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let label = payload.label.trim();
+    if label.is_empty() || label.chars().count() > 100 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "label must be between 1 and 100 characters"}))).into_response();
+    }
+    match design_belongs_to_project(&state.db, project_id, design_id).await {
+        Ok(false) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(true) => {}
+    }
+    match design_revisions::cut(&state.db, design_id, Some(label)).await {
+        Ok(Some(revision)) => (StatusCode::CREATED, Json(serde_json::json!(revision))).into_response(),
+        Ok(None) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "pen designs cannot be snapshotted"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
 async fn list_project_designs(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -7825,6 +7897,16 @@ async fn update_project_design(
         if !VALID_DIAGRAM_TYPES.contains(&dt) {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "diagram_type must be one of: drawio, mermaid, reactflow, pen, text"}))).into_response();
         }
+    }
+
+    // Snapshot the pre-edit state before the destructive UPDATE below overwrites it. This
+    // is deliberately non-blocking: a failure here (or a no-op, e.g. unchanged content or a
+    // pen design) must never stop the user's save from going through — versioning is a
+    // secondary feature layered on top of editing, not a gate in front of it. Any failure
+    // is logged loudly rather than swallowed, since it can't be surfaced to the caller
+    // without turning it into exactly the blocking behavior we're avoiding.
+    if let Err(e) = design_revisions::cut(&state.db, design_id, None).await {
+        error!("update_project_design: failed to cut revision for design {design_id}: {e}");
     }
 
     let tags = payload.tags.as_ref().map(|t| normalize_labels(t));

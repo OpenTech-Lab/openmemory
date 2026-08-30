@@ -13,29 +13,8 @@ import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
+import type { BudgetLineItem, DesignBudgetForecast } from '@/lib/budget-types';
 import type { ForecastProfile } from '@/lib/forecast-types';
-
-interface BudgetLineItem {
-  service: string;
-  usage: string;
-  monthly_cost_cents: number;
-  notes?: string | null;
-}
-
-interface DesignBudgetForecast {
-  id: string;
-  design_id: string;
-  forecast_profile_id: string | null;
-  name: string;
-  conditions: string | null;
-  currency: string;
-  monthly_total_cents: number;
-  line_items: BudgetLineItem[];
-  confidence: 'low' | 'medium' | 'high';
-  pricing_basis: string | null;
-  created_by: 'human' | 'agent';
-  updated_at: string;
-}
 
 interface BudgetDraftItem { service: string; usage: string; monthlyCost: string; notes: string }
 

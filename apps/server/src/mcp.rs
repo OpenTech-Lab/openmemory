@@ -2,6 +2,7 @@
 
 mod crypto;
 mod design_budgets;
+mod design_revisions;
 mod falkordb;
 mod forecasts;
 mod indexer;

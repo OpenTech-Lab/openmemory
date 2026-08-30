@@ -19,6 +19,16 @@ test('adds the missing AWS4 resource background while preserving explicit colour
   assert.equal(normalizeAws4ResourceIcons(authored), authored);
 });
 
+test('resolves an icon outside the old 13-entry table via the full generated colour map', () => {
+  const cell = '<mxCell style="strokeColor=#ffffff;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;" />';
+  assert.match(normalizeAws4ResourceIcons(cell), /fillColor=#8C4FFF;/);
+});
+
+test('falls back to Squid Ink for an icon absent from the generated colour map', () => {
+  const cell = '<mxCell style="strokeColor=#ffffff;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.not_a_real_icon;" />';
+  assert.match(normalizeAws4ResourceIcons(cell), /fillColor=#232F3E;/);
+});
+
 test('starter sources are valid draw.io XML documents', () => {
   assert.equal(isDrawioSource(DRAWIO_BLANK_SOURCE), true);
   assert.equal(isDrawioSource(DRAWIO_AWS_STARTER_SOURCE), true);
