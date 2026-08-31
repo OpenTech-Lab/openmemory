@@ -87,6 +87,14 @@ interface Routine {
   labels: string[];
 }
 
+/** Fields the ai.autofill `task` kind can return; every one is optional. */
+interface TaskSuggestion {
+  title?: string;
+  description?: string;
+  priority?: string;
+  labels?: string[];
+}
+
 const STATUS_LABELS: Record<string, string> = {
   scheduled: 'Scheduled',
   todo: 'Todo',
@@ -249,6 +257,8 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
   const [isSuggestingTaskTitle, setIsSuggestingTaskTitle] = useState(false);
   const [isSuggestingEditTask, setIsSuggestingEditTask] = useState(false);
   const [isSuggestingEditTaskTitle, setIsSuggestingEditTaskTitle] = useState(false);
+  const [isSuggestingRoutine, setIsSuggestingRoutine] = useState(false);
+  const [isSuggestingRoutineTitle, setIsSuggestingRoutineTitle] = useState(false);
 
   const fetchProjects = useCallback(async () => {
     setIsLoading(true);
@@ -607,13 +617,21 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
     }
   };
 
-  const handleSuggestTask = async () => {
-    if (!taskForm.title.trim() && !taskForm.description.trim()) return;
-    setIsSuggestingTask(true);
+  // Every "Suggest with AI" button on this page — create dialog, task edit
+  // sheet, routine edit sheet — asks the same ai.autofill endpoint for the
+  // same kind ('task'); only the form written back into differs. Routines
+  // share the task prompt deliberately: a routine is a task template, so the
+  // suggested title/description/priority/labels apply to it unchanged.
+  const runTaskSuggest = async (
+    title: string,
+    description: string,
+    setBusy: (busy: boolean) => void,
+    apply: (suggestion: TaskSuggestion) => void,
+  ) => {
+    if (!title.trim() && !description.trim()) return;
+    setBusy(true);
     try {
-      const content = taskForm.description.trim()
-        ? `${taskForm.title}\n\n${taskForm.description}`
-        : taskForm.title;
+      const content = description.trim() ? `${title}\n\n${description}` : title;
       const res = await fetch('/api/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -621,97 +639,58 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
       });
       const data = await res.json();
       if (data.error) { toast.error(data.error); return; }
-      const suggestion = data.suggestion ?? {};
+      apply(data.suggestion ?? {});
+    } catch {
+      toast.error('Failed to get AI suggestion');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSuggestTask = () =>
+    runTaskSuggest(taskForm.title, taskForm.description, setIsSuggestingTask, s =>
       setTaskForm(f => ({
         ...f,
-        description: suggestion.description ?? f.description,
-        priority: suggestion.priority ?? f.priority,
-        labels: isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
-      }));
-    } catch {
-      toast.error('Failed to get AI suggestion');
-    } finally {
-      setIsSuggestingTask(false);
-    }
-  };
+        description: s.description ?? f.description,
+        priority: s.priority ?? f.priority,
+        labels: isNonEmptyArray(s.labels) ? s.labels : f.labels,
+      })));
 
-  const handleSuggestEditTask = async () => {
-    if (!editForm.title.trim() && !editForm.description.trim()) return;
-    setIsSuggestingEditTask(true);
-    try {
-      const content = editForm.description.trim()
-        ? `${editForm.title}\n\n${editForm.description}`
-        : editForm.title;
-      const res = await fetch('/api/memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
-      });
-      const data = await res.json();
-      if (data.error) { toast.error(data.error); return; }
-      const suggestion = data.suggestion ?? {};
+  const handleSuggestTaskTitle = () =>
+    runTaskSuggest(taskForm.title, taskForm.description, setIsSuggestingTaskTitle, s => {
+      const title = s.title;
+      if (title) setTaskForm(f => ({ ...f, title }));
+    });
+
+  const handleSuggestEditTask = () =>
+    runTaskSuggest(editForm.title, editForm.description, setIsSuggestingEditTask, s =>
       setEditForm(f => ({
         ...f,
-        description: suggestion.description ?? f.description,
-        priority: suggestion.priority ?? f.priority,
-        labels: isNonEmptyArray(suggestion.labels) ? suggestion.labels : f.labels,
-      }));
-    } catch {
-      toast.error('Failed to get AI suggestion');
-    } finally {
-      setIsSuggestingEditTask(false);
-    }
-  };
+        description: s.description ?? f.description,
+        priority: s.priority ?? f.priority,
+        labels: isNonEmptyArray(s.labels) ? s.labels : f.labels,
+      })));
 
-  const handleSuggestTaskTitle = async () => {
-    if (!taskForm.title.trim() && !taskForm.description.trim()) return;
-    setIsSuggestingTaskTitle(true);
-    try {
-      const content = taskForm.description.trim()
-        ? `${taskForm.title}\n\n${taskForm.description}`
-        : taskForm.title;
-      const res = await fetch('/api/memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
-      });
-      const data = await res.json();
-      if (data.error) { toast.error(data.error); return; }
-      const suggestion = data.suggestion ?? {};
-      if (suggestion.title) {
-        setTaskForm(f => ({ ...f, title: suggestion.title }));
-      }
-    } catch {
-      toast.error('Failed to get AI suggestion');
-    } finally {
-      setIsSuggestingTaskTitle(false);
-    }
-  };
+  const handleSuggestEditTaskTitle = () =>
+    runTaskSuggest(editForm.title, editForm.description, setIsSuggestingEditTaskTitle, s => {
+      const title = s.title;
+      if (title) setEditForm(f => ({ ...f, title }));
+    });
 
-  const handleSuggestEditTaskTitle = async () => {
-    if (!editForm.title.trim() && !editForm.description.trim()) return;
-    setIsSuggestingEditTaskTitle(true);
-    try {
-      const content = editForm.description.trim()
-        ? `${editForm.title}\n\n${editForm.description}`
-        : editForm.title;
-      const res = await fetch('/api/memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'ai.autofill', kind: 'task', content }),
-      });
-      const data = await res.json();
-      if (data.error) { toast.error(data.error); return; }
-      const suggestion = data.suggestion ?? {};
-      if (suggestion.title) {
-        setEditForm(f => ({ ...f, title: suggestion.title }));
-      }
-    } catch {
-      toast.error('Failed to get AI suggestion');
-    } finally {
-      setIsSuggestingEditTaskTitle(false);
-    }
-  };
+  const handleSuggestRoutine = () =>
+    runTaskSuggest(routineEditForm.title, routineEditForm.description, setIsSuggestingRoutine, s =>
+      setRoutineEditForm(f => ({
+        ...f,
+        description: s.description ?? f.description,
+        priority: s.priority ?? f.priority,
+        labels: isNonEmptyArray(s.labels) ? s.labels : f.labels,
+      })));
+
+  const handleSuggestRoutineTitle = () =>
+    runTaskSuggest(routineEditForm.title, routineEditForm.description, setIsSuggestingRoutineTitle, s => {
+      const title = s.title;
+      if (title) setRoutineEditForm(f => ({ ...f, title }));
+    });
 
   const handleDropToStatus = async (taskId: string, newStatus: string) => {
     const task = tasks.find(t => t.id === taskId);
@@ -1426,19 +1405,17 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             <div>
               <div className="flex items-center justify-between">
                 <Label>Title</Label>
-                {taskForm.task_type === 'regular' && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 gap-1 text-xs"
-                    onClick={handleSuggestTaskTitle}
-                    disabled={(!taskForm.title.trim() && !taskForm.description.trim()) || isSuggestingTaskTitle}
-                  >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    {isSuggestingTaskTitle ? 'Suggesting...' : 'Suggest with AI'}
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 text-xs"
+                  onClick={handleSuggestTaskTitle}
+                  disabled={(!taskForm.title.trim() && !taskForm.description.trim()) || isSuggestingTaskTitle}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {isSuggestingTaskTitle ? 'Suggesting...' : 'Suggest with AI'}
+                </Button>
               </div>
               <Input
                 value={taskForm.title}
@@ -1449,19 +1426,17 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
             <div>
               <div className="flex items-center justify-between">
                 <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                {taskForm.task_type === 'regular' && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 gap-1 text-xs"
-                    onClick={handleSuggestTask}
-                    disabled={(!taskForm.title.trim() && !taskForm.description.trim()) || isSuggestingTask}
-                  >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    {isSuggestingTask ? 'Suggesting...' : 'Suggest with AI'}
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 text-xs"
+                  onClick={handleSuggestTask}
+                  disabled={(!taskForm.title.trim() && !taskForm.description.trim()) || isSuggestingTask}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {isSuggestingTask ? 'Suggesting...' : 'Suggest with AI'}
+                </Button>
               </div>
               <Textarea
                 value={taskForm.description}
@@ -1843,14 +1818,40 @@ export function ProjectsView({ view }: { view: 'list' | 'board' }) {
           ) : (
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <div>
-                <Label>Title</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Title</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestRoutineTitle}
+                    disabled={(!routineEditForm.title.trim() && !routineEditForm.description.trim()) || isSuggestingRoutineTitle}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingRoutineTitle ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                </div>
                 <Input
                   value={routineEditForm.title}
                   onChange={e => setRoutineEditForm(f => ({ ...f, title: e.target.value }))}
                 />
               </div>
               <div>
-                <Label>Description</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Description</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    onClick={handleSuggestRoutine}
+                    disabled={(!routineEditForm.title.trim() && !routineEditForm.description.trim()) || isSuggestingRoutine}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {isSuggestingRoutine ? 'Suggesting...' : 'Suggest with AI'}
+                  </Button>
+                </div>
                 <Textarea
                   value={routineEditForm.description}
                   onChange={e => setRoutineEditForm(f => ({ ...f, description: e.target.value }))}
