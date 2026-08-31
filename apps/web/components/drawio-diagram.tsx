@@ -15,6 +15,10 @@ interface DrawioDiagramProps {
   mode: 'editor' | 'viewer';
   title?: string;
   kind?: string;
+  /** Drops the viewer's rounded border and shadow so the iframe can sit flush against its
+   * container. The side-by-side comparison panes butt straight up to the split, where that card
+   * chrome would read as a gap between the two versions. */
+  flush?: boolean;
   onChange?: (source: string) => void;
 }
 
@@ -23,7 +27,7 @@ export interface DrawioDiagramHandle {
 }
 
 export const DrawioDiagram = forwardRef<DrawioDiagramHandle, DrawioDiagramProps>(function DrawioDiagram(
-  { source, mode, title = 'OpenMemory diagram', kind = '', onChange },
+  { source, mode, title = 'OpenMemory diagram', kind = '', flush = false, onChange },
   ref,
 ) {
   const { resolvedTheme } = useTheme();
@@ -160,7 +164,7 @@ export const DrawioDiagram = forwardRef<DrawioDiagramHandle, DrawioDiagramProps>
   return (
     <div
       className={`relative h-full min-h-[360px] overflow-hidden bg-background ${
-        mode === 'viewer'
+        mode === 'viewer' && !flush
           ? 'rounded-lg border border-border/80 shadow-[0_18px_60px_rgba(15,23,42,0.12)] dark:shadow-[0_18px_60px_rgba(0,0,0,0.42)]'
           : ''
       }`}

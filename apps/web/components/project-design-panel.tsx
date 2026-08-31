@@ -54,6 +54,7 @@ import {
   ChevronDown,
   ChevronRight,
   ArrowUpRight,
+  History,
 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { marked, type Tokens } from 'marked';
@@ -93,6 +94,7 @@ import {
 import { drawioStarterSource, isDrawioStarterSource } from '@/lib/drawio';
 import type { ForecastProfile } from '@/lib/forecast-types';
 import { DesignBudgetSheet } from '@/components/design-budget-sheet';
+import { DesignHistorySheet } from '@/components/design-history-sheet';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -290,6 +292,7 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
   const [isLoading, setIsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isBudgetOpen, setIsBudgetOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     diagrams: true,
     designs: true,
@@ -927,6 +930,10 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
                   )}
                 </div>
                 <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setIsHistoryOpen(true)}>
+                    <History className="h-4 w-4 mr-2" />
+                    History
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => setIsBudgetOpen(true)}>
                     <WalletCards className="h-4 w-4 mr-2" />
                     Budget
@@ -1635,6 +1642,13 @@ export function ProjectDesignPanel({ projectId, projectPath }: ProjectDesignPane
       <DesignBudgetSheet
         open={isBudgetOpen}
         onOpenChange={setIsBudgetOpen}
+        projectId={projectId}
+        design={selectedDesign}
+      />
+
+      <DesignHistorySheet
+        open={isHistoryOpen}
+        onOpenChange={setIsHistoryOpen}
         projectId={projectId}
         design={selectedDesign}
       />
