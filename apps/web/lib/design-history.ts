@@ -7,6 +7,7 @@
 // type-stripping, so anything imported for runtime would need a relative `.ts` specifier. This
 // module needs types only, which are erased either way.
 
+import type { DesignBudgetForecast } from './budget-types.ts';
 import type { DiffEntity, DiffEntry, DiffEntryKind } from './design-diff.ts';
 
 /** One row of `GET /revisions` — the listing carries no `source` (only the single-revision
@@ -23,12 +24,15 @@ export interface DesignRevisionSummary {
   budget_count: number;
 }
 
-/** `GET /revisions/:revisionNum` — a flat object, not wrapped. Only `source` is read here. */
+/** `GET /revisions/:revisionNum` — a flat object, not wrapped. The history sheet reads `source`
+ * and `budgets` from it; the budgets ride along here rather than needing a second request, and
+ * note the key is `budgets`, unlike the live endpoint's `{ forecasts }` wrapper. */
 export interface DesignRevisionDetail extends DesignRevisionSummary {
   design_id: string;
   kind: string;
   notes: string | null;
   source: string;
+  budgets: DesignBudgetForecast[];
 }
 
 export interface DiffEntryView {

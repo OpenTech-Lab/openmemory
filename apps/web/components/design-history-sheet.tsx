@@ -11,6 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DesignCompareDialog } from '@/components/design-compare-dialog';
+import { diffBudgets } from '@/lib/budget-diff';
+import type { DesignBudgetForecast } from '@/lib/budget-types';
 import { diffDesignGraphs, toDiffGraph, type DiffEntry } from '@/lib/design-diff';
 import type { DesignDiagramType } from '@/lib/design-graph';
 import { diffHighlightMap, highlightDrawioCells } from '@/lib/design-highlight';
@@ -34,6 +36,10 @@ interface DesignHistorySheetProps {
 // and never '', which Radix's Select reserves).
 const LIVE_KEY = 'live';
 
+/** One side's fetched payload. The live entry carries no `source`: `design.source` IS the live
+ * source and it arrives as a prop, so a copy cached here would go stale the moment it is edited. */
+type VersionData = { source?: string; budgets: DesignBudgetForecast[] };
+
 // The resolved sources ride along with the entries so the side-by-side dialog doesn't have to
 // repeat the LIVE_KEY-vs-revision lookup below and risk drifting from what was actually diffed.
 type Comparison =
@@ -46,10 +52,11 @@ export function DesignHistorySheet({ open, onOpenChange, projectId, design }: De
   const [loading, setLoading] = useState(false);
   const [baseKey, setBaseKey] = useState(LIVE_KEY);
   const [headKey, setHeadKey] = useState(LIVE_KEY);
-  // Revision sources, keyed by revision number — the listing endpoint omits `source`, so each side
-  // is fetched on demand and kept so flipping the pickers back doesn't refetch.
-  const [sources, setSources] = useState<Record<string, string>>({});
-  const [sourcesLoading, setSourcesLoading] = useState(false);
+  // Both sides' payloads, keyed by revision number or LIVE_KEY — the revision listing endpoint
+  // omits `source` and neither listing carries budgets, so each side is fetched on demand and kept
+  // so flipping the pickers back doesn't refetch.
+  const [versions, setVersions] = useState<Record<string, VersionData>>({});
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [snapshotLabel, setSnapshotLabel] = useState('');
   const [snapshotting, setSnapshotting] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -80,41 +87,48 @@ export function DesignHistorySheet({ open, onOpenChange, projectId, design }: De
     // different for every design. Left alone, reopening the sheet on another design refetches the
     // previous design's r-number against the new one and 404s before `load` can correct it.
     if (open) {
-      setRevisions([]); setSources({}); setSnapshotLabel('');
+      setRevisions([]); setVersions({}); setSnapshotLabel('');
       setBaseKey(LIVE_KEY); setHeadKey(LIVE_KEY);
       load();
     }
   }, [open, load]);
 
-  const selectedRevisionKeys = useMemo(
-    () => [baseKey, headKey].filter((key) => key !== LIVE_KEY),
-    [baseKey, headKey],
-  );
+  // LIVE_KEY belongs in here too now: the live side's budgets need a request of their own, even
+  // though its source is already in hand. Deduped so comparing a version against itself, or
+  // flipping both pickers to the same key, still only fetches once.
+  const selectedKeys = useMemo(() => Array.from(new Set([baseKey, headKey])), [baseKey, headKey]);
 
   useEffect(() => {
     if (!open || !design) return;
-    const missing = selectedRevisionKeys.filter((key) => !(key in sources));
+    const missing = selectedKeys.filter((key) => !(key in versions));
     // Clear the flag here too: a run cancelled mid-flight skips its own `finally`, so if the next
     // run has nothing to fetch (both sides flipped back to already-loaded keys) nothing else would.
-    if (missing.length === 0) { setSourcesLoading(false); return; }
+    if (missing.length === 0) { setVersionsLoading(false); return; }
     let cancelled = false;
-    setSourcesLoading(true);
+    setVersionsLoading(true);
     Promise.all(missing.map(async (key) => {
-      const response = await fetch(`/api/projects/${projectId}/designs/${design.id}/revisions/${key}`);
+      const live = key === LIVE_KEY;
+      const designUrl = `/api/projects/${projectId}/designs/${design.id}`;
+      const response = await fetch(live ? `${designUrl}/budgets` : `${designUrl}/revisions/${key}`);
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? `Failed to load revision ${key}`);
-      return [key, data.source as string] as const;
+      if (!response.ok) throw new Error(data.error ?? (live ? 'Failed to load budgets' : `Failed to load revision ${key}`));
+      // The two endpoints disagree on the key: the live one answers `{ forecasts }`, while a
+      // revision carries its own budgets inline as `budgets`, alongside the source.
+      const entry: VersionData = live
+        ? { budgets: data.forecasts ?? [] }
+        : { source: data.source as string, budgets: data.budgets ?? [] };
+      return [key, entry] as const;
     }))
-      .then((loaded) => { if (!cancelled) setSources((prev) => ({ ...prev, ...Object.fromEntries(loaded) })); })
-      .catch((error) => { if (!cancelled) toast.error(error instanceof Error ? error.message : 'Failed to load revision'); })
-      .finally(() => { if (!cancelled) setSourcesLoading(false); });
+      .then((loaded) => { if (!cancelled) setVersions((prev) => ({ ...prev, ...Object.fromEntries(loaded) })); })
+      .catch((error) => { if (!cancelled) toast.error(error instanceof Error ? error.message : 'Failed to load version'); })
+      .finally(() => { if (!cancelled) setVersionsLoading(false); });
     return () => { cancelled = true; };
-  }, [open, design, projectId, selectedRevisionKeys, sources]);
+  }, [open, design, projectId, selectedKeys, versions]);
 
   const comparison = useMemo<Comparison>(() => {
     if (!design) return { status: 'pending' };
-    const baseSource = baseKey === LIVE_KEY ? design.source : sources[baseKey];
-    const headSource = headKey === LIVE_KEY ? design.source : sources[headKey];
+    const baseSource = baseKey === LIVE_KEY ? design.source : versions[baseKey]?.source;
+    const headSource = headKey === LIVE_KEY ? design.source : versions[headKey]?.source;
     if (baseSource === undefined || headSource === undefined) return { status: 'pending' };
     // `diagram_type` is an unconstrained TEXT column server-side; toDiffGraph's default branch
     // already answers null for anything it doesn't recognise, same as it does for pen and text.
@@ -126,7 +140,18 @@ export function DesignHistorySheet({ open, onOpenChange, projectId, design }: De
     // stable across a move/rename/restyle and so are the real identity; 'label' exists for
     // comparing two DIFFERENT designs and would report this sheet's renames as a delete plus an add.
     return { status: 'ready', entries: diffDesignGraphs(base, head, { matchBy: 'id' }).entries, baseSource, headSource };
-  }, [design, sources, baseKey, headKey]);
+  }, [design, versions, baseKey, headKey]);
+
+  // Deliberately separate from `comparison`: the diagram panes must never block on a budgets
+  // request. Null is the "no budget tab" signal, and covers both sides still loading and a design
+  // where nobody has added a budget — an empty diff would open a tab with nothing in it.
+  const budgetDiff = useMemo(() => {
+    const base = versions[baseKey]?.budgets;
+    const head = versions[headKey]?.budgets;
+    if (base === undefined || head === undefined) return null;
+    if (base.length === 0 && head.length === 0) return null;
+    return diffBudgets(base, head);
+  }, [versions, baseKey, headKey]);
 
   // Outlining rewrites mxCell styles, so it only means anything for draw.io — every other diagram
   // type gets the disabled button and its tooltip instead.
@@ -190,7 +215,7 @@ export function DesignHistorySheet({ open, onOpenChange, projectId, design }: De
             <div className="space-y-1.5"><Label className="text-xs text-muted-foreground">Compare</Label><Select value={headKey} onValueChange={setHeadKey}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{versionOptions}</SelectContent></Select></div>
           </div>
           <div className="flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">{comparison.status === 'ready' ? summarizeDiff(comparison.entries) : sourcesLoading ? 'Loading revision…' : ''}</p>
+            <p className="text-sm text-muted-foreground">{comparison.status === 'ready' ? summarizeDiff(comparison.entries) : versionsLoading ? 'Loading revision…' : ''}</p>
             <div className="flex items-center gap-1">
               {canCompareSideBySide ? (
                 <Button variant="outline" size="sm" className="h-8" disabled={highlighted === null} onClick={() => setCompareOpen(true)}>
@@ -265,6 +290,7 @@ export function DesignHistorySheet({ open, onOpenChange, projectId, design }: De
       baseSource={highlighted.base}
       headSource={highlighted.head}
       entries={comparison.entries}
+      budgetDiff={budgetDiff}
     />}
   </Sheet>;
 }
