@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "echo 'no tests yet' && exit 0"
+    "test": "node --test lib/*.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.1.0",

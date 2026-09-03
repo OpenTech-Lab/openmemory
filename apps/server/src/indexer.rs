@@ -656,6 +656,29 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Serializes every test that reads or writes `OPENMEMORY_GIT_HISTORY_COMMITS`.
+    ///
+    /// Env vars are process-global, but the libtest harness runs tests as parallel
+    /// threads of ONE process — so a test that sets the var to `"0"` poisons the
+    /// var for any concurrently-running test that reads it. That is not
+    /// hypothetical: `collects_git_commit_nodes_and_modified_edges` read the `"0"`
+    /// written by `respects_git_history_disable_env`, found no commit nodes, and
+    /// failed 5 of 6 full-suite runs before this guard existed.
+    ///
+    /// Every test touching that var must hold this lock for as long as the var
+    /// matters to it — which includes the `index_project(...).await`, since
+    /// `collect_git_history` reads the var deep inside that call. `.await`ing
+    /// while holding the guard is sound here: `#[tokio::test]` polls the test
+    /// future on a single thread, so the guard never crosses a thread boundary.
+    ///
+    /// Poisoning is deliberately ignored (`into_inner`): one test panicking must
+    /// fail that test, not cascade into every other test that shares the lock.
+    static GIT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn git_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        GIT_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn write(dir: &Path, rel: &str, content: &str) {
         let p = dir.join(rel);
         if let Some(parent) = p.parent() {
@@ -784,6 +807,9 @@ mod tests {
         git(&tmp, &["add", "."]);
         git(&tmp, &["commit", "-q", "-m", "initial commit"]);
 
+        // Held across the await: this test needs the env var to keep its default
+        // (unset) value for the whole of index_project. See GIT_ENV_LOCK.
+        let _env = git_env_guard();
         let (graph, _, _, _) = index_project(tmp.to_str().unwrap()).await.unwrap();
 
         let nodes = graph["nodes"].as_array().unwrap();
@@ -828,10 +854,10 @@ mod tests {
         git(&tmp, &["add", "."]);
         git(&tmp, &["commit", "-q", "-m", "initial commit"]);
 
-        // SAFETY: this test mutates process-wide env state. index_project spawns its work via
-        // spawn_blocking onto a fresh blocking thread, so run this test with
-        // `--test-threads=1` (or accept it may race other env-sensitive tests) to avoid
-        // cross-test interference — see indexer.rs test module doc note below.
+        // This test mutates process-wide env state, so it holds GIT_ENV_LOCK for
+        // the entire window in which the var is set — `--test-threads=1` is no
+        // longer required, and no other env-sensitive test can observe the "0".
+        let _env = git_env_guard();
         std::env::set_var("OPENMEMORY_GIT_HISTORY_COMMITS", "0");
         let result = index_project(tmp.to_str().unwrap()).await;
         std::env::remove_var("OPENMEMORY_GIT_HISTORY_COMMITS");
