@@ -28,6 +28,8 @@ coverage/
 .nyc_output/
 *.lcov
 venv/
+.junit.xml
+target/nextest/
 
 # Environment variables
 .env
@@ -99,3 +101,4 @@ temp/
 # yarn.lock
 .gstack/
 .claude
+.qa-plans/

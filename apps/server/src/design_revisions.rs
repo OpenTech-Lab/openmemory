@@ -88,8 +88,12 @@ fn plan_cut(
         return CutDecision::Skip;
     }
     match latest {
-        Some((_, latest_sha)) if force_label.is_none() && latest_sha == source_sha => CutDecision::Skip,
-        Some((num, _)) => CutDecision::Write { revision_num: num + 1 },
+        Some((_, latest_sha)) if force_label.is_none() && latest_sha == source_sha => {
+            CutDecision::Skip
+        }
+        Some((num, _)) => CutDecision::Write {
+            revision_num: num + 1,
+        },
         None => CutDecision::Write { revision_num: 1 },
     }
 }
@@ -128,7 +132,9 @@ pub async fn ensure_table(db: &PgPool) -> anyhow::Result<()> {
         )
         "#,
     )
-    .execute(db).await.context("failed to create project_design_revisions table")?;
+    .execute(db)
+    .await
+    .context("failed to create project_design_revisions table")?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_design_revisions_design_id ON project_design_revisions(design_id)")
         .execute(db).await.ok();
     Ok(())
@@ -139,13 +145,26 @@ pub async fn list(db: &PgPool, design_id: Uuid) -> anyhow::Result<Vec<DesignRevi
         r#"SELECT id, revision_num, title, label, diagram_type, source_sha, created_by,
                   created_at, jsonb_array_length(budgets) AS budget_count
            FROM project_design_revisions WHERE design_id = $1 ORDER BY revision_num DESC"#,
-    ).bind(design_id).fetch_all(db).await.context("failed to list design revisions")
+    )
+    .bind(design_id)
+    .fetch_all(db)
+    .await
+    .context("failed to list design revisions")
 }
 
-pub async fn get(db: &PgPool, design_id: Uuid, revision_num: i32) -> anyhow::Result<Option<DesignRevision>> {
+pub async fn get(
+    db: &PgPool,
+    design_id: Uuid,
+    revision_num: i32,
+) -> anyhow::Result<Option<DesignRevision>> {
     sqlx::query_as::<_, DesignRevision>(
         "SELECT * FROM project_design_revisions WHERE design_id = $1 AND revision_num = $2",
-    ).bind(design_id).bind(revision_num).fetch_optional(db).await.context("failed to load design revision")
+    )
+    .bind(design_id)
+    .bind(revision_num)
+    .fetch_optional(db)
+    .await
+    .context("failed to load design revision")
 }
 
 /// Snapshots a design's current state into `project_design_revisions` before it is
@@ -160,8 +179,15 @@ pub async fn get(db: &PgPool, design_id: Uuid, revision_num: i32) -> anyhow::Res
 /// Runs as one transaction: the design row is read with `FOR UPDATE` so a concurrent save
 /// cannot interleave with this snapshot, and the retention prune that follows a successful
 /// insert is part of the same commit.
-pub async fn cut(db: &PgPool, design_id: Uuid, force_label: Option<&str>) -> anyhow::Result<Option<DesignRevision>> {
-    let mut tx = db.begin().await.context("failed to begin design revision cut")?;
+pub async fn cut(
+    db: &PgPool,
+    design_id: Uuid,
+    force_label: Option<&str>,
+) -> anyhow::Result<Option<DesignRevision>> {
+    let mut tx = db
+        .begin()
+        .await
+        .context("failed to begin design revision cut")?;
 
     let design = sqlx::query_as::<_, DesignSnapshot>(
         "SELECT title, kind, diagram_type, source, notes FROM project_designs WHERE id = $1 FOR UPDATE",
@@ -170,7 +196,9 @@ pub async fn cut(db: &PgPool, design_id: Uuid, force_label: Option<&str>) -> any
     .fetch_optional(&mut *tx)
     .await
     .context("failed to load design for revision cut")?;
-    let Some(design) = design else { return Ok(None) };
+    let Some(design) = design else {
+        return Ok(None);
+    };
 
     let mut hasher = Sha256::new();
     hasher.update(design.source.as_bytes());
@@ -204,7 +232,8 @@ pub async fn cut(db: &PgPool, design_id: Uuid, force_label: Option<&str>) -> any
     .fetch_all(&mut *tx)
     .await
     .context("failed to load budgets for revision cut")?;
-    let budgets = serde_json::to_value(&budget_rows).context("failed to serialize revision budgets")?;
+    let budgets =
+        serde_json::to_value(&budget_rows).context("failed to serialize revision budgets")?;
 
     let revision = sqlx::query_as::<_, DesignRevision>(
         r#"INSERT INTO project_design_revisions
@@ -242,7 +271,9 @@ pub async fn cut(db: &PgPool, design_id: Uuid, force_label: Option<&str>) -> any
             .context("failed to prune old design revisions")?;
     }
 
-    tx.commit().await.context("failed to commit design revision cut")?;
+    tx.commit()
+        .await
+        .context("failed to commit design revision cut")?;
     Ok(Some(revision))
 }
 
@@ -270,7 +301,12 @@ mod tests {
 
     #[test]
     fn explicit_label_forces_cut_over_identical_hash() {
-        let decision = plan_cut("mermaid", "same-hash", Some((5, "same-hash")), Some("v1 milestone"));
+        let decision = plan_cut(
+            "mermaid",
+            "same-hash",
+            Some((5, "same-hash")),
+            Some("v1 milestone"),
+        );
         assert_eq!(decision, CutDecision::Write { revision_num: 6 });
     }
 
@@ -280,7 +316,10 @@ mod tests {
         // opaque marker, never real content to diff.
         assert_eq!(plan_cut("pen", "any-hash", None, None), CutDecision::Skip);
         // And an explicit Snapshot request doesn't override the exclusion either.
-        assert_eq!(plan_cut("pen", "any-hash", Some((1, "any-hash")), Some("label")), CutDecision::Skip);
+        assert_eq!(
+            plan_cut("pen", "any-hash", Some((1, "any-hash")), Some("label")),
+            CutDecision::Skip
+        );
     }
 
     #[test]
@@ -299,7 +338,7 @@ mod tests {
     fn retention_never_prunes_labelled_revisions() {
         let labelled_old_id = Uuid::new_v4();
         let rows = vec![
-            (labelled_old_id, 1, true),  // labelled, oldest — must survive
+            (labelled_old_id, 1, true), // labelled, oldest — must survive
             (Uuid::new_v4(), 2, false),
             (Uuid::new_v4(), 3, false),
         ];

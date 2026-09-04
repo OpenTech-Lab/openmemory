@@ -35,6 +35,15 @@ use uuid::Uuid;
 pub const MAX_QA_BLOB_BYTES: usize = 32 * 1024 * 1024;
 
 pub const RUN_STATUSES: [&str; 4] = ["in_progress", "passed", "failed", "blocked"];
+pub const RUN_KINDS: [&str; 7] = [
+    "manual",
+    "unit",
+    "integration",
+    "api",
+    "e2e",
+    "load",
+    "other",
+];
 pub const EVIDENCE_KINDS: [&str; 2] = ["image", "text"];
 pub const CREATED_BY_VALUES: [&str; 2] = ["agent", "human"];
 pub const PLAN_KINDS: [&str; 4] = ["jest", "playwright", "maestro", "other"];
@@ -107,6 +116,105 @@ pub struct QaRunView {
     pub finished_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub kind: String,
+    pub runner: Option<String>,
+    pub total_cases: i32,
+    pub passed_cases: i32,
+    pub failed_cases: i32,
+    pub skipped_cases: i32,
+    pub duration_ms: Option<i64>,
+    pub commit_sha: Option<String>,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaRunListItem {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub event_id: Option<Uuid>,
+    pub task_id: Option<Uuid>,
+    pub title: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub target: Option<String>,
+    pub external_ref: Option<String>,
+    pub created_by: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub kind: String,
+    pub runner: Option<String>,
+    pub total_cases: i32,
+    pub passed_cases: i32,
+    pub failed_cases: i32,
+    pub skipped_cases: i32,
+    pub duration_ms: Option<i64>,
+    pub commit_sha: Option<String>,
+    pub branch: Option<String>,
+    pub evidence_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaTestCaseView {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub project_id: Uuid,
+    pub case_key: String,
+    pub suite: Option<String>,
+    pub name: String,
+    pub file: Option<String>,
+    pub status: String,
+    pub duration_ms: Option<f64>,
+    pub failure_message: Option<String>,
+    pub failure_detail: Option<String>,
+    pub source_sha: Option<String>,
+    pub external_ref: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaRunMetricView {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub project_id: Uuid,
+    pub metric_key: String,
+    pub value: f64,
+    pub unit: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaTestSourceView {
+    pub project_id: Uuid,
+    pub source_sha: String,
+    pub file: String,
+    pub language: Option<String>,
+    pub body: String,
+    pub byte_size: i32,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct QaCaseHistoryView {
+    pub run_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub status: String,
+    /// This *case's* own duration, not the run's. The distinction is not
+    /// cosmetic: in a one-test history strip a reader takes this number to mean
+    /// "how long this test took", and the run's wall time is a different
+    /// quantity by orders of magnitude — a 1.5 ms case inside a 4210 ms suite.
+    /// Reporting the run's time here would misstate it ~2800x for that case and
+    /// would hide the very thing this view exists to reveal: a single test
+    /// getting slower over time.
+    pub case_duration_ms: Option<f64>,
+    /// The whole run's wall time, kept alongside so a reader can see the case's
+    /// share of it without a second query. Never render this as the case's own.
+    pub run_duration_ms: Option<i64>,
+    pub commit_sha: Option<String>,
+    pub branch: Option<String>,
+    pub source_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -200,7 +308,17 @@ pub async fn ensure_qa_tables(db: &PgPool) -> Result<()> {
             started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
             finished_at   TIMESTAMPTZ,
             created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+            updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+            kind          TEXT        NOT NULL DEFAULT 'manual'
+                                     CHECK (kind IN ('manual','unit','integration','api','e2e','load','other')),
+            runner        TEXT,
+            total_cases   INT         NOT NULL DEFAULT 0,
+            passed_cases  INT         NOT NULL DEFAULT 0,
+            failed_cases  INT         NOT NULL DEFAULT 0,
+            skipped_cases INT         NOT NULL DEFAULT 0,
+            duration_ms   BIGINT,
+            commit_sha    TEXT,
+            branch        TEXT
         )
         "#,
     )
@@ -212,14 +330,167 @@ pub async fn ensure_qa_tables(db: &PgPool) -> Result<()> {
     // make the new relationship nullable so they remain visible as ungrouped.
     sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS event_id UUID REFERENCES project_qa_events(id) ON DELETE SET NULL")
         .execute(db).await.ok();
+    sqlx::query(
+        "ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'manual'",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS runner TEXT")
+        .execute(db)
+        .await
+        .ok();
+    sqlx::query(
+        "ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS total_cases INT NOT NULL DEFAULT 0",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query(
+        "ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS passed_cases INT NOT NULL DEFAULT 0",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query(
+        "ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS failed_cases INT NOT NULL DEFAULT 0",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query(
+        "ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS skipped_cases INT NOT NULL DEFAULT 0",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS duration_ms BIGINT")
+        .execute(db)
+        .await
+        .ok();
+    sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS commit_sha TEXT")
+        .execute(db)
+        .await
+        .ok();
+    sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS branch TEXT")
+        .execute(db)
+        .await
+        .ok();
+    sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'project_qa_runs_kind_check'
+                  AND conrelid = 'project_qa_runs'::regclass
+            ) THEN
+                ALTER TABLE project_qa_runs
+                    ADD CONSTRAINT project_qa_runs_kind_check
+                    CHECK (kind IN ('manual','unit','integration','api','e2e','load','other'));
+            END IF;
+        END $$
+        "#,
+    )
+    .execute(db)
+    .await
+    .ok();
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_project_id ON project_qa_runs(project_id)")
-        .execute(db).await.ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_event_id ON project_qa_runs(event_id)")
-        .execute(db).await.ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_task_id ON project_qa_runs(task_id)")
-        .execute(db).await.ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_qa_runs_project_id ON project_qa_runs(project_id)",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_qa_runs_event_id ON project_qa_runs(event_id)",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_qa_runs_task_id ON project_qa_runs(task_id)",
+    )
+    .execute(db)
+    .await
+    .ok();
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_project_started ON project_qa_runs(project_id, started_at DESC)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_runs_project_kind_started ON project_qa_runs(project_id, kind, started_at DESC)")
+        .execute(db).await.ok();
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_qa_test_cases (
+            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            run_id           UUID NOT NULL REFERENCES project_qa_runs(id) ON DELETE CASCADE,
+            project_id       UUID NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            case_key         TEXT NOT NULL,
+            suite            TEXT,
+            name             TEXT NOT NULL,
+            file             TEXT,
+            status           TEXT NOT NULL CHECK (status IN ('passed','failed','skipped','error')),
+            duration_ms      DOUBLE PRECISION,
+            failure_message  TEXT,
+            failure_detail   TEXT,
+            source_sha       TEXT,
+            external_ref     TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_qa_test_cases table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_qa_cases_project_key_created ON project_qa_test_cases(project_id, case_key, created_at DESC)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_qa_cases_run_status ON project_qa_test_cases(run_id, status)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_qa_cases_project_failed ON project_qa_test_cases(project_id, created_at DESC) WHERE status IN ('failed','error')")
+        .execute(db).await.ok();
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_qa_run_metrics (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            run_id      UUID NOT NULL REFERENCES project_qa_runs(id) ON DELETE CASCADE,
+            project_id  UUID NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            metric_key  TEXT NOT NULL,
+            value       DOUBLE PRECISION NOT NULL,
+            unit        TEXT,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (run_id, metric_key)
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_qa_run_metrics table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_qa_metrics_project_key_created ON project_qa_run_metrics(project_id, metric_key, created_at DESC)")
+        .execute(db).await.ok();
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project_qa_test_sources (
+            project_id   UUID NOT NULL REFERENCES project_graphs(id) ON DELETE CASCADE,
+            source_sha   TEXT NOT NULL,
+            file         TEXT NOT NULL,
+            language     TEXT,
+            body         TEXT NOT NULL,
+            byte_size    INT NOT NULL,
+            first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (project_id, source_sha)
+        )
+        "#,
+    )
+    .execute(db)
+    .await
+    .context("failed to create project_qa_test_sources table")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_qa_sources_project_file_last ON project_qa_test_sources(project_id, file, last_seen DESC)")
         .execute(db).await.ok();
 
     sqlx::query(
@@ -294,13 +565,11 @@ pub async fn create_event(db: &PgPool, project_id: Uuid, name: &str) -> Result<Q
 }
 
 pub async fn list_events(db: &PgPool, project_id: Uuid) -> Result<Vec<QaEventView>> {
-    sqlx::query_as(
-        "SELECT * FROM project_qa_events WHERE project_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(project_id)
-    .fetch_all(db)
-    .await
-    .context("failed to list QA events")
+    sqlx::query_as("SELECT * FROM project_qa_events WHERE project_id = $1 ORDER BY created_at DESC")
+        .bind(project_id)
+        .fetch_all(db)
+        .await
+        .context("failed to list QA events")
 }
 
 pub async fn update_event(
@@ -341,13 +610,12 @@ pub async fn delete_event(db: &PgPool, event_id: Uuid, project_id: Option<Uuid>)
 }
 
 async fn validate_event_for_project(db: &PgPool, event_id: Uuid, project_id: Uuid) -> Result<()> {
-    let event_project_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT project_id FROM project_qa_events WHERE id = $1",
-    )
-    .bind(event_id)
-    .fetch_optional(db)
-    .await
-    .context("failed to validate QA event")?;
+    let event_project_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT project_id FROM project_qa_events WHERE id = $1")
+            .bind(event_id)
+            .fetch_optional(db)
+            .await
+            .context("failed to validate QA event")?;
 
     match event_project_id {
         Some(owner) if owner == project_id => Ok(()),
@@ -359,6 +627,13 @@ async fn validate_event_for_project(db: &PgPool, event_id: Uuid, project_id: Uui
 fn validate_status(status: &str) -> Result<()> {
     if !RUN_STATUSES.contains(&status) {
         anyhow::bail!("status must be one of: in_progress, passed, failed, blocked");
+    }
+    Ok(())
+}
+
+fn validate_run_kind(kind: &str) -> Result<()> {
+    if !RUN_KINDS.contains(&kind) {
+        anyhow::bail!("kind must be one of: manual, unit, integration, api, e2e, load, other");
     }
     Ok(())
 }
@@ -405,6 +680,7 @@ pub async fn create_run(
     event_id: Option<Uuid>,
     task_id: Option<Uuid>,
     title: &str,
+    kind: Option<&str>,
     status: Option<&str>,
     summary: Option<&str>,
     target: Option<&str>,
@@ -414,6 +690,8 @@ pub async fn create_run(
     if title.trim().is_empty() {
         anyhow::bail!("title must not be empty");
     }
+    let kind = kind.unwrap_or("manual");
+    validate_run_kind(kind)?;
     let status = status.unwrap_or("in_progress");
     validate_status(status)?;
     let created_by = created_by.unwrap_or("agent");
@@ -425,8 +703,8 @@ pub async fn create_run(
     let row: QaRunView = sqlx::query_as(
         r#"
         INSERT INTO project_qa_runs
-            (project_id, event_id, task_id, title, status, summary, target, external_ref, created_by, finished_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $5 = 'in_progress' THEN NULL ELSE now() END)
+            (project_id, event_id, task_id, title, status, kind, summary, target, external_ref, created_by, finished_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CASE WHEN $5 = 'in_progress' THEN NULL ELSE now() END)
         RETURNING *
         "#,
     )
@@ -435,6 +713,7 @@ pub async fn create_run(
     .bind(task_id)
     .bind(title)
     .bind(status)
+    .bind(kind)
     .bind(summary)
     .bind(target)
     .bind(external_ref)
@@ -451,35 +730,172 @@ pub async fn list_runs(
     status: Option<&str>,
     task_id: Option<Uuid>,
     event_id: Option<Uuid>,
+    kind: Option<&str>,
     limit: Option<i64>,
-) -> Result<Vec<QaRunView>> {
+    offset: i64,
+) -> Result<Vec<QaRunListItem>> {
     let limit = limit.unwrap_or(200).clamp(1, 500);
-    let rows: Vec<QaRunView> = sqlx::query_as(
+    let offset = offset.max(0);
+    let rows: Vec<QaRunListItem> = sqlx::query_as(
         r#"
-        SELECT * FROM project_qa_runs
-        WHERE project_id = $1
-          AND ($2::text IS NULL OR status = $2)
-          AND ($3::uuid IS NULL OR task_id = $3)
-          AND ($4::uuid IS NULL OR event_id = $4)
-        ORDER BY started_at DESC
-        LIMIT $5
+        SELECT r.*, evidence.evidence_count
+        FROM project_qa_runs r
+        LEFT JOIN LATERAL (
+            SELECT count(*) AS evidence_count
+            FROM project_qa_evidence e
+            WHERE e.run_id = r.id
+        ) evidence ON TRUE
+        WHERE r.project_id = $1
+          AND ($2::text IS NULL OR r.status = $2)
+          AND ($3::uuid IS NULL OR r.task_id = $3)
+          AND ($4::uuid IS NULL OR r.event_id = $4)
+          AND ($5::text IS NULL OR r.kind = $5)
+        ORDER BY r.started_at DESC
+        LIMIT $6 OFFSET $7
         "#,
     )
     .bind(project_id)
     .bind(status)
     .bind(task_id)
     .bind(event_id)
+    .bind(kind)
     .bind(limit)
+    .bind(offset)
     .fetch_all(db)
     .await
     .context("failed to list QA runs")?;
     Ok(rows)
 }
 
+pub async fn list_cases(
+    db: &PgPool,
+    run_id: Uuid,
+    status: Option<&str>,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<(Vec<QaTestCaseView>, i64)> {
+    let limit = limit.unwrap_or(200).clamp(1, 500);
+    let offset = offset.max(0);
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM project_qa_test_cases
+        WHERE run_id = $1
+          AND ($2::text IS NULL OR status = $2)
+        "#,
+    )
+    .bind(run_id)
+    .bind(status)
+    .fetch_one(db)
+    .await
+    .context("failed to count QA test cases")?;
+
+    let cases: Vec<QaTestCaseView> = sqlx::query_as(
+        r#"
+        SELECT *
+        FROM project_qa_test_cases
+        WHERE run_id = $1
+          AND ($2::text IS NULL OR status = $2)
+        ORDER BY CASE WHEN status IN ('failed','error') THEN 0 ELSE 1 END, name
+        LIMIT $3 OFFSET $4
+        "#,
+    )
+    .bind(run_id)
+    .bind(status)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db)
+    .await
+    .context("failed to list QA test cases")?;
+
+    Ok((cases, total))
+}
+
+pub async fn case_history(
+    db: &PgPool,
+    project_id: Uuid,
+    case_key: &str,
+    limit: Option<i64>,
+) -> Result<Vec<QaCaseHistoryView>> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    sqlx::query_as(
+        r#"
+        SELECT r.id AS run_id,
+               r.started_at,
+               c.status,
+               c.duration_ms AS case_duration_ms,
+               r.duration_ms AS run_duration_ms,
+               r.commit_sha,
+               r.branch,
+               c.source_sha
+        FROM project_qa_test_cases c
+        INNER JOIN project_qa_runs r ON r.id = c.run_id
+        WHERE c.project_id = $1
+          AND c.case_key = $2
+          AND r.project_id = $1
+        ORDER BY c.created_at DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(project_id)
+    .bind(case_key)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .context("failed to fetch QA case history")
+}
+
+pub async fn list_metrics(
+    db: &PgPool,
+    project_id: Uuid,
+    metric_key: Option<&str>,
+    run_id: Option<Uuid>,
+    limit: Option<i64>,
+) -> Result<Vec<QaRunMetricView>> {
+    let limit = limit.unwrap_or(200).clamp(1, 500);
+    sqlx::query_as(
+        r#"
+        SELECT *
+        FROM project_qa_run_metrics
+        WHERE project_id = $1
+          AND ($2::text IS NULL OR metric_key = $2)
+          AND ($3::uuid IS NULL OR run_id = $3)
+        ORDER BY created_at DESC
+        LIMIT $4
+        "#,
+    )
+    .bind(project_id)
+    .bind(metric_key)
+    .bind(run_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .context("failed to list QA run metrics")
+}
+
+pub async fn get_source(
+    db: &PgPool,
+    project_id: Uuid,
+    source_sha: &str,
+) -> Result<Option<QaTestSourceView>> {
+    sqlx::query_as(
+        "SELECT * FROM project_qa_test_sources WHERE project_id = $1 AND source_sha = $2",
+    )
+    .bind(project_id)
+    .bind(source_sha)
+    .fetch_optional(db)
+    .await
+    .context("failed to fetch QA test source")
+}
+
 /// `project_id: None` skips project scoping (the MCP tools address a run
 /// directly by id); `Some(id)` requires the run to belong to that project (the
 /// HTTP routes, which must 404 rather than leak a foreign run).
-pub async fn get_run(db: &PgPool, run_id: Uuid, project_id: Option<Uuid>) -> Result<Option<QaRunView>> {
+pub async fn get_run(
+    db: &PgPool,
+    run_id: Uuid,
+    project_id: Option<Uuid>,
+) -> Result<Option<QaRunView>> {
     let row: Option<QaRunView> = sqlx::query_as(
         "SELECT * FROM project_qa_runs WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
     )
@@ -495,11 +911,12 @@ pub async fn get_run(db: &PgPool, run_id: Uuid, project_id: Option<Uuid>) -> Res
 /// used by `qa_evidence_add` (Finding 1) to resolve the blob URL, since that
 /// tool's arguments carry `run_id` but no `project_id`.
 pub async fn run_project_id(db: &PgPool, run_id: Uuid) -> Result<Option<Uuid>> {
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT project_id FROM project_qa_runs WHERE id = $1")
-        .bind(run_id)
-        .fetch_optional(db)
-        .await
-        .context("failed to look up QA run's project")?;
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT project_id FROM project_qa_runs WHERE id = $1")
+            .bind(run_id)
+            .fetch_optional(db)
+            .await
+            .context("failed to look up QA run's project")?;
     Ok(row.map(|(pid,)| pid))
 }
 
@@ -511,6 +928,9 @@ pub async fn run_project_id(db: &PgPool, run_id: Uuid) -> Result<Option<Uuid>> {
 /// `get_run`. `finished_at` follows the spec's state machine: leaving
 /// `in_progress` sets it to `now()` if not already set; returning to
 /// `in_progress` clears it; not touching `status` leaves it alone.
+/// `project_id` is never updated, and there is deliberately no project-
+/// reassignment path: `project_qa_test_cases.project_id` is denormalized and
+/// depends on each run retaining its original project.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_run(
     db: &PgPool,
@@ -518,6 +938,7 @@ pub async fn update_run(
     project_id: Option<Uuid>,
     title: Option<&str>,
     status: Option<&str>,
+    kind: Option<&str>,
     event_id: Option<Option<Uuid>>,
     summary: Option<Option<&str>>,
     target: Option<Option<&str>>,
@@ -526,6 +947,9 @@ pub async fn update_run(
 ) -> Result<Option<QaRunView>> {
     if let Some(s) = status {
         validate_status(s)?;
+    }
+    if let Some(k) = kind {
+        validate_run_kind(k)?;
     }
 
     if let Some(Some(event_id)) = event_id {
@@ -554,23 +978,25 @@ pub async fn update_run(
         UPDATE project_qa_runs SET
             title = COALESCE($1, title),
             status = COALESCE($2, status),
-            event_id = CASE WHEN $3 THEN $4 ELSE event_id END,
-            summary = CASE WHEN $5 THEN $6 ELSE summary END,
-            target = CASE WHEN $7 THEN $8 ELSE target END,
-            task_id = CASE WHEN $9 THEN $10 ELSE task_id END,
-            external_ref = CASE WHEN $11 THEN $12 ELSE external_ref END,
+            kind = COALESCE($3, kind),
+            event_id = CASE WHEN $4 THEN $5 ELSE event_id END,
+            summary = CASE WHEN $6 THEN $7 ELSE summary END,
+            target = CASE WHEN $8 THEN $9 ELSE target END,
+            task_id = CASE WHEN $10 THEN $11 ELSE task_id END,
+            external_ref = CASE WHEN $12 THEN $13 ELSE external_ref END,
             finished_at = CASE
                 WHEN $2::text IS NULL THEN finished_at
                 WHEN $2 = 'in_progress' THEN NULL
                 ELSE COALESCE(finished_at, now())
             END,
             updated_at = now()
-        WHERE id = $13 AND ($14::uuid IS NULL OR project_id = $14)
+        WHERE id = $14 AND ($15::uuid IS NULL OR project_id = $15)
         RETURNING *
         "#,
     )
     .bind(title)
     .bind(status)
+    .bind(kind)
     .bind(event_id_set)
     .bind(event_id_val)
     .bind(summary_set)
@@ -594,19 +1020,26 @@ pub async fn update_run(
 /// when the delete actually happened. The evidence ids are looked up *before*
 /// the delete and simply discarded if the delete affects no row (wrong project
 /// scope), so a failed/rejected delete never drives a filesystem touch.
-pub async fn delete_run(db: &PgPool, run_id: Uuid, project_id: Option<Uuid>) -> Result<Option<Vec<Uuid>>> {
-    let evidence_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM project_qa_evidence WHERE run_id = $1")
-        .bind(run_id)
-        .fetch_all(db)
-        .await
-        .context("failed to look up QA run's evidence before delete")?;
+pub async fn delete_run(
+    db: &PgPool,
+    run_id: Uuid,
+    project_id: Option<Uuid>,
+) -> Result<Option<Vec<Uuid>>> {
+    let evidence_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM project_qa_evidence WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_all(db)
+            .await
+            .context("failed to look up QA run's evidence before delete")?;
 
-    let result = sqlx::query("DELETE FROM project_qa_runs WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)")
-        .bind(run_id)
-        .bind(project_id)
-        .execute(db)
-        .await
-        .context("failed to delete QA run")?;
+    let result = sqlx::query(
+        "DELETE FROM project_qa_runs WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
+    )
+    .bind(run_id)
+    .bind(project_id)
+    .execute(db)
+    .await
+    .context("failed to delete QA run")?;
 
     if result.rows_affected() == 0 {
         Ok(None)
@@ -676,11 +1109,12 @@ pub async fn list_evidence(db: &PgPool, run_id: Uuid) -> Result<Vec<QaEvidenceVi
 }
 
 pub async fn get_evidence(db: &PgPool, evidence_id: Uuid) -> Result<Option<QaEvidenceView>> {
-    let row: Option<QaEvidenceView> = sqlx::query_as("SELECT * FROM project_qa_evidence WHERE id = $1")
-        .bind(evidence_id)
-        .fetch_optional(db)
-        .await
-        .context("failed to fetch QA evidence")?;
+    let row: Option<QaEvidenceView> =
+        sqlx::query_as("SELECT * FROM project_qa_evidence WHERE id = $1")
+            .bind(evidence_id)
+            .fetch_optional(db)
+            .await
+            .context("failed to fetch QA evidence")?;
     Ok(row)
 }
 
@@ -729,7 +1163,11 @@ pub async fn update_evidence(
     Ok(row)
 }
 
-pub async fn delete_evidence(db: &PgPool, evidence_id: Uuid, project_id: Option<Uuid>) -> Result<bool> {
+pub async fn delete_evidence(
+    db: &PgPool,
+    evidence_id: Uuid,
+    project_id: Option<Uuid>,
+) -> Result<bool> {
     let result = sqlx::query(
         r#"
         DELETE FROM project_qa_evidence e
@@ -787,7 +1225,11 @@ pub async fn create_plan(
     Ok(row)
 }
 
-pub async fn list_plans(db: &PgPool, project_id: Uuid, kind: Option<&str>) -> Result<Vec<QaPlanView>> {
+pub async fn list_plans(
+    db: &PgPool,
+    project_id: Uuid,
+    kind: Option<&str>,
+) -> Result<Vec<QaPlanView>> {
     let rows: Vec<QaPlanView> = sqlx::query_as(
         r#"
         SELECT * FROM project_qa_plans
@@ -807,7 +1249,11 @@ pub async fn list_plans(db: &PgPool, project_id: Uuid, kind: Option<&str>) -> Re
 /// `project_id: None` skips project scoping (the MCP tools address a plan
 /// directly by id); `Some(id)` requires the plan to belong to that project (the
 /// HTTP routes, which must 404 rather than leak a foreign plan).
-pub async fn get_plan(db: &PgPool, plan_id: Uuid, project_id: Option<Uuid>) -> Result<Option<QaPlanView>> {
+pub async fn get_plan(
+    db: &PgPool,
+    plan_id: Uuid,
+    project_id: Option<Uuid>,
+) -> Result<Option<QaPlanView>> {
     let row: Option<QaPlanView> = sqlx::query_as(
         "SELECT * FROM project_qa_plans WHERE id = $1 AND ($2::uuid IS NULL OR project_id = $2)",
     )
@@ -959,13 +1405,19 @@ mod tests {
     #[test]
     fn validates_run_status() {
         assert!(validate_status("passed").is_ok());
-        assert!(validate_status("bogus").unwrap_err().to_string().contains("status"));
+        assert!(validate_status("bogus")
+            .unwrap_err()
+            .to_string()
+            .contains("status"));
     }
 
     #[test]
     fn validates_event_name() {
         assert!(validate_event_name("before deploy v1.0.0").is_ok());
-        assert!(validate_event_name("  ").unwrap_err().to_string().contains("event name"));
+        assert!(validate_event_name("  ")
+            .unwrap_err()
+            .to_string()
+            .contains("event name"));
     }
 
     #[test]
@@ -983,7 +1435,10 @@ mod tests {
     #[test]
     fn validates_plan_name() {
         assert!(validate_plan_name("Login flow").is_ok());
-        assert!(validate_plan_name("  ").unwrap_err().to_string().contains("plan name"));
+        assert!(validate_plan_name("  ")
+            .unwrap_err()
+            .to_string()
+            .contains("plan name"));
     }
 
     #[test]

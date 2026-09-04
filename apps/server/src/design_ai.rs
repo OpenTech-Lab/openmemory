@@ -126,7 +126,10 @@ fn system_prompt() -> &'static str {
 
 fn build_user_message(prompt: &str) -> String {
     let prompt = llm::truncate(prompt, MAX_PROMPT_LEN);
-    format!("Describe this AWS architecture as a diagram:\n\n<description>\n{}\n</description>", prompt)
+    format!(
+        "Describe this AWS architecture as a diagram:\n\n<description>\n{}\n</description>",
+        prompt
+    )
 }
 
 /// Rewrite any `logos:<name>` icon token whose `<name>` is not in AWS_ICONS to the generic
@@ -185,7 +188,8 @@ const MAX_GRAPH_NODES: usize = 14;
 fn graph_system_prompt(kind: Option<&str>) -> String {
     let bias_line: String = match kind {
         Some("aws") => "This is a software/cloud architecture diagram — nodes should be AWS \
-             services or other system components.".to_string(),
+             services or other system components."
+            .to_string(),
         Some(k) if !k.trim().is_empty() => format!(
             "This is a diagram of kind \"{k}\" — bias node labels toward that domain rather than \
              assuming a software architecture.",
@@ -329,7 +333,11 @@ pub fn sanitize_graph(raw_json: &str) -> String {
             .map(str::trim)
             .filter(|l| !l.is_empty())
             .map(|l| llm::truncate(l, MAX_LABEL_LEN));
-        edges.push(OutEdge { source, target, label });
+        edges.push(OutEdge {
+            source,
+            target,
+            label,
+        });
         if edges.len() >= max_edges {
             break;
         }
@@ -340,7 +348,10 @@ pub fn sanitize_graph(raw_json: &str) -> String {
 
 fn build_graph_user_message(prompt: &str) -> String {
     let prompt = llm::truncate(prompt, MAX_PROMPT_LEN);
-    format!("Describe this diagram:\n\n<description>\n{}\n</description>", prompt)
+    format!(
+        "Describe this diagram:\n\n<description>\n{}\n</description>",
+        prompt
+    )
 }
 
 /// Ask the configured LLM to generate a `{nodes, edges}` graph for `prompt`, biased toward

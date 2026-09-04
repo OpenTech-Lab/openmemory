@@ -15,10 +15,17 @@ use serde::Deserialize;
 /// `.claude`. Returns `Some(<.claude ancestor>/.credentials.json)` if found,
 /// `None` otherwise (e.g. `~/.gemini`, `~/.codex`, or any path with no
 /// `.claude` component).
-pub(crate) fn credentials_path_for(agent_path: &str, resolve_user_path: impl Fn(&str) -> PathBuf) -> Option<PathBuf> {
+pub(crate) fn credentials_path_for(
+    agent_path: &str,
+    resolve_user_path: impl Fn(&str) -> PathBuf,
+) -> Option<PathBuf> {
     let expanded = resolve_user_path(agent_path);
     for ancestor in expanded.ancestors() {
-        if ancestor.file_name().map(|n| n == ".claude").unwrap_or(false) {
+        if ancestor
+            .file_name()
+            .map(|n| n == ".claude")
+            .unwrap_or(false)
+        {
             return Some(ancestor.join(".credentials.json"));
         }
     }
@@ -162,13 +169,19 @@ mod tests {
     #[test]
     fn credentials_path_for_claude_agent() {
         let got = credentials_path_for("~/.claude/projects", fake_resolve);
-        assert_eq!(got, Some(PathBuf::from("/home/tester/.claude/.credentials.json")));
+        assert_eq!(
+            got,
+            Some(PathBuf::from("/home/tester/.claude/.credentials.json"))
+        );
     }
 
     #[test]
     fn credentials_path_for_claude_root() {
         let got = credentials_path_for("~/.claude", fake_resolve);
-        assert_eq!(got, Some(PathBuf::from("/home/tester/.claude/.credentials.json")));
+        assert_eq!(
+            got,
+            Some(PathBuf::from("/home/tester/.claude/.credentials.json"))
+        );
     }
 
     #[test]

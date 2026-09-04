@@ -146,13 +146,15 @@ fn validate_kind(kind: &str) -> Result<()> {
 }
 
 async fn validate_env_param_key(db: &PgPool, key: &str) -> Result<()> {
-    let exists: Option<(bool,)> =
-        sqlx::query_as("SELECT true FROM env_params WHERE key = $1")
-            .bind(key)
-            .fetch_optional(db)
-            .await?;
+    let exists: Option<(bool,)> = sqlx::query_as("SELECT true FROM env_params WHERE key = $1")
+        .bind(key)
+        .fetch_optional(db)
+        .await?;
     if exists.is_none() {
-        anyhow::bail!("env_param_key '{}' does not exist — create it with env_set first", key);
+        anyhow::bail!(
+            "env_param_key '{}' does not exist — create it with env_set first",
+            key
+        );
     }
     Ok(())
 }
@@ -585,15 +587,12 @@ pub fn format_list_text(resources: &[ResourceView], warnings: &[String]) -> Stri
                 .as_deref()
                 .map(|d| format!(" — {}", d))
                 .unwrap_or_default();
-            let id_part = r
-                .id
-                .map(|id| format!(" [{}]", id))
-                .unwrap_or_else(|| {
-                    r.env_key
-                        .as_ref()
-                        .map(|k| format!(" [{}]", k))
-                        .unwrap_or_default()
-                });
+            let id_part = r.id.map(|id| format!(" [{}]", id)).unwrap_or_else(|| {
+                r.env_key
+                    .as_ref()
+                    .map(|k| format!(" [{}]", k))
+                    .unwrap_or_default()
+            });
             let tags = if r.tags.is_empty() {
                 String::new()
             } else {

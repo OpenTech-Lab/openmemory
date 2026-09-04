@@ -1,6 +1,6 @@
 ---
 name: qa-run
-description: Run a QA pass against a project task and record the result in OpenMemory's project QA log — draft a test plan from the task, execute it through qa-automation's MCP server, capture screenshots, then write the run and its evidence back with qa_run_create / qa_evidence_add / qa_run_update. Trigger when a task is labelled `qa`, when asked to QA or verify a build, or when a recorded QA run needs updating.
+description: Run a QA pass against a project task and record the result in OpenMemory's project QA log — draft a test plan from the task, execute browser and native Android checks through qa-automation's MCP server, capture screenshots, then write the run and its evidence back with qa_run_create / qa_evidence_add / qa_run_update. Unit, integration, API and load results are not executed by qa-automation at all; they reach the log through `pnpm test:record` or qa_results_import, then trend via qa_case_history. Trigger when a task is labelled `qa`, when asked to QA or verify a build, when test results need recording, or when a recorded QA run needs updating.
 ---
 
 # QA Run
@@ -13,6 +13,7 @@ names. Keep them straight:
 | **qa-automation** | `qa_list_projects`, `qa_create_test_plan`, `qa_run_test_plan`, `qa_get_report`, … | **Executes** tests and returns a verdict |
 | **OpenMemory** | `qa_event_create`, `qa_event_list`, `qa_event_update`, `qa_event_delete`, `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` | **Records** what was tested, the verdict, the event grouping, and the evidence |
 | **OpenMemory** | `qa_plan_create`, `qa_plan_list`, `qa_plan_update`, `qa_plan_delete` | **Stores** reusable test-script templates as source text. Never executes them. |
+| **OpenMemory** | `qa_results_import`, `qa_case_history` | **Records** per-case results a runner produced somewhere else, and traces one case across runs. Never executes them either. |
 
 `qa_run_test_plan` (qa-automation) starts a test. `qa_run_create` (OpenMemory)
 files a record. They are not the same operation and neither substitutes for the
@@ -29,6 +30,33 @@ fall into:
 If you want a test to run, you want qa-automation. If you want a script to still
 exist next week, you want OpenMemory. Reaching for `qa_plan_create` and then
 waiting for a verdict is the specific mistake this table exists to prevent.
+
+## What qa-automation can and cannot run
+
+**qa-automation executes browser and native Android tests only.** Nothing else.
+It has no runner for unit tests, no runner for API or contract tests, and no load
+generator, and it exposes no ingestion tool — there is no way to hand it results
+that something else produced.
+
+So for every other kind of test, the sequence in §2 below does not apply and
+`qa_run_test_plan` is the wrong tool. Unit, integration, API and load results
+reach the QA log by one of two paths, both of which record results rather than
+produce them:
+
+- **Automatic capture** — the preferred path, and the one that needs no agent at
+  all. `pnpm test:record` in `apps/web` or `apps/server` runs the suite, writes
+  JUnit XML, and posts every case to the project's QA log via
+  `scripts/qa-ingest.mjs`. The test command's exit status is preserved, and a
+  failed ingest never turns a red suite green.
+- **`qa_results_import`** — for a runner not yet wired to `test:record`, or for
+  results produced on another machine. Write the normalized JSON envelope to a
+  file under `$HOME` and pass its path. Like `qa_evidence_add`, `file_path` is
+  canonicalised and must resolve under the home directory.
+
+Per-case rows exist **only** through ingest. There is no `qa_case_create`, and
+`qa_run_create` records a run without any cases attached. Once cases are in,
+`qa_case_history` answers "when did this test start failing" for a single
+`case_key` (`file::suite::name`).
 
 ## The convention
 
@@ -54,6 +82,9 @@ starts from it instead of from nothing. These are stored templates only — see 
 table above before expecting one to execute.
 
 ### 2. Execute through qa-automation
+
+**Only if the pass is a browser or native Android test.** For anything else, skip
+to "What qa-automation can and cannot run" above and record the results instead.
 
 Drive qa-automation's MCP server, not your own ad-hoc scripting:
 
@@ -149,6 +180,10 @@ Finally move the task to `done`.
 - **Record the verdict qa-automation actually returned.** If `qa_get_report` says
   the run failed, the OpenMemory run is `failed` — do not soften it to `blocked`
   because the failure looks environmental. Explain the nuance in `summary`.
+- **Never route a unit, API or load pass through qa-automation.** It cannot run
+  them and has no way to accept results from something that can. Run the suite
+  where it lives and record what came back — `pnpm test:record`, or
+  `qa_results_import` for a runner that is not wired up yet.
 
 ## Reading and correcting past runs
 

@@ -52,7 +52,11 @@ pub fn temp_blob_path(root: &Path, design_id: Uuid) -> PathBuf {
 
 /// Confirms the design exists and belongs to this project before any file touch,
 /// so blob URLs cannot be used to probe or write across projects.
-async fn design_exists(state: &AppState, project_id: Uuid, design_id: Uuid) -> Result<bool, sqlx::Error> {
+async fn design_exists(
+    state: &AppState,
+    project_id: Uuid,
+    design_id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let row: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM project_designs WHERE id = $1 AND project_id = $2")
             .bind(design_id)
@@ -68,16 +72,28 @@ pub async fn get_design_blob(
     AxumPath((project_id, design_id)): AxumPath<(Uuid, Uuid)>,
 ) -> impl IntoResponse {
     if !is_authenticated(&headers, &state.api_token) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     match design_exists(&state, project_id, design_id).await {
         Ok(false) => {
-            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response()
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "design not found"})),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("get_design_blob lookup error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
         }
         Ok(true) => {}
     }
@@ -99,12 +115,18 @@ pub async fn get_design_blob(
             bytes,
         )
             .into_response(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "blob not found"}))).into_response()
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "blob not found"})),
+        )
+            .into_response(),
         Err(e) => {
             error!("get_design_blob read error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -116,7 +138,11 @@ pub async fn put_design_blob(
     body: Bytes,
 ) -> impl IntoResponse {
     if !is_authenticated(&headers, &state.api_token) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
 
     if body.len() > MAX_DESIGN_BLOB_BYTES {
@@ -131,11 +157,19 @@ pub async fn put_design_blob(
 
     match design_exists(&state, project_id, design_id).await {
         Ok(false) => {
-            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "design not found"}))).into_response()
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "design not found"})),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("put_design_blob lookup error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
         }
         Ok(true) => {}
     }
@@ -153,7 +187,11 @@ pub async fn put_design_blob(
     let root = blob_root();
     if let Err(e) = tokio::fs::create_dir_all(&root).await {
         error!("put_design_blob mkdir error: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
     }
 
     // Write to a temp file then rename, so a failed or partial write can never leave a
@@ -165,13 +203,21 @@ pub async fn put_design_blob(
     let temp_path = temp_blob_path(&root, design_id);
     if let Err(e) = tokio::fs::write(&temp_path, &body).await {
         error!("put_design_blob write error: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
     }
     if let Err(e) = tokio::fs::rename(&temp_path, &final_path).await {
         error!("put_design_blob rename error: {e}");
         // Best-effort cleanup so a rename failure doesn't orphan the temp file.
         let _ = tokio::fs::remove_file(&temp_path).await;
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
     }
 
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
@@ -188,9 +234,7 @@ mod tests {
         let path = blob_path(std::path::Path::new("/data/design-blobs"), id);
         assert_eq!(
             path,
-            std::path::PathBuf::from(
-                "/data/design-blobs/11111111-2222-3333-4444-555555555555.fig"
-            )
+            std::path::PathBuf::from("/data/design-blobs/11111111-2222-3333-4444-555555555555.fig")
         );
     }
 
@@ -225,7 +269,9 @@ mod tests {
     #[test]
     fn source_marker_is_recognized_as_an_empty_placeholder_not_a_blob() {
         assert!(is_pencil_placeholder(PENCIL_SOURCE.as_bytes()));
-        assert!(is_pencil_placeholder(b" {\"providerId\":\"openmemory\"} \n"));
+        assert!(is_pencil_placeholder(
+            b" {\"providerId\":\"openmemory\"} \n"
+        ));
         assert!(!is_pencil_placeholder(b"PK\x03\x04saved-fig-data"));
     }
 

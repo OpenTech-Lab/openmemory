@@ -51,8 +51,12 @@ pub struct BudgetInput {
     pub created_by: Option<String>,
 }
 
-fn default_currency() -> String { "USD".to_string() }
-fn default_confidence() -> String { "low".to_string() }
+fn default_currency() -> String {
+    "USD".to_string()
+}
+fn default_confidence() -> String {
+    "low".to_string()
+}
 
 impl BudgetInput {
     pub fn validate(&self) -> Result<(), String> {
@@ -66,7 +70,9 @@ impl BudgetInput {
             return Err("confidence must be low, medium, or high".into());
         }
         if self.line_items.is_empty() || self.line_items.len() > MAX_LINE_ITEMS {
-            return Err(format!("line_items must contain between 1 and {MAX_LINE_ITEMS} entries"));
+            return Err(format!(
+                "line_items must contain between 1 and {MAX_LINE_ITEMS} entries"
+            ));
         }
         for item in &self.line_items {
             if item.service.trim().is_empty() || item.service.chars().count() > 120 {
@@ -83,7 +89,10 @@ impl BudgetInput {
     }
 
     pub fn monthly_total_cents(&self) -> i64 {
-        self.line_items.iter().map(|item| item.monthly_cost_cents).sum()
+        self.line_items
+            .iter()
+            .map(|item| item.monthly_cost_cents)
+            .sum()
     }
 }
 
@@ -118,10 +127,18 @@ pub async fn ensure_table(db: &PgPool) -> anyhow::Result<()> {
 pub async fn list(db: &PgPool, design_id: Uuid) -> anyhow::Result<Vec<DesignBudgetForecast>> {
     sqlx::query_as::<_, DesignBudgetForecast>(
         "SELECT * FROM design_budget_forecasts WHERE design_id = $1 ORDER BY updated_at DESC",
-    ).bind(design_id).fetch_all(db).await.context("failed to list design budget forecasts")
+    )
+    .bind(design_id)
+    .fetch_all(db)
+    .await
+    .context("failed to list design budget forecasts")
 }
 
-pub async fn create(db: &PgPool, design_id: Uuid, input: &BudgetInput) -> anyhow::Result<DesignBudgetForecast> {
+pub async fn create(
+    db: &PgPool,
+    design_id: Uuid,
+    input: &BudgetInput,
+) -> anyhow::Result<DesignBudgetForecast> {
     input.validate().map_err(anyhow::Error::msg)?;
     let line_items = serde_json::to_value(&input.line_items)?;
     sqlx::query_as::<_, DesignBudgetForecast>(
@@ -130,14 +147,27 @@ pub async fn create(db: &PgPool, design_id: Uuid, input: &BudgetInput) -> anyhow
             line_items, confidence, pricing_basis, created_by)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *"#,
     )
-    .bind(design_id).bind(input.forecast_profile_id).bind(input.name.trim())
-    .bind(&input.conditions).bind(&input.currency).bind(input.monthly_total_cents())
-    .bind(line_items).bind(&input.confidence).bind(&input.pricing_basis)
+    .bind(design_id)
+    .bind(input.forecast_profile_id)
+    .bind(input.name.trim())
+    .bind(&input.conditions)
+    .bind(&input.currency)
+    .bind(input.monthly_total_cents())
+    .bind(line_items)
+    .bind(&input.confidence)
+    .bind(&input.pricing_basis)
     .bind(input.created_by.as_deref().unwrap_or("human"))
-    .fetch_one(db).await.context("failed to create design budget forecast")
+    .fetch_one(db)
+    .await
+    .context("failed to create design budget forecast")
 }
 
-pub async fn update(db: &PgPool, design_id: Uuid, id: Uuid, input: &BudgetInput) -> anyhow::Result<Option<DesignBudgetForecast>> {
+pub async fn update(
+    db: &PgPool,
+    design_id: Uuid,
+    id: Uuid,
+    input: &BudgetInput,
+) -> anyhow::Result<Option<DesignBudgetForecast>> {
     input.validate().map_err(anyhow::Error::msg)?;
     let line_items = serde_json::to_value(&input.line_items)?;
     sqlx::query_as::<_, DesignBudgetForecast>(
@@ -145,10 +175,19 @@ pub async fn update(db: &PgPool, design_id: Uuid, id: Uuid, input: &BudgetInput)
            currency=$4, monthly_total_cents=$5, line_items=$6, confidence=$7,
            pricing_basis=$8, updated_at=NOW() WHERE id=$9 AND design_id=$10 RETURNING *"#,
     )
-    .bind(input.forecast_profile_id).bind(input.name.trim()).bind(&input.conditions)
-    .bind(&input.currency).bind(input.monthly_total_cents()).bind(line_items)
-    .bind(&input.confidence).bind(&input.pricing_basis).bind(id).bind(design_id)
-    .fetch_optional(db).await.context("failed to update design budget forecast")
+    .bind(input.forecast_profile_id)
+    .bind(input.name.trim())
+    .bind(&input.conditions)
+    .bind(&input.currency)
+    .bind(input.monthly_total_cents())
+    .bind(line_items)
+    .bind(&input.confidence)
+    .bind(&input.pricing_basis)
+    .bind(id)
+    .bind(design_id)
+    .fetch_optional(db)
+    .await
+    .context("failed to update design budget forecast")
 }
 
 #[cfg(test)]
@@ -157,11 +196,29 @@ mod tests {
 
     #[test]
     fn total_is_derived_from_line_items() {
-        let input = BudgetInput { name: "Base".into(), forecast_profile_id: None, conditions: None,
-            currency: "USD".into(), line_items: vec![
-                BudgetLineItem { service: "Lambda".into(), usage: "requests".into(), monthly_cost_cents: 1250, notes: None },
-                BudgetLineItem { service: "RDS".into(), usage: "instance".into(), monthly_cost_cents: 8000, notes: None },
-            ], confidence: "low".into(), pricing_basis: None, created_by: None };
+        let input = BudgetInput {
+            name: "Base".into(),
+            forecast_profile_id: None,
+            conditions: None,
+            currency: "USD".into(),
+            line_items: vec![
+                BudgetLineItem {
+                    service: "Lambda".into(),
+                    usage: "requests".into(),
+                    monthly_cost_cents: 1250,
+                    notes: None,
+                },
+                BudgetLineItem {
+                    service: "RDS".into(),
+                    usage: "instance".into(),
+                    monthly_cost_cents: 8000,
+                    notes: None,
+                },
+            ],
+            confidence: "low".into(),
+            pricing_basis: None,
+            created_by: None,
+        };
         assert!(input.validate().is_ok());
         assert_eq!(input.monthly_total_cents(), 9250);
     }

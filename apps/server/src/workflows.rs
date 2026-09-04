@@ -72,7 +72,9 @@ pub struct WorkflowStep {
     pub expected_output: Option<String>,
 }
 
-fn default_step_kind() -> String { "http".to_string() }
+fn default_step_kind() -> String {
+    "http".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepResult {
@@ -222,7 +224,9 @@ pub fn validate_definition(
                 if capability == "skill" && step.skill.as_deref().unwrap_or("").trim().is_empty() {
                     anyhow::bail!("agent skill step '{}' requires a skill name", step.id);
                 }
-                if capability == "command" && step.command.as_deref().unwrap_or("").trim().is_empty() {
+                if capability == "command"
+                    && step.command.as_deref().unwrap_or("").trim().is_empty()
+                {
                     anyhow::bail!("agent command step '{}' requires a command", step.id);
                 }
             }
@@ -233,21 +237,35 @@ pub fn validate_definition(
 }
 
 fn file_path(value: &Value) -> Option<&str> {
-    value.as_str().or_else(|| value.get("path").and_then(Value::as_str))
+    value
+        .as_str()
+        .or_else(|| value.get("path").and_then(Value::as_str))
 }
 
 fn validate_input(input_schema: &Value, input: &Value) -> Result<()> {
-    let schema = input_schema.as_object().context("input_schema must be a JSON object")?;
+    let schema = input_schema
+        .as_object()
+        .context("input_schema must be a JSON object")?;
     let values = input.as_object().context("input must be a JSON object")?;
     for (name, definition) in schema {
-        let kind = definition.get("type").and_then(Value::as_str).unwrap_or("any");
-        let required = definition.get("required").and_then(Value::as_bool).unwrap_or(false);
+        let kind = definition
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("any");
+        let required = definition
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let Some(value) = values.get(name) else {
-            if required { anyhow::bail!("missing required workflow input: {name}"); }
+            if required {
+                anyhow::bail!("missing required workflow input: {name}");
+            }
             continue;
         };
         if value.is_null() {
-            if required { anyhow::bail!("required workflow input '{name}' cannot be null"); }
+            if required {
+                anyhow::bail!("required workflow input '{name}' cannot be null");
+            }
             continue;
         }
         match kind {
@@ -259,14 +277,24 @@ fn validate_input(input_schema: &Value, input: &Value) -> Result<()> {
             "boolean" if value.is_boolean() => {}
             "image" | "pdf" | "file" => {
                 let path = file_path(value).with_context(|| {
-                    format!("workflow input '{name}' must be a file path or an object containing path")
+                    format!(
+                        "workflow input '{name}' must be a file path or an object containing path"
+                    )
                 })?;
                 if !Path::new(path).is_file() {
                     anyhow::bail!("workflow input '{name}' requires an existing file: {path}");
                 }
-                let extension = Path::new(path).extension().and_then(|ext| ext.to_str())
-                    .unwrap_or("").to_ascii_lowercase();
-                if kind == "image" && !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg" | "avif") {
+                let extension = Path::new(path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if kind == "image"
+                    && !matches!(
+                        extension.as_str(),
+                        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg" | "avif"
+                    )
+                {
                     anyhow::bail!("workflow input '{name}' requires a supported image file");
                 }
                 if kind == "pdf" && extension != "pdf" {
@@ -491,7 +519,9 @@ async fn execute_http_step(
     };
     validate_allowed_host(&url)?;
     let method = reqwest::Method::from_bytes(step.method.to_uppercase().as_bytes())?;
-    let mut request = client.request(method, &url).header("Content-Type", "application/json");
+    let mut request = client
+        .request(method, &url)
+        .header("Content-Type", "application/json");
     if secret_target != "url" {
         if let Some(value) = secret {
             let header = step.auth_header.as_deref().unwrap_or("Authorization");
@@ -501,10 +531,19 @@ async fn execute_http_step(
     }
     for (key, value) in &step.headers {
         let rendered = render_string(value, input, prior)?;
-        request = request.header(key, rendered.as_str().context("rendered header must be a string")?);
+        request = request.header(
+            key,
+            rendered
+                .as_str()
+                .context("rendered header must be a string")?,
+        );
     }
-    if let Some(body) = &step.body { request = request.json(&render(body, input, prior)?); }
-    let response = request.send().await
+    if let Some(body) = &step.body {
+        request = request.json(&render(body, input, prior)?);
+    }
+    let response = request
+        .send()
+        .await
         .with_context(|| format!("workflow step '{}' request failed", step.id))?;
     let status = response.status().as_u16();
     let bytes = response.bytes().await?;
@@ -513,7 +552,12 @@ async fn execute_http_step(
     }
     let body = serde_json::from_slice(&bytes)
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
-    Ok(StepResult { id: step.id.clone(), name: step.name.clone(), status, body })
+    Ok(StepResult {
+        id: step.id.clone(),
+        name: step.name.clone(),
+        status,
+        body,
+    })
 }
 
 fn render_agent_action(step: &WorkflowStep, input: &Value, prior: &Value) -> Result<AgentAction> {
@@ -523,12 +567,21 @@ fn render_agent_action(step: &WorkflowStep, input: &Value, prior: &Value) -> Res
         }
     }
     let rendered_string = |value: Option<&str>| -> Result<Option<String>> {
-        value.map(|text| render_string(text, input, prior)
-            .and_then(|v| v.as_str().map(str::to_owned).context("rendered agent field must be a string"))).transpose()
+        value
+            .map(|text| {
+                render_string(text, input, prior).and_then(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .context("rendered agent field must be a string")
+                })
+            })
+            .transpose()
     };
     for template in &step.required_files {
         let path = render_string(template, input, prior)?;
-        let path = path.as_str().context("rendered required file must be a string")?;
+        let path = path
+            .as_str()
+            .context("rendered required file must be a string")?;
         if !Path::new(path).is_file() {
             anyhow::bail!("agent step '{}' requires an existing file: {path}", step.id);
         }
@@ -536,17 +589,28 @@ fn render_agent_action(step: &WorkflowStep, input: &Value, prior: &Value) -> Res
     Ok(AgentAction {
         step_id: step.id.clone(),
         name: step.name.clone(),
-        capability: step.capability.clone().unwrap_or_else(|| "skill".to_string()),
+        capability: step
+            .capability
+            .clone()
+            .unwrap_or_else(|| "skill".to_string()),
         instruction: rendered_string(step.instruction.as_deref())?.unwrap_or_default(),
         skill: rendered_string(step.skill.as_deref())?,
         command: rendered_string(step.command.as_deref())?,
         working_directory: rendered_string(step.working_directory.as_deref())?,
-        expected_output: rendered_string(step.expected_output.as_deref())?
-            .unwrap_or_else(|| "Return a JSON object containing the produced artifact paths and a concise summary.".to_string()),
+        expected_output: rendered_string(step.expected_output.as_deref())?.unwrap_or_else(|| {
+            "Return a JSON object containing the produced artifact paths and a concise summary."
+                .to_string()
+        }),
     })
 }
 
-async fn persist_run(db: &PgPool, run_id: Uuid, current_step: usize, results: &[StepResult], status: &str) -> Result<()> {
+async fn persist_run(
+    db: &PgPool,
+    run_id: Uuid,
+    current_step: usize,
+    results: &[StepResult],
+    status: &str,
+) -> Result<()> {
     sqlx::query("UPDATE workflow_runs SET current_step=$2, step_results=$3, status=$4, updated_at=NOW() WHERE id=$1")
         .bind(run_id).bind(current_step as i32).bind(serde_json::to_value(results)?).bind(status)
         .execute(db).await?;
@@ -570,8 +634,12 @@ async fn advance(
             let action = render_agent_action(step, &input, &prior)?;
             persist_run(db, run_id, current_step, &results, "action_required").await?;
             return Ok(WorkflowRunResult {
-                run_id: Some(run_id), workflow_id: workflow.id, workflow_name: workflow.name,
-                status: "action_required".to_string(), success: false, steps: results,
+                run_id: Some(run_id),
+                workflow_id: workflow.id,
+                workflow_name: workflow.name,
+                status: "action_required".to_string(),
+                success: false,
+                steps: results,
                 result: json!({"message":"Agent action required","step_id":step.id}),
                 action_required: Some(action),
             });
@@ -583,19 +651,27 @@ async fn advance(
         if failed {
             persist_run(db, run_id, current_step, &results, "failed").await?;
             return Ok(WorkflowRunResult {
-                run_id: Some(run_id), workflow_id: workflow.id, workflow_name: workflow.name,
-                status: "failed".to_string(), success: false,
-                result: serde_json::to_value(results.last().unwrap())?, steps: results,
+                run_id: Some(run_id),
+                workflow_id: workflow.id,
+                workflow_name: workflow.name,
+                status: "failed".to_string(),
+                success: false,
+                result: serde_json::to_value(results.last().unwrap())?,
+                steps: results,
                 action_required: None,
             });
         }
     }
     persist_run(db, run_id, current_step, &results, "completed").await?;
     Ok(WorkflowRunResult {
-        run_id: Some(run_id), workflow_id: workflow.id, workflow_name: workflow.name,
-        status: "completed".to_string(), success: true,
+        run_id: Some(run_id),
+        workflow_id: workflow.id,
+        workflow_name: workflow.name,
+        status: "completed".to_string(),
+        success: true,
         result: serde_json::to_value(results.last().context("workflow has no steps")?)?,
-        steps: results, action_required: None,
+        steps: results,
+        action_required: None,
     })
 }
 
@@ -605,14 +681,22 @@ pub async fn run(
     id_or_name: &str,
     input: Value,
 ) -> Result<WorkflowRunResult> {
-    if !input.is_object() { anyhow::bail!("input must be a JSON object"); }
+    if !input.is_object() {
+        anyhow::bail!("input must be a JSON object");
+    }
     let workflow = get(db, id_or_name).await?;
-    if !workflow.enabled { anyhow::bail!("workflow '{}' is disabled", workflow.name); }
+    if !workflow.enabled {
+        anyhow::bail!("workflow '{}' is disabled", workflow.name);
+    }
     validate_definition(&workflow.name, &workflow.input_schema, &workflow.steps)?;
     validate_input(&workflow.input_schema, &input)?;
     let run_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO workflow_runs (workflow_id, input) VALUES ($1, $2) RETURNING id"
-    ).bind(workflow.id).bind(&input).fetch_one(db).await?;
+        "INSERT INTO workflow_runs (workflow_id, input) VALUES ($1, $2) RETURNING id",
+    )
+    .bind(workflow.id)
+    .bind(&input)
+    .fetch_one(db)
+    .await?;
     advance(db, encryption_key, workflow, run_id, input, 0, Vec::new()).await
 }
 
@@ -625,15 +709,35 @@ pub async fn continue_run(
     let run: WorkflowRun = sqlx::query_as(
         "SELECT id, workflow_id, input, current_step, step_results, status FROM workflow_runs WHERE id=$1"
     ).bind(run_id).fetch_optional(db).await?.context("workflow run not found")?;
-    if run.status != "action_required" { anyhow::bail!("workflow run is not waiting for an agent action"); }
+    if run.status != "action_required" {
+        anyhow::bail!("workflow run is not waiting for an agent action");
+    }
     let workflow = get(db, &run.workflow_id.to_string()).await?;
     let steps = validate_definition(&workflow.name, &workflow.input_schema, &workflow.steps)?;
     let current = run.current_step as usize;
-    let step = steps.get(current).context("workflow run points past its final step")?;
-    if step.kind != "agent" { anyhow::bail!("current workflow step is not an agent action"); }
+    let step = steps
+        .get(current)
+        .context("workflow run points past its final step")?;
+    if step.kind != "agent" {
+        anyhow::bail!("current workflow step is not an agent action");
+    }
     let mut results: Vec<StepResult> = serde_json::from_value(run.step_results)?;
-    results.push(StepResult { id: step.id.clone(), name: step.name.clone(), status: 200, body: result });
-    advance(db, encryption_key, workflow, run.id, run.input, current + 1, results).await
+    results.push(StepResult {
+        id: step.id.clone(),
+        name: step.name.clone(),
+        status: 200,
+        body: result,
+    });
+    advance(
+        db,
+        encryption_key,
+        workflow,
+        run.id,
+        run.input,
+        current + 1,
+        results,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -674,8 +778,15 @@ mod tests {
             "options": {"type":"json", "required":true},
             "anything": {"type":"any"}
         });
-        assert!(validate_input(&schema, &json!({"prompt":"hello", "options":{"quality":"high"}})).is_ok());
+        assert!(validate_input(
+            &schema,
+            &json!({"prompt":"hello", "options":{"quality":"high"}})
+        )
+        .is_ok());
         assert!(validate_input(&schema, &json!({"prompt":{"wrong":true}, "options":[]})).is_err());
-        assert!(validate_input(&schema, &json!({"prompt":"hello"})).unwrap_err().to_string().contains("options"));
+        assert!(validate_input(&schema, &json!({"prompt":"hello"}))
+            .unwrap_err()
+            .to_string()
+            .contains("options"));
     }
 }

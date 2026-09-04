@@ -30,7 +30,7 @@ import type { DesignGraph, DesignNode, DesignNodeData } from '@/lib/design-graph
 /** Decodes the five predefined XML entities plus numeric character references. `&amp;` is
  * decoded LAST so an already-escaped ampersand (serialized as `&amp;lt;`) can't double-unescape
  * into `<`. */
-function decodeXmlEntities(text: string): string {
+export function decodeXmlEntities(text: string): string {
   return text
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -54,7 +54,7 @@ function decodeLabel(rawValue: string | undefined): string {
 
 /** Parses one tag's attribute text (already extracted from between `<mxCell`/`<mxGeometry` and
  * its closing `>`/`/>`) into a plain map. Handles both quote styles and any attribute order. */
-function parseAttrs(attrText: string): Record<string, string> {
+export function parseAttrs(attrText: string): Record<string, string> {
   const attrs: Record<string, string> = {};
   const re = /([a-zA-Z_][-\w:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
   let m: RegExpExecArray | null;

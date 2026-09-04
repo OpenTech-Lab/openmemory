@@ -594,17 +594,21 @@ the scarce, expensive signal and are never pruned on a clock.
 That list mirrors the carve-out `design_revisions.rs` already gives labelled
 revisions, for the same reason: someone curated it, so a clock must not delete it.
 
-**Mechanism:** pure functions in `qa_ingest.rs` (unit-testable with no database,
-mirroring `revisions_to_prune` at `design_revisions.rs:101` and its tests at
-`:287-309`), applied **inline inside the ingest transaction** — the same shape
-`design_revisions::cut` uses when it prunes right after its insert (`:235-243`).
-No cron, no scheduler, no new container, bounded work per ingest.
-`OPENMEMORY_QA_CASE_RETENTION_DAYS` overrides the 90; `0` disables pruning
-entirely, read with the same `std::env::var(...).unwrap_or_else(...)` shape as
-`qa::blob_root()` (`qa.rs:44-48`).
+**Mechanism:** *selection* is pure functions in `qa_ingest.rs` — which rows are
+prunable, decided from inputs with no database — unit-testable exactly like
+`revisions_to_prune` (`design_revisions.rs:101`) and its tests at `:287-309`.
+*Deletion* is a separate statement. No cron, no scheduler, no new container,
+bounded work per ingest. `OPENMEMORY_QA_CASE_RETENTION_DAYS` overrides the 90;
+`0` disables pruning entirely, read with the same
+`std::env::var(...).unwrap_or_else(...)` shape as `qa::blob_root()` (`qa.rs:44-48`).
 
-Pruning runs **after** the ingest transaction commits, never inside it: a
-retention failure must not roll back a successfully recorded run.
+**Pruning runs after the ingest transaction commits, never inside it.** This is a
+deliberate departure from `design_revisions::cut`, which prunes inside its own
+transaction (`:235-243`). The tradeoff differs: there, the revision being written
+*is* the valuable artifact and pruning is part of writing it. Here the recorded
+run is the valuable artifact and retention is housekeeping, so a retention
+failure must never roll back a successfully recorded run. A failed prune is
+logged and the next ingest retries it; a rolled-back ingest is lost test history.
 
 ## 6. Test plan
 
@@ -704,16 +708,16 @@ into a permanently red build.
 
 **Ships:** a `pnpm test` that runs 343 tests and can actually fail.
 
-### Stage 1 — schema + read paths
+### Stage 1 — schema + read paths ✅ **SHIPPED 2026-09-04**
 `ensure_qa_tables` ALTERs and the three new tables; `list_project_qa_runs` gains
 `evidence_count` and the new columns; the `qa-panel.tsx` 1+N fix. No ingestion
 yet. **Ships:** the QA tab gets ~200× faster and is ready for volume.
 
-### Stage 2 — ingest endpoint + MCP tools
+### Stage 2 — ingest endpoint + MCP tools ✅ **SHIPPED 2026-09-04**
 `qa_ingest.rs`, `POST /qa/ingest`, the four read routes, `qa_results_import` and
 `qa_case_history`. **Ships:** anything that can POST JSON can record history.
 
-### Stage 3 — the ingester and automatic capture
+### Stage 3 — the ingester and automatic capture ✅ **SHIPPED 2026-09-04**
 `apps/web/lib/junit.ts` + tests, `scripts/qa-ingest.mjs`, the `posttest` hooks,
 the nextest path. Use the exit-code-preserving
 wrapper from §3, **not** a bare `posttest` — verified: `posttest` does not run
@@ -721,11 +725,11 @@ when `test` fails, so the naive wiring would lose exactly the red runs the
 feature exists to capture. **Ships:** running tests records
 history with nobody remembering to.
 
-### Stage 4 — the views that pay it off
+### Stage 4 — the views that pay it off ✅ **SHIPPED 2026-09-04**
 Cases tab, case-history timeline, metrics sparklines, `kind` badges, retention.
 **Ships:** flake detection and regression trends.
 
-### Stage 5 — docs
+### Stage 5 — docs ✅ **SHIPPED 2026-09-04**
 `skills/qa-run/SKILL.md` gains a fourth table row and prose stating plainly that
 qa-automation runs browser and native Android **only**, and that unit, API and
 load results reach the log through `qa_results_import` or automatic capture —
@@ -772,3 +776,13 @@ it ships with stage 2/3 rather than being deferred to the end if either slips.
 - **Flake detection as an automated verdict.** The case-history view makes flakes
   visible to a human. Auto-classifying a test as flaky needs a policy decision
   about what threshold means flaky.
+
+## 10. Deployment note (2026-09-04)
+
+Every stage is code-complete and verified locally, but the **running server binary
+predates Stage 2**: `POST /projects/:id/qa/ingest` returns 404 against
+`localhost:18080` while the pre-existing QA routes return 200. Both `test:record`
+scripts already reach that endpoint, authenticate, and resolve the project — they
+degrade to `qa-ingest: skipped (… HTTP 404)` and preserve the suite's exit status.
+Rebuilding and restarting the stack is the one remaining step, and it is the
+operator's to take.

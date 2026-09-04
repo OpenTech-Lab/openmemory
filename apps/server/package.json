@@ -5,7 +5,8 @@
     "dev": "DATABASE_URL=postgres://openmemory:openmemory@localhost:5432/openmemory OPENSEARCH_URL=http://localhost:9201 REDIS_URL=redis://localhost:6399 FALKORDB_URL=redis://localhost:6380 CARGO_TARGET_DIR=target cargo run --bin openmemory-server",
     "build": "CARGO_TARGET_DIR=target cargo build --release --bin openmemory-server",
     "lint": "cargo fmt --all -- --check || true",
-    "test": "CARGO_TARGET_DIR=target cargo test"
+    "test": "CARGO_TARGET_DIR=target cargo test",
+    "test:record": "cargo nextest run --config-file .config/nextest.toml --profile ci; s=$?; node ../../scripts/qa-ingest.mjs --junit ../../target/nextest/ci/junit.xml --kind unit --runner 'cargo nextest' || true; exit $s"
   },
   "dependencies": {}
 }

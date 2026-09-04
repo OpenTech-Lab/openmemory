@@ -2,12 +2,14 @@
   "name": "web",
   "version": "0.2.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test lib/*.test.ts"
+    "test": "node --test lib/*.test.ts",
+    "test:record": "node --test --test-reporter=junit --test-reporter-destination=.junit.xml lib/*.test.ts; s=$?; node ../../scripts/qa-ingest.mjs --junit .junit.xml --kind unit --runner node:test || true; exit $s"
   },
   "dependencies": {
     "@base-ui/react": "^1.1.0",
@@ -51,6 +53,7 @@
   },
   "devDependencies": {
     "@iconify-json/logos": "^1.2.12",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

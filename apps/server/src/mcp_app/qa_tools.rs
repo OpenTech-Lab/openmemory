@@ -93,6 +93,31 @@ async fn upload_qa_evidence_file(project_id: Uuid, evidence_id: Uuid, file_path:
     Ok(())
 }
 
+/// Read an ingest envelope from the host side of the MCP process. The
+/// canonicalize plus starts_with check is intentionally the same boundary as
+/// upload_qa_evidence_file: a symlink may not escape the home root.
+fn read_qa_ingest_file(file_path: &str) -> Result<Vec<u8>> {
+    let home_root = std::env::var("OPENMEMORY_HOME_DIR")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "/".to_string());
+    let canonical_home = std::fs::canonicalize(&home_root)
+        .with_context(|| format!("cannot resolve home root '{}'", home_root))?;
+
+    let expanded = expand_home_path(file_path);
+    let canonical_path = std::fs::canonicalize(&expanded)
+        .with_context(|| format!("file_path does not exist or cannot be resolved: {}", expanded.display()))?;
+    if !canonical_path.starts_with(&canonical_home) {
+        anyhow::bail!(
+            "file_path must resolve inside the home directory ({}), got: {}",
+            canonical_home.display(),
+            canonical_path.display()
+        );
+    }
+
+    std::fs::read(&canonical_path)
+        .with_context(|| format!("failed to read {}", canonical_path.display()))
+}
+
 /// The delete-side counterpart to `upload_qa_evidence_file`'s rationale:
 /// `openmemory-mcp` has no `/data` mount, so deleting a run's row directly in
 /// Postgres would leave its evidence blobs orphaned on disk with nothing left
@@ -223,13 +248,14 @@ impl McpServer {
             None => None,
         };
         let status = args["status"].as_str();
+        let kind = args["kind"].as_str();
         let summary = args["summary"].as_str();
         let target = args["target"].as_str();
         let external_ref = args["external_ref"].as_str();
         let created_by = args["created_by"].as_str();
 
         let run = qa::create_run(
-            &self.db, project_id, event_id, task_id, title, status, summary, target, external_ref, created_by,
+            &self.db, project_id, event_id, task_id, title, kind, status, summary, target, external_ref, created_by,
         )
         .await?;
 
@@ -247,6 +273,7 @@ impl McpServer {
             .parse()
             .context("invalid project_id UUID")?;
         let status = args["status"].as_str();
+        let kind = args["kind"].as_str();
         let task_id: Option<Uuid> = match args["task_id"].as_str() {
             Some(s) => Some(s.parse().context("invalid task_id UUID")?),
             None => None,
@@ -256,8 +283,9 @@ impl McpServer {
             None => None,
         };
         let limit = args["limit"].as_i64();
+        let offset = args["offset"].as_i64().unwrap_or(0);
 
-        let runs = qa::list_runs(&self.db, project_id, status, task_id, event_id, limit).await?;
+        let runs = qa::list_runs(&self.db, project_id, status, task_id, event_id, kind, limit, offset).await?;
         let text = if runs.is_empty() {
             "No QA runs.".to_string()
         } else {
@@ -282,6 +310,7 @@ impl McpServer {
         let run_id: Uuid = args["run_id"].as_str().context("missing run_id")?.parse().context("invalid run_id UUID")?;
         let title = args["title"].as_str();
         let status = args["status"].as_str();
+        let kind = args["kind"].as_str();
         // `args.get(key)` distinguishes "key absent" (None: leave untouched) from
         // "key present" (Some(...), whether null — clear — or a string — set),
         // matching the `Option<Option<T>>` tri-state the HTTP PATCH payloads use.
@@ -303,13 +332,130 @@ impl McpServer {
             )),
         };
 
-        match qa::update_run(&self.db, run_id, None, title, status, event_id, summary, target, task_id, external_ref).await? {
+        match qa::update_run(&self.db, run_id, None, title, status, kind, event_id, summary, target, task_id, external_ref).await? {
             Some(run) => {
                 let text = format!("Updated QA run '{}' [{}] — status={}", run.title, run.id, run.status);
                 Ok(json!({ "content": [{ "type": "text", "text": text }] }))
             }
             None => anyhow::bail!("QA run '{}' not found", run_id),
         }
+    }
+
+    pub(super) async fn qa_results_import(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let file_path = args["file_path"].as_str().context("missing file_path")?;
+        let kind = args["kind"].as_str().context("missing kind")?;
+        if !qa::RUN_KINDS.contains(&kind) {
+            anyhow::bail!("kind must be one of: manual, unit, integration, api, e2e, load, other");
+        }
+
+        let bytes = read_qa_ingest_file(file_path)?;
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(&bytes).context("file_path does not contain a valid JSON envelope")?;
+        let object = envelope
+            .as_object_mut()
+            .context("QA ingest envelope must be a JSON object")?;
+        object.insert("kind".to_string(), json!(kind));
+        if let Some(title) = args["title"].as_str() {
+            object.insert("title".to_string(), json!(title));
+        }
+        if let Some(runner) = args["runner"].as_str() {
+            object.insert("runner".to_string(), json!(runner));
+        }
+
+        for field in ["task_id", "event_id"] {
+            let Some(value) = args.get(field) else {
+                continue;
+            };
+            if value.is_null() {
+                continue;
+            }
+            let parsed: Uuid = value
+                .as_str()
+                .with_context(|| format!("{field} must be a string"))?
+                .parse()
+                .with_context(|| format!("invalid {field} UUID"))?;
+            object.insert(field.to_string(), json!(parsed));
+        }
+
+        let url = format!("{}/projects/{}/qa/ingest", qa_api_base(), project_id);
+        let response = HttpClient::new()
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", qa_api_token()?))
+            .json(&envelope)
+            .send()
+            .await
+            .context("HTTP POST to QA ingest endpoint failed")?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("QA ingest rejected ({status}): {body}");
+        }
+        let run: qa::QaRunView =
+            serde_json::from_str(&body).context("QA ingest returned an invalid run")?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Imported QA results '{}' [{}] status={} cases={} passed={} failed={} skipped={}",
+                    run.title,
+                    run.id,
+                    run.status,
+                    run.total_cases,
+                    run.passed_cases,
+                    run.failed_cases,
+                    run.skipped_cases
+                )
+            }]
+        }))
+    }
+
+    pub(super) async fn qa_case_history(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let project_id: Uuid = args["project_id"]
+            .as_str()
+            .context("missing project_id")?
+            .parse()
+            .context("invalid project_id UUID")?;
+        let case_key = args["case_key"].as_str().context("missing case_key")?;
+        if case_key.trim().is_empty() {
+            anyhow::bail!("case_key must not be empty");
+        }
+        let history = qa::case_history(&self.db, project_id, case_key, args["limit"].as_i64()).await?;
+
+        let text = if history.is_empty() {
+            format!("No QA history for case '{}'.", case_key)
+        } else {
+            let mut lines = vec![format!("QA case history ({}):", history.len())];
+            for entry in &history {
+                // `case_ms` is this test's own time and `run_ms` the whole
+                // suite's. They are labelled distinctly because they differ by
+                // orders of magnitude, and an agent reading a bare `duration_ms`
+                // on a single-test history would reasonably take it for the
+                // test's own.
+                lines.push(format!(
+                    "• [{}] run={} started_at={} case_ms={} run_ms={} source_sha={}",
+                    entry.status,
+                    entry.run_id,
+                    entry.started_at,
+                    entry
+                        .case_duration_ms
+                        .map(|duration| duration.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    entry
+                        .run_duration_ms
+                        .map(|duration| duration.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    entry.source_sha.as_deref().unwrap_or("-")
+                ));
+            }
+            lines.join("\n")
+        };
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
     }
 
     pub(super) async fn qa_run_delete(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {

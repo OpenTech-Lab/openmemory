@@ -303,7 +303,11 @@ impl FalkorDbClient {
             anyhow::bail!(
                 "One or both entities ({} '{}', {} '{}') not found in group '{}'. \
                  Call add_entity first.",
-                subject_type, subject_name, object_type, object_name, group_id
+                subject_type,
+                subject_name,
+                object_type,
+                object_name,
+                group_id
             );
         }
 
@@ -450,11 +454,13 @@ impl FalkorDbClient {
         let timestamp = normalize_ts(timestamp);
         let ts = escape_option_str(Some(&timestamp));
         let entity_filter = entity_name
-            .map(|n| format!(
-                " AND (a.name = {} OR b.name = {})",
-                escape_option_str(Some(n)),
-                escape_option_str(Some(n))
-            ))
+            .map(|n| {
+                format!(
+                    " AND (a.name = {} OR b.name = {})",
+                    escape_option_str(Some(n)),
+                    escape_option_str(Some(n))
+                )
+            })
             .unwrap_or_default();
         let group_filter = group_id
             .map(|g| format!(" AND a.group_id = {}", escape_option_str(Some(g))))
@@ -568,7 +574,11 @@ impl FalkorDbClient {
             .await
             .context("FalkorDB MERGE node failed")?;
 
-        let linkable: Vec<String> = tags.iter().filter(|t| !excluded_tags.contains(t)).cloned().collect();
+        let linkable: Vec<String> = tags
+            .iter()
+            .filter(|t| !excluded_tags.contains(t))
+            .cloned()
+            .collect();
         if !linkable.is_empty() {
             let excluded_lit = cypher_string_list(excluded_tags);
             // Only connect memories belonging to the same tenant.
@@ -636,7 +646,11 @@ impl FalkorDbClient {
     /// round trip instead of N sequential app-driven scans.
     /// `excluded_tags` — see save_node's doc comment; critical here, since without it
     /// this query creates a supernode clique out of any near-universal tag.
-    pub async fn relink_all_tag_edges(&mut self, user_id: Option<&str>, excluded_tags: &[String]) -> Result<()> {
+    pub async fn relink_all_tag_edges(
+        &mut self,
+        user_id: Option<&str>,
+        excluded_tags: &[String],
+    ) -> Result<()> {
         let user_filter = match user_id {
             Some(uid) => format!(
                 " AND a.user_id = \"{}\" AND b.user_id = \"{}\"",
@@ -686,10 +700,7 @@ impl FalkorDbClient {
         }
 
         if !sets.is_empty() {
-            let q = format!(
-                "MATCH (m:Memory {{id: \"{id}\"}}) SET {}",
-                sets.join(", ")
-            );
+            let q = format!("MATCH (m:Memory {{id: \"{id}\"}}) SET {}", sets.join(", "));
             redis::cmd("GRAPH.QUERY")
                 .arg(GRAPH_NAME)
                 .arg(&q)
@@ -701,9 +712,8 @@ impl FalkorDbClient {
         // When tags change, re-sync RELATED_TO edges: drop old ones, create new ones
         if let Some(new_tags) = tags {
             // Remove all existing auto-edges from this node
-            let q_del = format!(
-                "MATCH (a:Memory {{id: \"{id}\"}})-[r:RELATED_TO]-(b:Memory) DELETE r"
-            );
+            let q_del =
+                format!("MATCH (a:Memory {{id: \"{id}\"}})-[r:RELATED_TO]-(b:Memory) DELETE r");
             redis::cmd("GRAPH.QUERY")
                 .arg(GRAPH_NAME)
                 .arg(&q_del)
@@ -712,7 +722,10 @@ impl FalkorDbClient {
                 .context("FalkorDB edge cleanup failed")?;
 
             // Re-create edges for current tags (same logic as save_node)
-            let linkable: Vec<&String> = new_tags.iter().filter(|t| !excluded_tags.contains(t)).collect();
+            let linkable: Vec<&String> = new_tags
+                .iter()
+                .filter(|t| !excluded_tags.contains(t))
+                .collect();
             if !linkable.is_empty() {
                 let excluded_lit = cypher_string_list(excluded_tags);
                 let q_add = format!(
@@ -789,7 +802,14 @@ impl FalkorDbClient {
         episode_id: Option<&str>,
         created_at: &str,
     ) -> Result<()> {
-        let fingerprint = fact_fingerprint(subject_name, subject_type, object_name, object_type, relation, group_id);
+        let fingerprint = fact_fingerprint(
+            subject_name,
+            subject_type,
+            object_name,
+            object_type,
+            relation,
+            group_id,
+        );
         let new_id = Uuid::new_v4();
         let valid_at = normalize_ts(created_at);
 
@@ -1167,8 +1187,17 @@ fn parse_edge_rows(result: redis::Value) -> Vec<EdgeInfo> {
             let from_id = extract_string(&cols[0])?;
             let to_id = extract_string(&cols[1])?;
             let rel_type = extract_string(&cols[2]).unwrap_or_else(|| "RELATED_TO".to_string());
-            let relationship = if cols.len() >= 4 { extract_string(&cols[3]) } else { None };
-            Some(EdgeInfo { from_id, to_id, rel_type, relationship })
+            let relationship = if cols.len() >= 4 {
+                extract_string(&cols[3])
+            } else {
+                None
+            };
+            Some(EdgeInfo {
+                from_id,
+                to_id,
+                rel_type,
+                relationship,
+            })
         })
         .collect()
 }
@@ -1203,7 +1232,12 @@ fn parse_neighbor_rows(result: redis::Value) -> Vec<NeighborInfo> {
             let summary = extract_string(&cols[1]);
             let importance = extract_f32(&cols[2]).unwrap_or(0.5);
             let tags = extract_string_list(&cols[3]);
-            Some(NeighborInfo { id, summary, importance, tags })
+            Some(NeighborInfo {
+                id,
+                summary,
+                importance,
+                tags,
+            })
         })
         .collect()
 }
@@ -1289,21 +1323,25 @@ fn parse_entity_rows(result: redis::Value) -> Vec<EntityInfo> {
         Some(redis::Value::Array(r)) => r,
         _ => return vec![],
     };
-    rows.iter().filter_map(|row| {
-        let cols = match row {
-            redis::Value::Array(c) => c,
-            _ => return None,
-        };
-        if cols.len() < 6 { return None; }
-        Some(EntityInfo {
-            id: extract_string(&cols[0])?,
-            name: extract_string(&cols[1])?,
-            entity_type: extract_string(&cols[2]).unwrap_or_default(),
-            summary: extract_string(&cols[3]),
-            group_id: extract_string(&cols[4]).unwrap_or_default(),
-            created_at: extract_string(&cols[5]).unwrap_or_default(),
+    rows.iter()
+        .filter_map(|row| {
+            let cols = match row {
+                redis::Value::Array(c) => c,
+                _ => return None,
+            };
+            if cols.len() < 6 {
+                return None;
+            }
+            Some(EntityInfo {
+                id: extract_string(&cols[0])?,
+                name: extract_string(&cols[1])?,
+                entity_type: extract_string(&cols[2]).unwrap_or_default(),
+                summary: extract_string(&cols[3]),
+                group_id: extract_string(&cols[4]).unwrap_or_default(),
+                created_at: extract_string(&cols[5]).unwrap_or_default(),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn parse_count(result: redis::Value) -> u32 {
@@ -1385,30 +1423,35 @@ fn parse_fact_rows(result: redis::Value) -> Vec<FactResult> {
         Some(redis::Value::Array(r)) => r,
         _ => return vec![],
     };
-    rows.iter().filter_map(|row| {
-        let cols = match row {
-            redis::Value::Array(c) => c,
-            _ => return None,
-        };
-        if cols.len() < 10 { return None; }
-        let invalid_at = extract_string(&cols[7]);
-        let is_current = invalid_at.as_deref()
-            .map(|s| s.is_empty() || s == "null")
-            .unwrap_or(true);
-        Some(FactResult {
-            subject_name: extract_string(&cols[0]).unwrap_or_default(),
-            subject_type: extract_string(&cols[1]).unwrap_or_default(),
-            relationship: extract_string(&cols[2]).unwrap_or_default(),
-            fact: extract_string(&cols[3]).unwrap_or_default(),
-            object_name: extract_string(&cols[4]).unwrap_or_default(),
-            object_type: extract_string(&cols[5]).unwrap_or_default(),
-            valid_at: extract_string(&cols[6]).unwrap_or_default(),
-            invalid_at,
-            episode_id: extract_string(&cols[8]),
-            fact_id: extract_string(&cols[9]).unwrap_or_default(),
-            is_current,
+    rows.iter()
+        .filter_map(|row| {
+            let cols = match row {
+                redis::Value::Array(c) => c,
+                _ => return None,
+            };
+            if cols.len() < 10 {
+                return None;
+            }
+            let invalid_at = extract_string(&cols[7]);
+            let is_current = invalid_at
+                .as_deref()
+                .map(|s| s.is_empty() || s == "null")
+                .unwrap_or(true);
+            Some(FactResult {
+                subject_name: extract_string(&cols[0]).unwrap_or_default(),
+                subject_type: extract_string(&cols[1]).unwrap_or_default(),
+                relationship: extract_string(&cols[2]).unwrap_or_default(),
+                fact: extract_string(&cols[3]).unwrap_or_default(),
+                object_name: extract_string(&cols[4]).unwrap_or_default(),
+                object_type: extract_string(&cols[5]).unwrap_or_default(),
+                valid_at: extract_string(&cols[6]).unwrap_or_default(),
+                invalid_at,
+                episode_id: extract_string(&cols[8]),
+                fact_id: extract_string(&cols[9]).unwrap_or_default(),
+                is_current,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Parse an RFC3339 timestamp and normalize to UTC. Returns the original string on parse failure
@@ -1418,7 +1461,10 @@ pub(crate) fn normalize_ts(ts: &str) -> String {
     ts.parse::<DateTime<Utc>>()
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_else(|_| {
-            warn!("normalize_ts: could not parse timestamp {:?}, using as-is", ts);
+            warn!(
+                "normalize_ts: could not parse timestamp {:?}, using as-is",
+                ts
+            );
             ts.to_string()
         })
 }

@@ -56,7 +56,8 @@ pub fn decrypt_value(key: &[u8; 32], data: &[u8]) -> anyhow::Result<String> {
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("decryption failed"))?;
-    String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("invalid UTF-8 in decrypted value: {e}"))
+    String::from_utf8(plaintext)
+        .map_err(|e| anyhow::anyhow!("invalid UTF-8 in decrypted value: {e}"))
 }
 
 /// Compute a short, non-reversible fingerprint of a plaintext value, salted with a

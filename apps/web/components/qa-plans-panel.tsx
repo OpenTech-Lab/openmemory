@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,10 +32,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Copy, Download, FileCode, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Copy, Download, FileCode, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PLAN_KINDS, planKindColor, planKindLabel } from '@/lib/qa-meta';
 import { getStarterTemplate } from '@/lib/qa-plan-templates';
+import { planFileExtension, planSlug, runRecipeForPlan } from '@/lib/qa-run-command';
 
 interface QaPlan {
   id: string;
@@ -54,26 +55,26 @@ const PLAN_LANGUAGES = ['typescript', 'javascript', 'yaml', 'python', 'other'] a
 
 const EMPTY_FORM = { name: '', kind: 'other' as string, language: 'other' as string, description: '', body: '' };
 
-function planFileExtension(plan: Pick<QaPlan, 'kind' | 'language'>): string {
-  switch (plan.kind) {
-    case 'jest':
-      return plan.language === 'javascript' ? 'test.js' : 'test.ts';
-    case 'playwright':
-      if (plan.language === 'javascript') return 'spec.js';
-      if (plan.language === 'python') return 'spec.py';
-      return 'spec.ts';
-    case 'maestro':
-      return 'yaml';
-    default:
-      return 'txt';
-  }
-}
-
-export function QaPlansPanel({ projectId }: { projectId: string }) {
+export function QaPlansPanel({
+  projectId,
+  focusPlanId,
+  onCountChange,
+  onOpenRun,
+  onRunCreated,
+}: {
+  projectId: string;
+  focusPlanId?: string | null;
+  onCountChange?: (count: number) => void;
+  onOpenRun?: (runId: string) => void;
+  /** Fired after a run is created, so the Runs tab count stays honest while
+   *  QaPanel is unmounted. */
+  onRunCreated?: () => void;
+}) {
   const [plans, setPlans] = useState<QaPlan[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [kindFilter, setKindFilter] = useState<string>('all');
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const focusedPlanIdRef = useRef<string | null>(null);
 
   // Detail pane form — seeded from the selected plan on selection, then edited
   // in place. `isDirty` compares this directly against the selected plan, so
@@ -90,6 +91,12 @@ export function QaPlansPanel({ projectId }: { projectId: string }) {
   const [deletePlan, setDeletePlan] = useState<QaPlan | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Run dialog — the server executes the saved plan; the copy command remains
+  // available as the local fallback when a runner is unavailable there.
+  const [showRunDialog, setShowRunDialog] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
   const fetchPlans = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -101,35 +108,46 @@ export function QaPlansPanel({ projectId }: { projectId: string }) {
         toast.error(data.error ?? 'Failed to load QA plans');
         return;
       }
-      setPlans(data.plans ?? []);
+      const list: QaPlan[] = data.plans ?? [];
+      setPlans(list);
+      // Unfiltered loads only — see the matching note in qa-panel.tsx's fetchRuns.
+      if (kindFilter === 'all') onCountChange?.(list.length);
     } catch {
       toast.error('Failed to connect to server');
     } finally {
       setIsLoading(false);
     }
-  }, [projectId, kindFilter]);
+  }, [projectId, kindFilter, onCountChange]);
 
   useEffect(() => {
     fetchPlans();
   }, [fetchPlans]);
 
-  const selectPlan = (plan: QaPlan | null) => {
+  const selectPlan = useCallback((plan: QaPlan | null) => {
     setSelectedPlanId(plan?.id ?? null);
     setForm(
       plan
         ? { name: plan.name, kind: plan.kind, language: plan.language, description: plan.description ?? '', body: plan.body }
         : EMPTY_FORM
     );
-  };
+  }, []);
 
   // Falls back to the first plan once nothing is selected or the selected one
   // disappears (e.g. deleted by another client) — mirrors qa-panel's run list.
   // Only fires on that fallback case, not on every background refetch, so an
   // in-progress edit in the detail pane survives a Refresh.
   useEffect(() => {
+    if (!focusPlanId) focusedPlanIdRef.current = null;
+    const focusedPlan = focusPlanId ? plans.find((plan) => plan.id === focusPlanId) : null;
+    if (focusPlanId && focusedPlanIdRef.current !== focusPlanId) {
+      if (!focusedPlan) return;
+      focusedPlanIdRef.current = focusPlanId;
+      selectPlan(focusedPlan);
+      return;
+    }
     if (selectedPlanId && plans.some((p) => p.id === selectedPlanId)) return;
     selectPlan(plans[0] ?? null);
-  }, [plans, selectedPlanId]);
+  }, [focusPlanId, plans, selectPlan, selectedPlanId]);
 
   const selectedPlan = plans.find((p) => p.id === selectedPlanId) ?? null;
 
@@ -250,9 +268,75 @@ export function QaPlansPanel({ projectId }: { projectId: string }) {
     }
   };
 
+  // Built from the edited form for the Copy command; Run now executes the
+  // saved plan after refusing to run while the form is dirty.
+  const runRecipe = runRecipeForPlan({
+    name: form.name,
+    kind: form.kind,
+    language: form.language,
+    body: form.body,
+    description: form.description,
+  });
+
+  const handleCopyRunScript = async () => {
+    if (!runRecipe.script) return;
+    try {
+      await navigator.clipboard.writeText(runRecipe.script);
+      toast.success('Command copied — paste it at the repository root');
+    } catch {
+      toast.error('Failed to copy');
+    }
+  };
+
+  const openRunDialog = () => {
+    setRunError(null);
+    setShowRunDialog(true);
+  };
+
+  const handleRunNow = async () => {
+    if (!selectedPlan || !runRecipe.script || isRunning || isDirty) return;
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 310_000);
+    setIsRunning(true);
+    setRunError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/qa/plans/${selectedPlan.id}/run`, {
+        method: 'POST',
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        setRunError(data.error ?? `Failed to run plan (${res.status})`);
+        return;
+      }
+
+      const passed = Number(data.passed ?? 0);
+      const failed = Number(data.failed ?? 0);
+      const skipped = Number(data.skipped ?? 0);
+      onRunCreated?.();
+      toast.success(
+        `${passed} passed · ${failed} failed · ${skipped} skipped`,
+        onOpenRun && data.run_id
+          ? { action: { label: 'Open run', onClick: () => onOpenRun(data.run_id) } }
+          : undefined,
+      );
+      setShowRunDialog(false);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        setRunError('The run took too long and the request was cancelled.');
+      } else {
+        setRunError('Failed to connect to the server.');
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
+      setIsRunning(false);
+    }
+  };
+
   const handleDownload = () => {
     if (!selectedPlan) return;
-    const filename = `${selectedPlan.name.trim().replace(/[^a-z0-9._-]+/gi, '_') || 'plan'}.${planFileExtension(selectedPlan)}`;
+    const filename = `${planSlug(selectedPlan.name)}.${planFileExtension(selectedPlan)}`;
     const blob = new Blob([form.body], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -384,6 +468,10 @@ export function QaPlansPanel({ projectId }: { projectId: string }) {
                     <Button size="sm" onClick={handleSave} disabled={!isDirty || isSaving || !form.name.trim()}>
                       {isSaving ? 'Saving…' : 'Save'}
                     </Button>
+                    <Button variant="outline" size="sm" className="h-8" title="Run this plan" onClick={openRunDialog}>
+                      <Play className="h-3.5 w-3.5 mr-1.5" />
+                      Run
+                    </Button>
                     <Button variant="outline" size="icon" className="h-8 w-8" title="Copy to clipboard" onClick={handleCopy}>
                       <Copy className="h-3.5 w-3.5" />
                     </Button>
@@ -499,6 +587,74 @@ export function QaPlansPanel({ projectId }: { projectId: string }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Run dialog */}
+      <Dialog
+        open={showRunDialog}
+        onOpenChange={(open) => {
+          if (!open && isRunning) return;
+          setShowRunDialog(open);
+          if (open) setRunError(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader className="min-w-0">
+            <DialogTitle>Run this plan</DialogTitle>
+            <DialogDescription>
+              Run the saved plan in its project directory and record the result under QA &rsaquo; Runs.
+            </DialogDescription>
+            {/* Its own line with break-all: a generated filename is one long
+                unbreakable token and blows out the header inline. */}
+            <code className="block min-w-0 break-all font-mono text-xs text-muted-foreground">{runRecipe.path}</code>
+          </DialogHeader>
+
+          {runError && (
+            <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive whitespace-pre-wrap">
+              {runError}
+            </p>
+          )}
+
+          {runRecipe.script ? (
+            <>
+              <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                <Badge variant="secondary" className="text-[10px]">{runRecipe.runner}</Badge>
+                <span>recorded as a</span>
+                <Badge variant="secondary" className="text-[10px]">{runRecipe.ingestKind}</Badge>
+                <span>run</span>
+              </div>
+              {/* min-w-0 on the wrapper is what actually lets the pre scroll:
+                  without it the flex item refuses to shrink below its content
+                  width and the block bursts out of the dialog. */}
+              <div className="min-w-0 max-w-full">
+                <pre className="max-h-[45vh] w-full overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre">
+                  {runRecipe.script}
+                </pre>
+              </div>
+              {isDirty && (
+                <p className="text-xs text-muted-foreground">
+                  Save the edits before running; Run now uses the saved plan.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">{runRecipe.unsupportedReason}</p>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRunDialog(false)}>
+              Close
+            </Button>
+            <Button onClick={handleCopyRunScript} disabled={!runRecipe.script}>
+              <Copy className="h-3.5 w-3.5 mr-1.5" />
+              Copy command
+            </Button>
+            <Button onClick={handleRunNow} disabled={isRunning || !runRecipe.script || isDirty}>
+              {isRunning ? <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1.5" />}
+              {isRunning ? 'Running…' : 'Run now'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

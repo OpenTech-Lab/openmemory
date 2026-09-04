@@ -1,0 +1,5 @@
+[profile.ci]
+inherits = "default"
+
+[profile.ci.junit]
+path = "junit.xml"

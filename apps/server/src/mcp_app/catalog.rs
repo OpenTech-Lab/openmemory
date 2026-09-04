@@ -1310,6 +1310,7 @@ impl McpServer {
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "title": {"type": "string", "description": "What this run tested"},
+                            "kind": {"type": "string", "description": "manual | unit | integration | api | e2e | load | other (default: manual)"},
                             "event_id": {"type": "string", "description": "Optional UUID of the QA event that groups this run"},
                             "task_id": {"type": "string", "description": "Optional UUID of the task this run verifies"},
                             "status": {"type": "string", "description": "in_progress | passed | failed | blocked (default: in_progress)"},
@@ -1323,13 +1324,14 @@ impl McpServer {
                 },
                 {
                     "name": "qa_run_update",
-                    "description": "Update a QA run in OpenMemory's project QA log — title, status, event_id, summary, target, task_id, or external_ref. Only provided fields are changed; pass null for event_id/summary/target/task_id/external_ref to clear them. Leaving status anything other than passed/failed/blocked is a bug, not a valid end state for a finished run.",
+                    "description": "Update a QA run in OpenMemory's project QA log — title, status, kind, event_id, summary, target, task_id, or external_ref. Only provided fields are changed; pass null for event_id/summary/target/task_id/external_ref to clear them. Leaving status anything other than passed/failed/blocked is a bug, not a valid end state for a finished run.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "run_id": {"type": "string", "description": "UUID of the QA run"},
                             "title": {"type": "string"},
                             "status": {"type": "string", "description": "in_progress | passed | failed | blocked"},
+                            "kind": {"type": "string", "description": "manual | unit | integration | api | e2e | load | other"},
                             "event_id": {"type": ["string", "null"], "description": "UUID of a QA event to group under, or null to ungroup"},
                             "summary": {"type": ["string", "null"], "description": "New summary, or null to clear"},
                             "target": {"type": ["string", "null"], "description": "New target, or null to clear"},
@@ -1347,11 +1349,43 @@ impl McpServer {
                         "properties": {
                             "project_id": {"type": "string", "description": "UUID of the project"},
                             "status": {"type": "string", "description": "Filter by in_progress | passed | failed | blocked"},
+                            "kind": {"type": "string", "description": "Filter by manual | unit | integration | api | e2e | load | other"},
                             "event_id": {"type": "string", "description": "Filter to runs in this QA event"},
                             "task_id": {"type": "string", "description": "Filter to runs linked to this task"},
-                            "limit": {"type": "integer", "description": "Max results (default 200)"}
+                            "limit": {"type": "integer", "description": "Max results (default 200)"},
+                            "offset": {"type": "integer", "description": "Number of results to skip (default 0)"}
                         },
                         "required": ["project_id"]
+                    }
+                },
+                {
+                    "name": "qa_results_import",
+                    "description": "This records results OpenMemory did not execute; read a normalized JSON envelope from a local file and submit it to the project's QA log. Cases exist only via ingest; there is no case-creation tool.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "file_path": {"type": "string", "description": "Path to a JSON envelope under the home directory"},
+                            "kind": {"type": "string", "description": "manual | unit | integration | api | e2e | load | other"},
+                            "title": {"type": "string", "description": "Optional title override"},
+                            "runner": {"type": "string", "description": "Optional runner override"},
+                            "task_id": {"type": "string", "description": "Optional UUID of the task this result verifies"},
+                            "event_id": {"type": "string", "description": "Optional UUID of the QA event that groups this result"}
+                        },
+                        "required": ["project_id", "file_path", "kind"]
+                    }
+                },
+                {
+                    "name": "qa_case_history",
+                    "description": "This records results OpenMemory did not execute; read one case's history across recorded runs. Cases exist only via ingest; there is no case-creation tool.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "UUID of the project"},
+                            "case_key": {"type": "string", "description": "Stable file::suite::name key for the case"},
+                            "limit": {"type": "integer", "description": "Maximum history entries (default 50)"}
+                        },
+                        "required": ["project_id", "case_key"]
                     }
                 },
                 {

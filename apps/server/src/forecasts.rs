@@ -5,7 +5,13 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 pub const APPLICATION_TYPES: [&str; 7] = [
-    "web_saas", "mobile", "ai", "data", "internal", "ecommerce", "other",
+    "web_saas",
+    "mobile",
+    "ai",
+    "data",
+    "internal",
+    "ecommerce",
+    "other",
 ];
 pub const STRESS_TOLERANCES: [&str; 3] = ["conservative", "balanced", "aggressive"];
 pub const USAGE_PATTERNS: [&str; 3] = ["steady", "bursty", "seasonal"];
@@ -148,7 +154,11 @@ pub async fn create(db: &PgPool, input: &ForecastInput) -> anyhow::Result<Foreca
     .context("failed to create forecast profile")
 }
 
-pub async fn update(db: &PgPool, id: Uuid, input: &ForecastInput) -> anyhow::Result<Option<ForecastProfile>> {
+pub async fn update(
+    db: &PgPool,
+    id: Uuid,
+    input: &ForecastInput,
+) -> anyhow::Result<Option<ForecastProfile>> {
     input.validate().map_err(anyhow::Error::msg)?;
     sqlx::query_as::<_, ForecastProfile>(
         r#"UPDATE forecast_profiles SET name=$1, description=$2, application_type=$3,
@@ -168,10 +178,20 @@ pub fn design_context(profile: &ForecastProfile) -> String {
         "Planning forecast: profile={}; application_type={}; users={}; monthly_budget_usd={}; \
          stress_tolerance={}; usage_pattern={}; engagement={}% of MAU active on a typical day; \
          horizon_months={}; annual_growth_percent={}%.{}",
-        profile.name, profile.application_type, profile.user_count, profile.monthly_budget_usd,
-        profile.stress_tolerance, profile.usage_pattern, profile.engagement_percent,
-        profile.planning_horizon_months, profile.annual_growth_percent,
-        profile.notes.as_deref().map(|n| format!(" Additional constraints: {n}")).unwrap_or_default()
+        profile.name,
+        profile.application_type,
+        profile.user_count,
+        profile.monthly_budget_usd,
+        profile.stress_tolerance,
+        profile.usage_pattern,
+        profile.engagement_percent,
+        profile.planning_horizon_months,
+        profile.annual_growth_percent,
+        profile
+            .notes
+            .as_deref()
+            .map(|n| format!(" Additional constraints: {n}"))
+            .unwrap_or_default()
     )
 }
 
@@ -180,10 +200,19 @@ mod tests {
     use super::*;
 
     fn valid_input() -> ForecastInput {
-        ForecastInput { name: "Growth SaaS".into(), description: None, application_type: "web_saas".into(),
-            user_count: 10_000, monthly_budget_usd: 2_000, stress_tolerance: "balanced".into(),
-            usage_pattern: "bursty".into(), engagement_percent: 50, planning_horizon_months: 18,
-            annual_growth_percent: 80, notes: None }
+        ForecastInput {
+            name: "Growth SaaS".into(),
+            description: None,
+            application_type: "web_saas".into(),
+            user_count: 10_000,
+            monthly_budget_usd: 2_000,
+            stress_tolerance: "balanced".into(),
+            usage_pattern: "bursty".into(),
+            engagement_percent: 50,
+            planning_horizon_months: 18,
+            annual_growth_percent: 80,
+            notes: None,
+        }
     }
 
     #[test]
@@ -198,8 +227,14 @@ mod tests {
     fn validates_engagement_percent_boundaries() {
         let mut invalid = valid_input();
         invalid.engagement_percent = 0;
-        assert!(invalid.validate().unwrap_err().contains("engagement_percent"));
+        assert!(invalid
+            .validate()
+            .unwrap_err()
+            .contains("engagement_percent"));
         invalid.engagement_percent = 101;
-        assert!(invalid.validate().unwrap_err().contains("engagement_percent"));
+        assert!(invalid
+            .validate()
+            .unwrap_err()
+            .contains("engagement_percent"));
     }
 }

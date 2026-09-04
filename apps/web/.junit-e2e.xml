@@ -1,0 +1,14 @@
+<testsuites id="" name="" tests="5" failures="0" skipped="0" errors="0" time="5.306371">
+<testsuite name="qa-panel.spec.ts" timestamp="2026-09-04T05:09:45.226Z" hostname="chromium" tests="5" failures="0" skipped="0" time="4.682" errors="0">
+<testcase name="the QA sub-tabs show counts for both runs and plans" classname="qa-panel.spec.ts" time="0.674">
+</testcase>
+<testcase name="a failed run shows its failing case first and collapses the passing ones" classname="qa-panel.spec.ts" time="0.627">
+</testcase>
+<testcase name="case history opens and distinguishes the case time from the run total" classname="qa-panel.spec.ts" time="0.789">
+</testcase>
+<testcase name="the run dialog keeps its script inside the dialog" classname="qa-panel.spec.ts" time="0.806">
+</testcase>
+<testcase name="Run now executes the plan and the Runs count increments" classname="qa-panel.spec.ts" time="1.786">
+</testcase>
+</testsuite>
+</testsuites>

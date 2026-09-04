@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool};
 use serde::{Deserialize, Serialize};
+use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::resources::path_warning;
@@ -92,26 +92,38 @@ pub async fn ensure_library_table(db: &PgPool) -> Result<()> {
     .await
     .context("failed to create library_entries table")?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_library_entries_project_id ON library_entries(project_id)")
-        .execute(db)
-        .await
-        .ok();
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_library_entries_tags ON library_entries USING gin(tags)")
-        .execute(db)
-        .await
-        .ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_library_entries_project_id ON library_entries(project_id)",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_library_entries_tags ON library_entries USING gin(tags)",
+    )
+    .execute(db)
+    .await
+    .ok();
 
     // Revision to GLOBAL scoping + live code-preview entries (table confirmed
     // empty in production at revision time, so no backfill is needed — just
     // relax the constraints that assumed project-scoped, path-only rows).
     sqlx::query("ALTER TABLE library_entries ALTER COLUMN project_id DROP NOT NULL")
-        .execute(db).await.ok();
+        .execute(db)
+        .await
+        .ok();
     sqlx::query("ALTER TABLE library_entries ALTER COLUMN location DROP NOT NULL")
-        .execute(db).await.ok();
+        .execute(db)
+        .await
+        .ok();
     sqlx::query("ALTER TABLE library_entries ADD COLUMN IF NOT EXISTS code TEXT")
-        .execute(db).await.ok();
+        .execute(db)
+        .await
+        .ok();
     sqlx::query("ALTER TABLE library_entries DROP CONSTRAINT IF EXISTS library_entries_kind_check")
-        .execute(db).await.ok();
+        .execute(db)
+        .await
+        .ok();
     sqlx::query("ALTER TABLE library_entries ADD CONSTRAINT library_entries_kind_check CHECK (kind IN ('image','video','code'))")
         .execute(db).await.ok();
 
@@ -119,8 +131,12 @@ pub async fn ensure_library_table(db: &PgPool) -> Result<()> {
     // project_id stays in the schema as optional secondary metadata).
     sqlx::query("ALTER TABLE library_entries ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'other'")
         .execute(db).await.ok();
-    sqlx::query("ALTER TABLE library_entries DROP CONSTRAINT IF EXISTS library_entries_category_check")
-        .execute(db).await.ok();
+    sqlx::query(
+        "ALTER TABLE library_entries DROP CONSTRAINT IF EXISTS library_entries_category_check",
+    )
+    .execute(db)
+    .await
+    .ok();
     sqlx::query("ALTER TABLE library_entries ADD CONSTRAINT library_entries_category_check CHECK (category IN ('ui','design-system','effects','animation','other'))")
         .execute(db).await.ok();
 

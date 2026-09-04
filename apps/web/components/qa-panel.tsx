@@ -57,7 +57,8 @@ import {
   User,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { QA_STATUSES, statusColor, statusLabel } from '@/lib/qa-meta';
+import { QA_STATUSES, runKindColor, runKindLabel, statusColor, statusLabel } from '@/lib/qa-meta';
+import { QaTestsPanel } from '@/components/qa-tests-panel';
 
 interface QaRun {
   id: string;
@@ -74,6 +75,16 @@ interface QaRun {
   finished_at: string | null;
   created_at: string;
   updated_at: string;
+  kind?: string;
+  runner?: string | null;
+  total_cases?: number;
+  passed_cases?: number;
+  failed_cases?: number;
+  skipped_cases?: number;
+  duration_ms?: number | null;
+  commit_sha?: string | null;
+  branch?: string | null;
+  evidence_count?: number;
 }
 
 interface QaEvent {
@@ -139,7 +150,19 @@ const EMPTY_RUN_FORM = {
   event_id: NO_EVENT_VALUE,
 };
 
-export function QaPanel({ projectId }: { projectId: string }) {
+export function QaPanel({
+  projectId,
+  onOpenPlan,
+  focusRunId,
+  onCountChange,
+  onPlanCreated,
+}: {
+  projectId: string;
+  onOpenPlan?: (planId: string) => void;
+  focusRunId?: string | null;
+  onCountChange?: (count: number) => void;
+  onPlanCreated?: () => void;
+}) {
   const [runs, setRuns] = useState<QaRun[]>([]);
   const [events, setEvents] = useState<QaEvent[]>([]);
   const [evidenceByRun, setEvidenceByRun] = useState<Record<string, QaEvidence[]>>({});
@@ -187,6 +210,7 @@ export function QaPanel({ projectId }: { projectId: string }) {
 
   // Lightbox — steps through the selected run's image evidence only.
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const focusedRunIdRef = useRef<string | null>(null);
 
   const fetchRuns = useCallback(async () => {
     setIsLoading(true);
@@ -201,28 +225,15 @@ export function QaPanel({ projectId }: { projectId: string }) {
       }
       const list: QaRun[] = data.runs ?? [];
       setRuns(list);
-      // The list endpoint carries neither an evidence count nor the evidence
-      // itself, so fetch each run's detail in parallel — this both drives the
-      // per-row evidence count and means selecting a run never needs a second
-      // fetch before its detail pane can render.
-      const details = await Promise.all(
-        list.map(async (run) => {
-          try {
-            const detailRes = await fetch(`/api/projects/${projectId}/qa/runs/${run.id}`);
-            const detailData = await detailRes.json();
-            return [run.id, detailRes.ok ? (detailData.evidence ?? []) : []] as const;
-          } catch {
-            return [run.id, []] as const;
-          }
-        })
-      );
-      setEvidenceByRun(Object.fromEntries(details));
+      // Report upward only on an unfiltered load. A filtered list is a subset, and the
+      // tab badge means "how many runs exist", not "how many match the current filter".
+      if (statusFilter === 'all') onCountChange?.(list.length);
     } catch {
       toast.error('Failed to connect to server');
     } finally {
       setIsLoading(false);
     }
-  }, [projectId, statusFilter]);
+  }, [projectId, statusFilter, onCountChange]);
 
   const fetchEvents = useCallback(async () => {
     try {
@@ -289,9 +300,17 @@ export function QaPanel({ projectId }: { projectId: string }) {
   // Keeps a selection across refreshes and event filters; falls back to the
   // first remaining run once the selected one is gone or filtered out.
   useEffect(() => {
+    if (!focusRunId) focusedRunIdRef.current = null;
+    const focusedRun = focusRunId ? runs.find((run) => run.id === focusRunId) : null;
+    if (focusRunId && focusedRunIdRef.current !== focusRunId) {
+      if (!focusedRun) return;
+      focusedRunIdRef.current = focusRunId;
+      setSelectedRunId(focusRunId);
+      return;
+    }
     if (selectedRunId && visibleRuns.some((r) => r.id === selectedRunId)) return;
     setSelectedRunId(visibleRuns[0]?.id ?? null);
-  }, [visibleRuns, selectedRunId]);
+  }, [focusRunId, runs, visibleRuns, selectedRunId]);
 
   useEffect(() => {
     setSelectedRunIds((current) => new Set([...current].filter((id) => runs.some((run) => run.id === id))));
@@ -339,14 +358,23 @@ export function QaPanel({ projectId }: { projectId: string }) {
         const res = await fetch(`/api/projects/${projectId}/qa/runs/${runId}`);
         const data = await res.json();
         if (!res.ok) return;
-        setEvidenceByRun((prev) => ({ ...prev, [runId]: data.evidence ?? [] }));
-        setRuns((prev) => prev.map((r) => (r.id === runId ? data.run : r)));
+        const evidence = data.evidence ?? [];
+        setEvidenceByRun((prev) => ({ ...prev, [runId]: evidence }));
+        setRuns((prev) => prev.map((r) => (
+          r.id === runId
+            ? { ...r, ...data.run, evidence_count: evidence.length }
+            : r
+        )));
       } catch {
         // Best-effort refresh; the next full fetchRuns() reconciles any drift.
       }
     },
     [projectId]
   );
+
+  useEffect(() => {
+    if (selectedRunId) refreshRunDetail(selectedRunId);
+  }, [selectedRunId, refreshRunDetail]);
 
   const resetRunForm = () => setRunForm({ ...EMPTY_RUN_FORM });
 
@@ -916,11 +944,13 @@ export function QaPanel({ projectId }: { projectId: string }) {
                   {runs.length === 0 && <p className="max-w-[220px] text-[11px]">Start one manually, or have an agent invoke the qa-run skill.</p>}
                 </div>
               ) : visibleRuns.map((run) => {
-              const evidenceCount = (evidenceByRun[run.id] ?? []).length;
+              const evidenceCount = run.evidence_count ?? 0;
+              const totalCases = run.total_cases ?? 0;
               const task = run.task_id ? taskById.get(run.task_id) : undefined;
               const isSelected = run.id === selectedRunId;
               const isChecked = selectedRunIds.has(run.id);
               const event = run.event_id ? eventById.get(run.event_id) : undefined;
+              const runKind = run.kind ?? 'manual';
               return (
                 <div
                   key={run.id}
@@ -942,6 +972,9 @@ export function QaPanel({ projectId }: { projectId: string }) {
                       <div className="flex items-center gap-1.5">
                         <Badge variant="outline" className={`text-xs shrink-0 ${statusColor(run.status)}`}>
                           {statusLabel(run.status)}
+                        </Badge>
+                        <Badge variant="outline" className={`text-[10px] shrink-0 ${runKindColor(runKind)}`}>
+                          {runKindLabel(runKind)}
                         </Badge>
                         {run.created_by === 'agent' ? (
                           <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -984,6 +1017,11 @@ export function QaPanel({ projectId }: { projectId: string }) {
                     <Badge variant="secondary" className="text-[10px]">
                       {evidenceCount} item{evidenceCount !== 1 ? 's' : ''}
                     </Badge>
+                    {totalCases > 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {run.passed_cases ?? 0} passed · {run.failed_cases ?? 0} failed · {run.skipped_cases ?? 0} skipped
+                      </span>
+                    )}
                     {task && (
                       <Badge variant="outline" className="text-xs gap-1 min-w-0">
                         <ListChecks className="h-3 w-3 shrink-0" />
@@ -1062,6 +1100,8 @@ export function QaPanel({ projectId }: { projectId: string }) {
                     )}
                   </div>
                 </div>
+
+                <QaTestsPanel key={projectId} projectId={projectId} run={selectedRun} onOpenPlan={onOpenPlan} onPlanCreated={onPlanCreated} />
 
                 {/* Evidence timeline */}
                 <div className="flex flex-col gap-2 py-3">

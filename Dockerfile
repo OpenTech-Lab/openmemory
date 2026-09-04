@@ -23,7 +23,7 @@ FROM debian:bookworm-slim
 # ca-certificates for rustls root cert validation; curl for healthcheck;
 # git for the project-graph indexer's commit-history collection
 RUN apt-get update \
-    && apt-get install -y ca-certificates curl git \
+    && apt-get install -y ca-certificates curl git libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as non-root user

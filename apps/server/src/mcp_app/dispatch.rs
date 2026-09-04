@@ -93,6 +93,8 @@ impl McpServer {
             "qa_run_create" => self.qa_run_create(arguments).await,
             "qa_run_update" => self.qa_run_update(arguments).await,
             "qa_run_list" => self.qa_run_list(arguments).await,
+            "qa_results_import" => self.qa_results_import(arguments).await,
+            "qa_case_history" => self.qa_case_history(arguments).await,
             "qa_run_delete" => self.qa_run_delete(arguments).await,
             "qa_evidence_add" => self.qa_evidence_add(arguments).await,
             "qa_evidence_update" => self.qa_evidence_update(arguments).await,

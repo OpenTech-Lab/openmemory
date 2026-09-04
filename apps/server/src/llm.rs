@@ -211,7 +211,10 @@ fn parse_extraction_ok(raw_json: &str) -> GraphExtraction {
                 &cleaned[..cleaned.len().min(200)]
             );
             // Parse failed but LLM call succeeded — mark ok so we don't retry forever
-            return GraphExtraction { ok: true, ..Default::default() };
+            return GraphExtraction {
+                ok: true,
+                ..Default::default()
+            };
         }
     };
 
@@ -270,16 +273,29 @@ fn parse_extraction_ok(raw_json: &str) -> GraphExtraction {
         .take(MAX_FACTS)
         .collect();
 
-    GraphExtraction { entities, facts, ok: true }
+    GraphExtraction {
+        entities,
+        facts,
+        ok: true,
+    }
 }
 
 pub async fn extract_graph(content: &str, cfg: &LlmConfig) -> GraphExtraction {
     if content.trim().is_empty() {
-        return GraphExtraction { ok: true, ..Default::default() };
+        return GraphExtraction {
+            ok: true,
+            ..Default::default()
+        };
     }
 
     let user = build_user_message(content);
-    let result = call_llm(GRAPH_SYSTEM_PROMPT, &user, std::time::Duration::from_secs(30), cfg).await;
+    let result = call_llm(
+        GRAPH_SYSTEM_PROMPT,
+        &user,
+        std::time::Duration::from_secs(30),
+        cfg,
+    )
+    .await;
 
     match result {
         Ok(json_str) => parse_extraction_ok(&json_str),

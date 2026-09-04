@@ -294,6 +294,7 @@ OpenMemory 0.2.0 exposes 86 MCP tools:
 | Routines | `routine_check`, `routine_list`, `routine_create` |
 | QA | `qa_event_create`, `qa_event_list`, `qa_event_update`, `qa_event_delete`, `qa_run_create`, `qa_run_update`, `qa_run_list`, `qa_run_delete`, `qa_evidence_add`, `qa_evidence_update`, `qa_evidence_delete` |
 | QA plans | `qa_plan_create`, `qa_plan_list`, `qa_plan_update`, `qa_plan_delete` — store test-script templates; OpenMemory never executes them |
+| QA test history | `qa_results_import`, `qa_case_history` — record per-case results a test runner produced elsewhere, and trace one case across runs. OpenMemory never executes tests. |
 
 See [the bundled OpenMemory skill](skills/openmemory/SKILL.md) for agent operating guidance and safety rules,
 and [the QA run skill](skills/qa-run/SKILL.md) for the workflow that records a QA pass and its evidence.

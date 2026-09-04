@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="formatMoney renders whole units, matching the budget sheet for the same forecast" time="0.009990" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatMoney uses the row's own currency rather than assuming USD" time="0.000252" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatMoney keeps a sub-unit amount visible instead of rounding it to a flat zero" time="0.000154" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatMoneyDelta signs the amount and uses a real minus, not an ASCII hyphen" time="0.000248" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatMoneyDelta never renders a real change as &amp;quot;$0&amp;quot;" time="0.000166" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatPercentChange signs and rounds to whole percent" time="0.000117" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatPercentChange passes null through for a zero base total" time="0.000346" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="formatPercentChange keeps a sub-percent move visible" time="0.000092" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="budgetDiffIsEmpty is true only when neither side has any forecast" time="0.000142" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="countBudgetChanges ignores a pair where nothing moved" time="0.000255" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="countBudgetChanges counts a pair once however many things moved in it" time="0.000171" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="countBudgetChanges counts every unpaired row on both sides" time="0.000104" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="countBudgetChanges counts a currency swap even when nothing else moved" time="0.000091" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="summarizeBudgetDiff names both versions and drops the zero segments" time="0.000100" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="summarizeBudgetDiff omits the unpaired segments entirely when every row paired" time="0.000080" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="summarizeBudgetDiff says so rather than printing an empty line when neither side has budgets" time="0.000051" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="a currency-mismatched pair leaves the caller both raw totals and no delta to render" time="0.000211" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems keeps an unchanged service in the table" time="0.000228" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems marks a head-only service added and leaves the base side empty" time="0.000518" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems marks a base-only service removed and leaves the head side empty" time="0.000124" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems collapses a cost AND usage change into a single row" time="0.000114" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems reports a usage-only change without a cost delta" time="0.000073" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems computes no cost delta anywhere on a currency-mismatched pair" time="0.000128" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems lists base items in their own order, then the head-only additions" time="0.000129" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<testcase name="alignLineItems pairs repeated and untrimmed service names exactly as diffLineItems does" time="0.000110" classname="test" file="/home/toyofumi/projects/openmemory/apps/web/lib/budget-compare.test.ts"/>
+	<!-- tests 25 -->
+	<!-- suites 0 -->
+	<!-- pass 25 -->
+	<!-- fail 0 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 0 -->
+	<!-- todo 0 -->
+	<!-- duration_ms 98.636071 -->
+</testsuites>

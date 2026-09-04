@@ -212,6 +212,11 @@ services:
       OPENMEMORY_DESIGN_BLOB_DIR: /data/design-blobs
       OPENMEMORY_LIBRARY_BLOB_DIR: /data/library-blobs
       OPENMEMORY_QA_BLOB_DIR: /data/qa-blobs
+      OPENMEMORY_QA_NODE_BIN: ${OPENMEMORY_QA_NODE_BIN:-node}
+      OPENMEMORY_QA_PLAYWRIGHT_BIN: ${OPENMEMORY_QA_PLAYWRIGHT_BIN:-npx}
+      OPENMEMORY_QA_PYTEST_BIN: ${OPENMEMORY_QA_PYTEST_BIN:-pytest}
+      OPENMEMORY_QA_MAESTRO_BIN: ${OPENMEMORY_QA_MAESTRO_BIN:-maestro}
+      OPENMEMORY_QA_RUN_TIMEOUT_SECS: ${OPENMEMORY_QA_RUN_TIMEOUT_SECS:-300}
     depends_on:
       postgres:
         condition: service_healthy
