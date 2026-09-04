@@ -147,6 +147,40 @@ test('Run now executes the plan and the Runs count increments', async ({ page })
   expect(consoleErrors.filter((e) => e.includes('404'))).toEqual([]);
 });
 
+test('the plan pane opens read-only and Edit is the only way in', async ({ page }) => {
+  await openQaTab(page);
+  await page.getByRole('tab', { name: /^Plans/ }).click();
+
+  const edit = page.getByRole('button', { name: 'Edit', exact: true });
+  // count() does not auto-wait. Without this the test races the plans fetch and
+  // skips itself when it loses — a green run that asserted nothing at all.
+  await edit.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+  test.skip((await edit.count()) === 0, 'no plan available to edit');
+
+  const script = page.getByRole('textbox', { name: 'Plan script' });
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  // aria-label, not the title: the tooltip changes with the mode.
+  const deleteButton = page.getByRole('button', { name: 'Delete plan', exact: true });
+
+  // View mode: nothing here can change the plan.
+  await expect(script).toHaveJSProperty('readOnly', true);
+  await expect(save).toHaveCount(0);
+  await expect(deleteButton).toBeDisabled();
+
+  await edit.click();
+  await expect(script).toHaveJSProperty('readOnly', false);
+  await expect(save).toBeVisible();
+  await expect(deleteButton).toBeEnabled();
+
+  // Cancel restores the saved body rather than leaving the typing behind.
+  const saved = await script.inputValue();
+  await script.fill(`${saved}\n// discarded by Cancel`);
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(script).toHaveJSProperty('readOnly', true);
+  await expect(script).toHaveValue(saved);
+  await expect(edit).toBeVisible();
+});
+
 test('a saved QA plan version can be run explicitly and appears on the run row', async ({ page }) => {
   await openQaTab(page);
   await page.getByRole('tab', { name: /^Plans/ }).click();
@@ -172,11 +206,17 @@ test('a saved QA plan version can be run explicitly and appears on the run row',
     await page.getByRole('button', { name: 'Save version', exact: true }).click();
     await expect(page.getByText('v1 — home page only', { exact: true })).toBeVisible();
 
-    const script = page.locator('textarea').last();
+    // The pane is read-only unless it is in edit mode. A freshly created plan
+    // opens in edit mode already, so only click Edit when it is offered.
+    const editButton = page.getByRole('button', { name: 'Edit', exact: true });
+    if (await editButton.count()) await editButton.click();
+
+    const script = page.getByRole('textbox', { name: 'Plan script' });
     const v1Body = await script.inputValue();
     await script.fill(`${v1Body}\n// about page`);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    // Saving leaves edit mode, so Save is gone rather than merely disabled.
+    await expect(editButton).toBeVisible();
 
     await page.getByRole('button', { name: 'Save as version', exact: true }).click();
     await page.getByRole('textbox', { name: 'Version label' }).fill('home page plus about');

@@ -32,7 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Copy, Download, FileCode, History, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Copy, Download, FileCode, History, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PLAN_KINDS, planKindColor, planKindLabel } from '@/lib/qa-meta';
 import { getStarterTemplate } from '@/lib/qa-plan-templates';
@@ -50,6 +50,23 @@ import { QaPlanHistorySheet } from '@/components/qa-plan-history-sheet';
 const PLAN_LANGUAGES = ['typescript', 'javascript', 'yaml', 'python', 'other'] as const;
 
 const EMPTY_FORM = { name: '', kind: 'other' as string, language: 'other' as string, description: '', body: '' };
+
+// A revision detail carries the same five editable fields as the plan itself,
+// so one seeder serves selection, version switching, restore and Cancel alike.
+type PlanFormSource = Pick<QaPlan, 'name' | 'kind' | 'language' | 'description' | 'body'>;
+
+const formFromPlan = (plan: PlanFormSource) => ({
+  name: plan.name,
+  kind: plan.kind,
+  language: plan.language,
+  description: plan.description ?? '',
+  body: plan.body,
+});
+
+// Read-only fields use `readOnly`, never `disabled`: a disabled textarea renders
+// at half opacity and resists selection, which would make the script unreadable
+// and un-copyable in the very mode meant for reading it.
+const READ_ONLY_AREA = 'cursor-default bg-muted/30 focus-visible:ring-0';
 
 export function QaPlansPanel({
   projectId,
@@ -84,6 +101,11 @@ export function QaPlansPanel({
   // a background Refresh never clobbers an in-progress edit.
   const [form, setForm] = useState(EMPTY_FORM);
   const [isSaving, setIsSaving] = useState(false);
+
+  // The pane opens read-only and Edit is the only way into a mutation. A plan
+  // is opened far more often to read, run or copy than to change it, and with
+  // every field live a stray keystroke edited the plan with nothing to undo it.
+  const [isEditing, setIsEditing] = useState(false);
 
   // New plan dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -164,11 +186,10 @@ export function QaPlansPanel({
     setViewVersionKey(LIVE_VERSION_KEY);
     setRevisionDetails({});
     setRunVersionKey(LIVE_VERSION_KEY);
-    setForm(
-      plan
-        ? { name: plan.name, kind: plan.kind, language: plan.language, description: plan.description ?? '', body: plan.body }
-        : EMPTY_FORM
-    );
+    // Moving to another plan always lands read-only, so an edit session never
+    // follows the selection onto a plan the user only meant to look at.
+    setIsEditing(false);
+    setForm(plan ? formFromPlan(plan) : EMPTY_FORM);
   }, []);
 
   // Falls back to the first plan once nothing is selected or the selected one
@@ -191,6 +212,14 @@ export function QaPlansPanel({
   const selectedPlan = plans.find((p) => p.id === selectedPlanId) ?? null;
   const isViewingRevision = viewVersionKey !== LIVE_VERSION_KEY;
 
+  // Edit only exists where the pane can actually change the plan: the live
+  // working copy of a selected plan. A frozen revision is a view, not a draft.
+  // Deriving the active flag from `canEdit` rather than trusting the state
+  // alone makes a missed reset a no-op instead of an editable revision.
+  const canEdit = Boolean(selectedPlan) && !isViewingRevision;
+  const isEditingPlan = isEditing && canEdit;
+  const isReadOnly = !isEditingPlan;
+
   const loadRevisionDetail = useCallback(async (planId: string, versionKey: string): Promise<QaPlanRevisionDetail> => {
     const response = await fetch(`/api/projects/${projectId}/qa/plans/${planId}/revisions/${versionKey}`);
     const data = await response.json();
@@ -206,27 +235,13 @@ export function QaPlansPanel({
     if (!selectedPlan || viewVersionKey === LIVE_VERSION_KEY) return;
     const cached = revisionDetails[viewVersionKey];
     if (cached) {
-      setForm({
-        name: cached.name,
-        kind: cached.kind,
-        language: cached.language,
-        description: cached.description ?? '',
-        body: cached.body,
-      });
+      setForm(formFromPlan(cached));
       return;
     }
     let cancelled = false;
     void loadRevisionDetail(selectedPlan.id, viewVersionKey)
       .then((revision) => {
-        if (!cancelled) {
-          setForm({
-            name: revision.name,
-            kind: revision.kind,
-            language: revision.language,
-            description: revision.description ?? '',
-            body: revision.body,
-          });
-        }
+        if (!cancelled) setForm(formFromPlan(revision));
       })
       .catch((error) => {
         if (!cancelled) toast.error(error instanceof Error ? error.message : 'Failed to load plan revision');
@@ -235,6 +250,14 @@ export function QaPlansPanel({
       cancelled = true;
     };
   }, [loadRevisionDetail, revisionDetails, selectedPlan, viewVersionKey]);
+
+  // View mode shows the saved plan, so a Refresh — or another client's edit —
+  // must flow into it. The no-clobber rule above still holds while editing:
+  // that is the only time the form holds something the server does not have.
+  useEffect(() => {
+    if (isEditing || isViewingRevision || !selectedPlan) return;
+    setForm(formFromPlan(selectedPlan));
+  }, [isEditing, isViewingRevision, selectedPlan]);
 
   useEffect(() => {
     if (
@@ -292,6 +315,9 @@ export function QaPlansPanel({
       setShowCreateDialog(false);
       await fetchPlans();
       selectPlan(data);
+      // A plan that was just created from a starter template exists to be
+      // written, so skip the extra click into edit mode.
+      setIsEditing(true);
     } catch {
       toast.error('Failed to create plan');
     } finally {
@@ -299,8 +325,13 @@ export function QaPlansPanel({
     }
   };
 
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    if (selectedPlan) setForm(formFromPlan(selectedPlan));
+  };
+
   const handleSave = async () => {
-    if (!selectedPlan || isViewingRevision) return;
+    if (!selectedPlan || !isEditingPlan) return;
     const name = form.name.trim();
     if (!name) {
       toast.error('Name is required');
@@ -504,15 +535,10 @@ export function QaPlansPanel({
 
   const handleVersionChange = (key: string) => {
     setViewVersionKey(key);
-    if (key === LIVE_VERSION_KEY && selectedPlan) {
-      setForm({
-        name: selectedPlan.name,
-        kind: selectedPlan.kind,
-        language: selectedPlan.language,
-        description: selectedPlan.description ?? '',
-        body: selectedPlan.body,
-      });
-    }
+    // A frozen version is never editable, and coming back to Live must not
+    // silently resume an edit session the user did not re-open.
+    setIsEditing(false);
+    if (key === LIVE_VERSION_KEY && selectedPlan) setForm(formFromPlan(selectedPlan));
   };
 
   const handlePlanRestored = (restored: QaPlan) => {
@@ -612,7 +638,7 @@ export function QaPlansPanel({
           <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-y-auto px-4 py-3">
             {!selectedPlan ? (
               <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                Select a plan to edit it.
+                Select a plan to view it.
               </div>
             ) : (
               <>
@@ -623,37 +649,55 @@ export function QaPlansPanel({
                         {formatQaPlanRevisionLabel(latestRevision)}
                       </Badge>
                     )}
-                    <Input
-                      value={form.name}
-                      onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                      className="h-8 max-w-[240px] font-medium"
-                      aria-label="Plan name"
-                      disabled={isViewingRevision}
-                    />
-                    <Select value={form.kind} onValueChange={(v) => setForm((f) => ({ ...f, kind: v }))} disabled={isViewingRevision}>
-                      <SelectTrigger className="h-8 w-[130px]" aria-label="Plan kind">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {PLAN_KINDS.map((k) => (
-                          <SelectItem key={k} value={k}>
-                            {planKindLabel(k)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Select value={form.language} onValueChange={(v) => setForm((f) => ({ ...f, language: v }))} disabled={isViewingRevision}>
-                      <SelectTrigger className="h-8 w-[130px]" aria-label="Plan language">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {PLAN_LANGUAGES.map((l) => (
-                          <SelectItem key={l} value={l}>
-                            {l}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    {isEditingPlan ? (
+                      <>
+                        <Input
+                          value={form.name}
+                          onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                          className="h-8 max-w-[240px] font-medium"
+                          aria-label="Plan name"
+                        />
+                        <Select value={form.kind} onValueChange={(v) => setForm((f) => ({ ...f, kind: v }))}>
+                          <SelectTrigger className="h-8 w-[130px]" aria-label="Plan kind">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PLAN_KINDS.map((k) => (
+                              <SelectItem key={k} value={k}>
+                                {planKindLabel(k)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select value={form.language} onValueChange={(v) => setForm((f) => ({ ...f, language: v }))}>
+                          <SelectTrigger className="h-8 w-[130px]" aria-label="Plan language">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PLAN_LANGUAGES.map((l) => (
+                              <SelectItem key={l} value={l}>
+                                {l}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </>
+                    ) : (
+                      /* Kind and language read as badges here rather than as
+                         greyed-out selects: a disabled trigger says "broken",
+                         a badge says "this is what it is". */
+                      <>
+                        <h3 className="min-w-0 truncate text-sm font-medium" title={form.name}>
+                          {form.name}
+                        </h3>
+                        <Badge variant="outline" className={`shrink-0 text-xs ${planKindColor(form.kind)}`}>
+                          {planKindLabel(form.kind)}
+                        </Badge>
+                        <Badge variant="secondary" className="shrink-0 text-[10px]">
+                          {form.language}
+                        </Badge>
+                      </>
+                    )}
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <Select value={viewVersionKey} onValueChange={handleVersionChange} disabled={isLoadingRevisions}>
@@ -662,6 +706,25 @@ export function QaPlansPanel({
                       </SelectTrigger>
                       <SelectContent>{versionOptions}</SelectContent>
                     </Select>
+                    {isEditingPlan ? (
+                      <>
+                        <Button variant="ghost" size="sm" onClick={handleCancelEdit} disabled={isSaving}>
+                          Cancel
+                        </Button>
+                        <Button size="sm" onClick={handleSave} disabled={!isDirty || isSaving || !form.name.trim()}>
+                          {isSaving ? 'Saving…' : 'Save'}
+                        </Button>
+                      </>
+                    ) : (
+                      // Absent, not disabled, while a frozen version is on
+                      // screen: there is nothing here Edit could act on.
+                      canEdit && (
+                        <Button variant="outline" size="sm" onClick={() => setIsEditing(true)} title="Edit this plan">
+                          <Pencil className="mr-2 h-4 w-4" />
+                          Edit
+                        </Button>
+                      )
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -670,9 +733,6 @@ export function QaPlansPanel({
                       title={isDirty ? 'Save the live edits first' : 'Save the live plan as a labelled version'}
                     >
                       Save as version
-                    </Button>
-                    <Button size="sm" onClick={handleSave} disabled={!isDirty || isViewingRevision || isSaving || !form.name.trim()}>
-                      {isSaving ? 'Saving…' : 'Save'}
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => setIsHistoryOpen(true)}>
                       <History className="mr-2 h-4 w-4" />
@@ -692,9 +752,10 @@ export function QaPlansPanel({
                       variant="outline"
                       size="icon"
                       className="h-8 w-8 text-destructive hover:text-destructive"
-                      title="Delete"
+                      aria-label="Delete plan"
+                      title={isEditingPlan ? 'Delete this plan' : 'Click Edit to delete this plan'}
                       onClick={() => setDeletePlan(selectedPlan)}
-                      disabled={isViewingRevision}
+                      disabled={!isEditingPlan}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -702,19 +763,26 @@ export function QaPlansPanel({
                 </div>
 
                 <div className="flex flex-1 min-h-0 flex-col gap-3 pt-3">
-                  {isViewingRevision && (
+                  {isViewingRevision ? (
                     <p className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                       Viewing {formatQaPlanVersionLabel(viewVersionKey, revisions)}. Select Live (current) to edit the working copy.
                     </p>
-                  )}
+                  ) : isEditingPlan ? (
+                    <p className="rounded-md border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                      {isDirty ? 'Editing the live plan — unsaved changes.' : 'Editing the live plan.'} Cancel discards them.
+                    </p>
+                  ) : null}
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground font-normal">Description</Label>
                     <Textarea
                       value={form.description}
                       onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-                      placeholder="What this plan covers"
+                      // A read-only field must not prompt for typing it cannot accept.
+                      placeholder={isReadOnly ? 'No description' : 'What this plan covers'}
                       rows={2}
-                      disabled={isViewingRevision}
+                      aria-label="Plan description"
+                      readOnly={isReadOnly}
+                      className={isReadOnly ? READ_ONLY_AREA : undefined}
                     />
                   </div>
                   <div className="flex min-h-0 flex-1 flex-col space-y-1.5">
@@ -722,9 +790,10 @@ export function QaPlansPanel({
                     <Textarea
                       value={form.body}
                       onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
-                      className="font-mono text-xs flex-1 min-h-[360px] resize-none"
+                      className={`font-mono text-xs flex-1 min-h-[360px] resize-none ${isReadOnly ? READ_ONLY_AREA : ''}`}
                       spellCheck={false}
-                      disabled={isViewingRevision}
+                      aria-label="Plan script"
+                      readOnly={isReadOnly}
                     />
                   </div>
                 </div>
