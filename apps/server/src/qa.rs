@@ -106,6 +106,8 @@ pub struct QaRunView {
     pub project_id: Uuid,
     pub event_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
+    pub plan_id: Option<Uuid>,
+    pub plan_revision_num: Option<i32>,
     pub title: String,
     pub status: String,
     pub summary: Option<String>,
@@ -133,6 +135,8 @@ pub struct QaRunListItem {
     pub project_id: Uuid,
     pub event_id: Option<Uuid>,
     pub task_id: Option<Uuid>,
+    pub plan_id: Option<Uuid>,
+    pub plan_revision_num: Option<i32>,
     pub title: String,
     pub status: String,
     pub summary: Option<String>,
@@ -540,6 +544,26 @@ pub async fn ensure_qa_tables(db: &PgPool) -> Result<()> {
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_project_qa_plans_project_updated ON project_qa_plans(project_id, updated_at DESC)")
         .execute(db).await.ok();
+
+    // Runs predate plan versioning. Both links remain nullable so the existing
+    // production rows stay readable, while a run produced from a plan can pin
+    // the exact frozen revision that supplied its source.
+    sqlx::query(
+        "ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES project_qa_plans(id) ON DELETE SET NULL",
+    )
+    .execute(db)
+    .await
+    .ok();
+    sqlx::query("ALTER TABLE project_qa_runs ADD COLUMN IF NOT EXISTS plan_revision_num INTEGER")
+        .execute(db)
+        .await
+        .ok();
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_qa_runs_plan_id ON project_qa_runs(plan_id, plan_revision_num)",
+    )
+    .execute(db)
+    .await
+    .ok();
 
     Ok(())
 }

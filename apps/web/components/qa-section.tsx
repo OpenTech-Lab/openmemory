@@ -8,12 +8,14 @@ import { QaPlansPanel } from '@/components/qa-plans-panel';
 export function QaSection({ projectId }: { projectId: string }) {
   const [subTab, setSubTab] = useState<'runs' | 'plans'>('runs');
   const [focusPlanId, setFocusPlanId] = useState<string | null>(null);
+  const [focusPlanRevisionNum, setFocusPlanRevisionNum] = useState<number | null>(null);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
   const [runCount, setRunCount] = useState<number | null>(null);
   const [planCount, setPlanCount] = useState<number | null>(null);
 
-  const openPlan = useCallback((planId: string) => {
+  const openPlan = useCallback((planId: string, revisionNum?: number | null) => {
     setFocusPlanId(planId);
+    setFocusPlanRevisionNum(revisionNum ?? null);
     setSubTab('plans');
   }, []);
 
@@ -94,6 +96,7 @@ export function QaSection({ projectId }: { projectId: string }) {
             <QaPlansPanel
               projectId={projectId}
               focusPlanId={focusPlanId}
+              focusPlanRevisionNum={focusPlanRevisionNum}
               onCountChange={setPlanCount}
               onOpenRun={openRun}
               // Running a plan creates a run from the Plans tab, where QaPanel is

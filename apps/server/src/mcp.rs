@@ -10,6 +10,7 @@ mod library;
 mod mcp_app;
 mod project_graphs;
 mod qa;
+mod qa_plan_revisions;
 mod resources;
 mod workflows;
 

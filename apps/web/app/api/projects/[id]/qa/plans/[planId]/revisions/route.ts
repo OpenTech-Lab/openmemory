@@ -13,15 +13,10 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-export async function POST(req: Request, { params }: Params) {
-  const { id, planId } = await params;
-  const raw = await req.text();
-  const body = raw.trim() ? JSON.parse(raw) : undefined;
+async function proxy(url: string, method: string, body?: unknown) {
   try {
-    // A plan run is a test suite: it can legitimately take minutes, so this
-    // proxy must not impose a shorter deadline than the server's own timeout.
-    const response = await fetch(`${API_URL}/projects/${id}/qa/plans/${planId}/run`, {
-      method: 'POST',
+    const response = await fetch(url, {
+      method,
       headers: authHeaders(),
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -31,7 +26,19 @@ export async function POST(req: Request, { params }: Params) {
       : { error: `Upstream error (${response.status}): ${(await response.text()).slice(0, 200)}` };
     return NextResponse.json(data, { status: response.status });
   } catch (error) {
-    console.error('projects/[id]/qa/plans/[planId]/run proxy error:', error);
-    return NextResponse.json({ error: 'Failed to reach the server' }, { status: 500 });
+    console.error('projects/[id]/qa/plans/[planId]/revisions proxy error:', error);
+    return NextResponse.json({ error: 'Failed to fetch from server' }, { status: 500 });
   }
+}
+
+export async function GET(_req: Request, { params }: Params) {
+  const { id, planId } = await params;
+  return proxy(`${API_URL}/projects/${id}/qa/plans/${planId}/revisions`, 'GET');
+}
+
+export async function POST(req: Request, { params }: Params) {
+  const { id, planId } = await params;
+  const raw = await req.text();
+  const body = raw.trim() ? JSON.parse(raw) : undefined;
+  return proxy(`${API_URL}/projects/${id}/qa/plans/${planId}/revisions`, 'POST', body);
 }

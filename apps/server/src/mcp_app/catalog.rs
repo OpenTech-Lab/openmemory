@@ -1370,7 +1370,9 @@ impl McpServer {
                             "title": {"type": "string", "description": "Optional title override"},
                             "runner": {"type": "string", "description": "Optional runner override"},
                             "task_id": {"type": "string", "description": "Optional UUID of the task this result verifies"},
-                            "event_id": {"type": "string", "description": "Optional UUID of the QA event that groups this result"}
+                            "event_id": {"type": "string", "description": "Optional UUID of the QA event that groups this result"},
+                            "plan_id": {"type": "string", "description": "Optional UUID of the QA plan that produced this result"},
+                            "plan_revision_num": {"type": "integer", "description": "Optional frozen QA plan version number recorded with this result"}
                         },
                         "required": ["project_id", "file_path", "kind"]
                     }
@@ -1494,6 +1496,42 @@ impl McpServer {
                         "type": "object",
                         "properties": {
                             "plan_id": {"type": "string", "description": "UUID of the QA plan"}
+                        },
+                        "required": ["plan_id"]
+                    }
+                },
+                {
+                    "name": "qa_plan_revision_list",
+                    "description": "List frozen revisions of a QA plan, newest first. Bodies are omitted; use qa_plan_revision_get for one version.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string", "description": "UUID of the QA plan"}
+                        },
+                        "required": ["plan_id"]
+                    }
+                },
+                {
+                    "name": "qa_plan_revision_get",
+                    "description": "Read one frozen QA plan revision, including its exact source body.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string", "description": "UUID of the QA plan"},
+                            "revision_num": {"type": "integer", "description": "Version number, starting at 1"}
+                        },
+                        "required": ["plan_id", "revision_num"]
+                    }
+                },
+                {
+                    "name": "qa_plan_revision_cut",
+                    "description": "Cut the current QA plan into an immutable revision. Unlabelled identical cuts reuse the latest revision; an optional label creates a human-readable milestone.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string", "description": "UUID of the QA plan"},
+                            "label": {"type": "string", "description": "Optional human-readable version label"},
+                            "created_by": {"type": "string", "description": "agent | human (default: agent)"}
                         },
                         "required": ["plan_id"]
                     }

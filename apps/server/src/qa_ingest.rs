@@ -47,6 +47,8 @@ pub(crate) struct IngestEnvelope {
     pub(crate) event_id: Option<Uuid>,
     pub(crate) task_id: Option<Uuid>,
     pub(crate) external_ref: Option<String>,
+    pub(crate) plan_id: Option<Uuid>,
+    pub(crate) plan_revision_num: Option<i32>,
     #[serde(default)]
     pub(crate) cases: Vec<IngestCase>,
     #[serde(default)]
@@ -504,6 +506,43 @@ pub(crate) async fn ingest_run(
         validate_event_for_project(db, event_id, project_id).await?;
     }
 
+    match (envelope.plan_id, envelope.plan_revision_num) {
+        (None, None) => {}
+        (None, Some(_)) => anyhow::bail!("plan_revision_num requires plan_id"),
+        (Some(plan_id), plan_revision_num) => {
+            let plan_exists: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM project_qa_plans WHERE id = $1 AND project_id = $2",
+            )
+            .bind(plan_id)
+            .bind(project_id)
+            .fetch_optional(db)
+            .await
+            .context("failed to validate QA plan for ingest")?;
+            if plan_exists.is_none() {
+                anyhow::bail!("plan must belong to the same project as the QA run");
+            }
+
+            if let Some(revision_num) = plan_revision_num {
+                if revision_num < 1 {
+                    anyhow::bail!("plan_revision_num must be a positive integer");
+                }
+                let revision_exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM project_qa_plan_revisions \
+                     WHERE plan_id = $1 AND project_id = $2 AND revision_num = $3)",
+                )
+                .bind(plan_id)
+                .bind(project_id)
+                .bind(revision_num)
+                .fetch_one(db)
+                .await
+                .context("failed to validate QA plan revision for ingest")?;
+                if !revision_exists {
+                    anyhow::bail!("QA plan revision not found");
+                }
+            }
+        }
+    }
+
     let has_absolute_paths = envelope
         .cases
         .iter()
@@ -533,9 +572,9 @@ pub(crate) async fn ingest_run(
             (project_id, event_id, task_id, title, status, summary, target,
              external_ref, created_by, started_at, finished_at, kind, runner,
              total_cases, passed_cases, failed_cases, skipped_cases, duration_ms,
-             commit_sha, branch)
+             commit_sha, branch, plan_id, plan_revision_num)
         VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, 'agent', $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17)
+                $11, $12, $13, $14, $15, $16, $17, $18, $19)
         RETURNING *
         "#,
     )
@@ -556,6 +595,8 @@ pub(crate) async fn ingest_run(
     .bind(envelope.duration_ms)
     .bind(envelope.commit_sha.as_deref())
     .bind(envelope.branch.as_deref())
+    .bind(envelope.plan_id)
+    .bind(envelope.plan_revision_num)
     .fetch_one(&mut *tx)
     .await
     .context("failed to insert ingested QA run")?;
@@ -756,6 +797,8 @@ mod tests {
             event_id: None,
             task_id: None,
             external_ref: None,
+            plan_id: None,
+            plan_revision_num: None,
             cases,
             metrics: Vec::new(),
             sources: Vec::new(),

@@ -45,7 +45,7 @@ import {
 
 interface QaTestsPanelProps {
   projectId: string;
-  onOpenPlan?: (planId: string) => void;
+  onOpenPlan?: (planId: string, revisionNum?: number | null) => void;
   /** Fired after a plan is created, so an unmounted plans panel's tab count stays honest. */
   onPlanCreated?: () => void;
   run: {

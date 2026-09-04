@@ -27,7 +27,7 @@ mod tests;
 
 use crate::crypto::{decrypt_value, derive_key, encrypt_value, EnvParamRow};
 use crate::falkordb::{self, FalkorDbClient};
-use crate::{design_budgets, design_revisions, forecasts, indexer, library, project_graphs, qa, resources, workflows};
+use crate::{design_budgets, design_revisions, forecasts, indexer, library, project_graphs, qa, qa_plan_revisions, resources, workflows};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use opensearch::OpenSearchClient;

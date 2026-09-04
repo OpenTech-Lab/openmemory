@@ -291,6 +291,7 @@ impl McpServer {
         // Lands here, not up near project_designs/library, because its FK to
         // project_tasks requires that table to already exist.
         qa::ensure_qa_tables(&db).await?;
+        qa_plan_revisions::ensure_table(&db).await?;
 
         // OpenSearch connection
         let opensearch_url =

@@ -14,6 +14,7 @@ mod llm;
 mod qa;
 mod qa_blobs;
 mod qa_ingest;
+mod qa_plan_revisions;
 mod qa_runner;
 mod resources;
 mod workflows;
@@ -577,6 +578,22 @@ struct UpdateQaPlanPayload {
 #[derive(Debug, Deserialize)]
 struct ListQaPlansParams {
     kind: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CreateQaPlanRevisionPayload {
+    label: Option<String>,
+    created_by: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RestoreQaPlanPayload {
+    created_by: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RunQaPlanPayload {
+    revision_num: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1815,6 +1832,18 @@ async fn main() -> anyhow::Result<()> {
             "/projects/:id/qa/plans/:plan_id",
             get(get_project_qa_plan).patch(update_project_qa_plan).delete(delete_project_qa_plan),
         )
+        .route(
+            "/projects/:id/qa/plans/:plan_id/revisions",
+            get(list_project_qa_plan_revisions).post(create_project_qa_plan_revision),
+        )
+        .route(
+            "/projects/:id/qa/plans/:plan_id/revisions/:revision_num",
+            get(get_project_qa_plan_revision),
+        )
+        .route(
+            "/projects/:id/qa/plans/:plan_id/revisions/:revision_num/restore",
+            post(restore_project_qa_plan_revision),
+        )
         .route("/projects/:id/qa/plans/:plan_id/run", post(run_project_qa_plan))
         .route("/forecast-profiles", get(list_forecast_profiles).post(create_forecast_profile))
         .route("/forecast-profiles/:id", axum::routing::put(update_forecast_profile).delete(delete_forecast_profile))
@@ -2366,6 +2395,7 @@ async fn run_migrations(db: &PgPool) -> anyhow::Result<()> {
     design_revisions::ensure_table(db).await?;
     library::ensure_library_table(db).await?;
     qa::ensure_qa_tables(db).await?;
+    qa_plan_revisions::ensure_table(db).await?;
 
     workflows::ensure_table(db).await?;
 
@@ -8519,6 +8549,23 @@ async fn update_project_qa_plan(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(error) => {
+            error!("update_project_qa_plan plan lookup error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    }
+
+    // Preserve the pre-edit source before the live plan row is overwritten.
+    // An unlabelled automatic cut is deduplicated by the revision module, so
+    // saving the same form repeatedly does not create version noise.
+    if let Err(error) = qa_plan_revisions::cut(&state.db, plan_id, None).await {
+        error!("update_project_qa_plan revision cut error: {error}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+    }
+
     let result = qa::update_plan(
         &state.db,
         plan_id,
@@ -8559,7 +8606,7 @@ async fn delete_project_qa_plan(
     }
 }
 
-async fn run_project_qa_plan(
+async fn list_project_qa_plan_revisions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((project_id, plan_id)): Path<(Uuid, Uuid)>,
@@ -8568,14 +8615,178 @@ async fn run_project_qa_plan(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
 
-    let plan = match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
-        Ok(Some(plan)) => plan,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response();
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(error) => {
+            error!("list_project_qa_plan_revisions plan lookup error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
         }
+    }
+
+    match qa_plan_revisions::list(&state.db, plan_id).await {
+        Ok(revisions) => Json(serde_json::json!({"revisions": revisions, "total": revisions.len()})).into_response(),
+        Err(error) => {
+            error!("list_project_qa_plan_revisions error: {error}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn get_project_qa_plan_revision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id, revision_num)): Path<(Uuid, Uuid, i32)>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(error) => {
+            error!("get_project_qa_plan_revision plan lookup error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    }
+
+    match qa_plan_revisions::get(&state.db, plan_id, revision_num).await {
+        Ok(Some(revision)) => Json(serde_json::json!(revision)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan revision not found"}))).into_response(),
+        Err(error) => {
+            error!("get_project_qa_plan_revision error: {error}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response()
+        }
+    }
+}
+
+async fn create_project_qa_plan_revision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id)): Path<(Uuid, Uuid)>,
+    payload: Option<Json<CreateQaPlanRevisionPayload>>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let payload = payload.map(|Json(value)| value).unwrap_or_default();
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(error) => {
+            error!("create_project_qa_plan_revision plan lookup error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    }
+
+    let created_by = payload.created_by.as_deref().unwrap_or("agent");
+    match qa_plan_revisions::cut_as(&state.db, plan_id, payload.label.as_deref(), created_by).await {
+        Ok(Some(revision)) => (StatusCode::CREATED, Json(serde_json::json!(revision))).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": error.to_string()}))).into_response(),
+    }
+}
+
+async fn restore_project_qa_plan_revision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id, revision_num)): Path<(Uuid, Uuid, i32)>,
+    payload: Option<Json<RestoreQaPlanPayload>>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+        Err(error) => {
+            error!("restore_project_qa_plan_revision plan lookup error: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    }
+
+    let created_by = payload
+        .map(|Json(value)| value.created_by)
+        .flatten()
+        .unwrap_or_else(|| "agent".to_string());
+    match qa_plan_revisions::restore_as(&state.db, plan_id, revision_num, &created_by).await {
+        Ok(Some(plan)) => Json(serde_json::json!(plan)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan revision not found"}))).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": error.to_string()}))).into_response(),
+    }
+}
+
+fn qa_plan_from_revision(revision: qa_plan_revisions::QaPlanRevision) -> qa::QaPlanView {
+    qa::QaPlanView {
+        id: revision.plan_id,
+        project_id: revision.project_id,
+        name: revision.name,
+        kind: revision.kind,
+        language: revision.language,
+        description: revision.description,
+        body: revision.body,
+        created_by: revision.created_by,
+        created_at: revision.created_at,
+        updated_at: revision.created_at,
+    }
+}
+
+async fn run_project_qa_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, plan_id)): Path<(Uuid, Uuid)>,
+    payload: Option<Json<RunQaPlanPayload>>,
+) -> impl IntoResponse {
+    if !is_authenticated(&headers, &state.api_token) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let requested_revision_num = payload
+        .map(|Json(value)| value.revision_num)
+        .flatten();
+    if requested_revision_num.is_some_and(|number| number < 1) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "revision_num must be a positive integer"}))).into_response();
+    }
+
+    match qa::get_plan(&state.db, plan_id, Some(project_id)).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
         Err(error) => {
             error!("run_project_qa_plan plan lookup error: {error}");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+        }
+    }
+
+    let (plan, plan_revision_num) = match requested_revision_num {
+        Some(revision_num) => {
+            let revision = match qa_plan_revisions::get(&state.db, plan_id, revision_num).await {
+                Ok(Some(revision)) if revision.project_id == project_id => revision,
+                Ok(Some(_)) | Ok(None) => {
+                    return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan revision not found"}))).into_response();
+                }
+                Err(error) => {
+                    error!("run_project_qa_plan revision lookup error: {error}");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+                }
+            };
+            (qa_plan_from_revision(revision), Some(revision_num))
+        }
+        None => {
+            // Cut and execute the same frozen snapshot. Re-reading the live row
+            // after the cut could race with an editor and pin the wrong source.
+            let revision = match qa_plan_revisions::cut(&state.db, plan_id, None).await {
+                Ok(Some(revision)) => revision,
+                Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "QA plan not found"}))).into_response(),
+                Err(error) => {
+                    error!("run_project_qa_plan revision cut error: {error}");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": error.to_string()}))).into_response();
+                }
+            };
+            let revision_num = revision.revision_num;
+            (qa_plan_from_revision(revision), Some(revision_num))
         }
     };
 
@@ -8610,9 +8821,11 @@ async fn run_project_qa_plan(
         }
     };
 
-    match qa_runner::execute_plan(&state.db, &plan, &project_path).await {
+    match qa_runner::execute_plan(&state.db, &plan, &project_path, plan_revision_num).await {
         Ok(run) => Json(serde_json::json!({
             "run_id": run.id,
+            "plan_id": run.plan_id,
+            "plan_revision_num": run.plan_revision_num,
             "status": run.status,
             "passed": run.passed_cases,
             "failed": run.failed_cases,

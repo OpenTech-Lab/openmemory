@@ -93,6 +93,8 @@ test('every QA read endpoint rejects a missing token', async (t) => {
   for (const path of [
     `/projects/${projectId}/qa/runs`,
     `/projects/${projectId}/qa/plans`,
+    `/projects/${projectId}/qa/plans/00000000-0000-0000-0000-000000000000/revisions`,
+    `/projects/${projectId}/qa/plans/00000000-0000-0000-0000-000000000000/revisions/1`,
     `/projects/${projectId}/qa/events`,
     `/projects/${projectId}/qa/metrics`,
   ]) {
@@ -286,6 +288,87 @@ test('a plan round-trips through create, read, update and delete', async (t) => 
 
   const gone = await api(`/projects/${projectId}/qa/plans/${created.id}`);
   assert.equal(gone.status, 404);
+});
+
+test('plan revisions cut, list, get, restore, and pin an explicit run', async (t) => {
+  if (!requireServer(t)) return;
+
+  const v1Body = "const test = require('node:test');\ntest('home page only', () => {});\n";
+  const v2Body = `${v1Body}test('about page', () => {});\n`;
+  const createdResponse = await api(`/projects/${projectId}/qa/plans`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `api versioned plan ${Date.now()}`,
+      kind: 'other',
+      language: 'javascript',
+      body: v1Body,
+    }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json();
+  assert.ok(created.id);
+  createdPlans.push(created.id);
+
+  const v1Response = await api(`/projects/${projectId}/qa/plans/${created.id}/revisions`, {
+    method: 'POST',
+    body: JSON.stringify({ label: 'home page only', created_by: 'human' }),
+  });
+  assert.equal(v1Response.status, 201);
+  const v1 = await v1Response.json();
+  assert.equal(v1.revision_num, 1);
+  assert.equal(v1.body, v1Body);
+
+  const updateResponse = await api(`/projects/${projectId}/qa/plans/${created.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ body: v2Body }),
+  });
+  assert.equal(updateResponse.status, 200);
+
+  const v2Response = await api(`/projects/${projectId}/qa/plans/${created.id}/revisions`, {
+    method: 'POST',
+    body: JSON.stringify({ label: 'home page plus about', created_by: 'human' }),
+  });
+  assert.equal(v2Response.status, 201);
+  const v2 = await v2Response.json();
+  assert.equal(v2.revision_num, 2);
+
+  const listedResponse = await api(`/projects/${projectId}/qa/plans/${created.id}/revisions`);
+  assert.equal(listedResponse.status, 200);
+  const listed = await listedResponse.json();
+  assert.deepEqual(listed.revisions.map((revision: { revision_num: number }) => revision.revision_num), [2, 1]);
+  assert.ok(!('body' in listed.revisions[0]), 'revision lists must omit the source body');
+
+  const gotV1Response = await api(`/projects/${projectId}/qa/plans/${created.id}/revisions/1`);
+  assert.equal(gotV1Response.status, 200);
+  assert.equal((await gotV1Response.json()).body, v1Body);
+
+  const restoreResponse = await api(`/projects/${projectId}/qa/plans/${created.id}/revisions/1/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ created_by: 'human' }),
+  });
+  assert.equal(restoreResponse.status, 200);
+  assert.equal((await restoreResponse.json()).body, v1Body);
+
+  // The state replaced by restore remains recoverable as v2; restore did not
+  // rewrite or delete the prior frozen source.
+  const gotV2Response = await api(`/projects/${projectId}/qa/plans/${created.id}/revisions/2`);
+  assert.equal((await gotV2Response.json()).body, v2Body);
+
+  const runResponse = await api(`/projects/${projectId}/qa/plans/${created.id}/run`, {
+    method: 'POST',
+    body: JSON.stringify({ revision_num: 1 }),
+  });
+  const runRaw = await runResponse.text();
+  assert.ok(runResponse.status === 200 || runResponse.status === 503, `run returned ${runResponse.status}: ${runRaw}`);
+  const runBody = JSON.parse(runRaw);
+  const runId = runBody.run_id ?? runBody.id;
+  assert.ok(runId, `explicit revision run did not create a run: ${runRaw}`);
+  createdRuns.push(runId);
+
+  const runDetail = await (await api(`/projects/${projectId}/qa/runs/${runId}`)).json();
+  const run = runDetail.run ?? runDetail;
+  assert.equal(run.plan_id, created.id);
+  assert.equal(run.plan_revision_num, 1);
 });
 
 test('an unknown test source sha is a 404, not a 500', async (t) => {

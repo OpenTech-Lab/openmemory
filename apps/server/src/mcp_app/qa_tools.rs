@@ -367,7 +367,7 @@ impl McpServer {
             object.insert("runner".to_string(), json!(runner));
         }
 
-        for field in ["task_id", "event_id"] {
+        for field in ["task_id", "event_id", "plan_id"] {
             let Some(value) = args.get(field) else {
                 continue;
             };
@@ -380,6 +380,16 @@ impl McpServer {
                 .parse()
                 .with_context(|| format!("invalid {field} UUID"))?;
             object.insert(field.to_string(), json!(parsed));
+        }
+        if let Some(value) = args.get("plan_revision_num") {
+            if !value.is_null() {
+                let revision_num = value
+                    .as_i64()
+                    .context("plan_revision_num must be an integer")?;
+                let revision_num = i32::try_from(revision_num)
+                    .context("plan_revision_num must be a 32-bit integer")?;
+                object.insert("plan_revision_num".to_string(), json!(revision_num));
+            }
         }
 
         let url = format!("{}/projects/{}/qa/ingest", qa_api_base(), project_id);
@@ -604,6 +614,90 @@ impl McpServer {
         Ok(json!({ "content": [{ "type": "text", "text": text }] }))
     }
 
+    pub(super) async fn qa_plan_revision_list(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let plan_id: Uuid = args["plan_id"]
+            .as_str()
+            .context("missing plan_id")?
+            .parse()
+            .context("invalid plan_id UUID")?;
+        let revisions = qa_plan_revisions::list(&self.db, plan_id).await?;
+        let text = if revisions.is_empty() {
+            format!("No revisions for QA plan {}.", plan_id)
+        } else {
+            let mut lines = vec![format!("QA plan revisions ({}):", revisions.len())];
+            for revision in &revisions {
+                let label = revision
+                    .label
+                    .as_deref()
+                    .map(|value| format!(" — {}", value))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "• v{}{} ({}/{}) [{}] created_by={}",
+                    revision.revision_num,
+                    label,
+                    revision.kind,
+                    revision.language,
+                    revision.id,
+                    revision.created_by
+                ));
+            }
+            lines.join("\n")
+        };
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    pub(super) async fn qa_plan_revision_get(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let plan_id: Uuid = args["plan_id"]
+            .as_str()
+            .context("missing plan_id")?
+            .parse()
+            .context("invalid plan_id UUID")?;
+        let revision_num = i32::try_from(
+            args["revision_num"]
+                .as_i64()
+                .context("missing revision_num")?,
+        )
+        .context("revision_num must be a 32-bit integer")?;
+        let revision = qa_plan_revisions::get(&self.db, plan_id, revision_num)
+            .await?
+            .with_context(|| format!("QA plan revision v{} not found", revision_num))?;
+        let text = format!(
+            "QA plan revision v{} — {}\nkind={} language={} label={} created_by={}\n\n{}",
+            revision.revision_num,
+            revision.name,
+            revision.kind,
+            revision.language,
+            revision.label.as_deref().unwrap_or("-"),
+            revision.created_by,
+            revision.body
+        );
+        Ok(json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    pub(super) async fn qa_plan_revision_cut(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
+        let plan_id: Uuid = args["plan_id"]
+            .as_str()
+            .context("missing plan_id")?
+            .parse()
+            .context("invalid plan_id UUID")?;
+        let label = args.get("label").and_then(|value| value.as_str());
+        let created_by = args["created_by"].as_str().unwrap_or("agent");
+        let revision = qa_plan_revisions::cut_as(&self.db, plan_id, label, created_by)
+            .await?
+            .with_context(|| format!("QA plan '{}' not found", plan_id))?;
+        let label = revision
+            .label
+            .as_deref()
+            .map(|value| format!(" — {}", value))
+            .unwrap_or_default();
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Cut QA plan revision v{}{} [{}]", revision.revision_num, label, revision.id)
+            }]
+        }))
+    }
+
     pub(super) async fn qa_plan_update(&mut self, args: &serde_json::Value) -> Result<serde_json::Value> {
         let plan_id: Uuid = args["plan_id"].as_str().context("missing plan_id")?.parse().context("invalid plan_id UUID")?;
         let name = args["name"].as_str();
@@ -614,6 +708,11 @@ impl McpServer {
         // "key present" (Some(...), whether null — clear — or a string — set),
         // matching the `Option<Option<T>>` tri-state the HTTP PATCH payloads use.
         let description: Option<Option<&str>> = args.get("description").map(|v| v.as_str());
+
+        // MCP agents edit the same live parent row as the HTTP editor. Preserve
+        // its current source before applying a destructive update; unlabelled
+        // identical cuts are deduplicated by the revision module.
+        qa_plan_revisions::cut(&self.db, plan_id, None).await?;
 
         match qa::update_plan(&self.db, plan_id, None, name, kind, language, description, body).await? {
             Some(plan) => {

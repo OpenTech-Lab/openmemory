@@ -146,3 +146,55 @@ test('Run now executes the plan and the Runs count increments', async ({ page })
   // The 404 that shipped: the proxy route the client calls must actually exist.
   expect(consoleErrors.filter((e) => e.includes('404'))).toEqual([]);
 });
+
+test('a saved QA plan version can be run explicitly and appears on the run row', async ({ page }) => {
+  await openQaTab(page);
+  await page.getByRole('tab', { name: /^Plans/ }).click();
+
+  const name = `versioned e2e plan ${Date.now()}`;
+  let planId: string | null = null;
+  try {
+    await page.getByRole('button', { name: 'New Plan', exact: true }).click();
+    await page.locator('#plan-name').fill(name);
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Plan name' })).toHaveValue(name);
+    planId = await page.evaluate(async ({ id, planName }) => {
+      const response = await fetch(`/api/projects/${id}/qa/plans`);
+      const data = await response.json();
+      return data.plans?.find((plan: { name: string; id: string }) => plan.name === planName)?.id ?? null;
+    }, { id: PROJECT_ID, planName: name });
+    expect(planId).toBeTruthy();
+
+    // Freeze the newly-created working copy as v1 before editing it. The
+    // automatic pre-save cut then deduplicates against this exact snapshot.
+    await page.getByRole('button', { name: 'Save as version', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Version label' }).fill('home page only');
+    await page.getByRole('button', { name: 'Save version', exact: true }).click();
+    await expect(page.getByText('v1 — home page only', { exact: true })).toBeVisible();
+
+    const script = page.locator('textarea').last();
+    const v1Body = await script.inputValue();
+    await script.fill(`${v1Body}\n// about page`);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+
+    await page.getByRole('button', { name: 'Save as version', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Version label' }).fill('home page plus about');
+    await page.getByRole('button', { name: 'Save version', exact: true }).click();
+    await expect(page.getByText('v2 — home page plus about', { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Run', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Version to run' }).click();
+    await page.getByRole('option', { name: /^v1 — home page only$/ }).click();
+    await page.getByRole('button', { name: 'Run now', exact: true }).click();
+
+    await page.getByRole('tab', { name: /^Runs/ }).click();
+    await expect(page.getByText(`${name} · v1`, { exact: true })).toBeVisible({ timeout: 45_000 });
+  } finally {
+    if (planId) {
+      await page.evaluate(async ({ id, revisionId }) => {
+        await fetch(`/api/projects/${id}/qa/plans/${revisionId}`, { method: 'DELETE' });
+      }, { id: PROJECT_ID, revisionId: planId });
+    }
+  }
+});

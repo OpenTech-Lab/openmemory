@@ -75,6 +75,8 @@ interface QaRun {
   finished_at: string | null;
   created_at: string;
   updated_at: string;
+  plan_id: string | null;
+  plan_revision_num: number | null;
   kind?: string;
   runner?: string | null;
   total_cases?: number;
@@ -158,7 +160,7 @@ export function QaPanel({
   onPlanCreated,
 }: {
   projectId: string;
-  onOpenPlan?: (planId: string) => void;
+  onOpenPlan?: (planId: string, revisionNum?: number | null) => void;
   focusRunId?: string | null;
   onCountChange?: (count: number) => void;
   onPlanCreated?: () => void;
@@ -982,7 +984,21 @@ export function QaPanel({
                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         )}
                       </div>
-                      <p className="text-sm font-medium truncate mt-1">{run.title}</p>
+                      {run.plan_id && onOpenPlan ? (
+                        <button
+                          type="button"
+                          className="mt-1 block max-w-full truncate text-left text-sm font-medium hover:underline"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenPlan(run.plan_id!, run.plan_revision_num);
+                          }}
+                          title={run.plan_revision_num ? `Open QA plan v${run.plan_revision_num}` : 'Open QA plan'}
+                        >
+                          {run.title}{run.plan_revision_num ? ` · v${run.plan_revision_num}` : ''}
+                        </button>
+                      ) : (
+                        <p className="text-sm font-medium truncate mt-1">{run.title}</p>
+                      )}
                       {run.target && <p className="text-xs text-muted-foreground truncate">{run.target}</p>}
                     </div>
                     <div className="flex items-center gap-0.5 shrink-0">

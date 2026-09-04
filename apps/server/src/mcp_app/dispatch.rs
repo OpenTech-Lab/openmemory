@@ -103,6 +103,9 @@ impl McpServer {
             "qa_plan_list" => self.qa_plan_list(arguments).await,
             "qa_plan_update" => self.qa_plan_update(arguments).await,
             "qa_plan_delete" => self.qa_plan_delete(arguments).await,
+            "qa_plan_revision_list" => self.qa_plan_revision_list(arguments).await,
+            "qa_plan_revision_get" => self.qa_plan_revision_get(arguments).await,
+            "qa_plan_revision_cut" => self.qa_plan_revision_cut(arguments).await,
             _ => Err(anyhow::anyhow!("unknown tool: {}", name)),
         }
     }

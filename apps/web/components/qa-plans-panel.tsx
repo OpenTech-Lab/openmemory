@@ -32,24 +32,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Copy, Download, FileCode, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Copy, Download, FileCode, History, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PLAN_KINDS, planKindColor, planKindLabel } from '@/lib/qa-meta';
 import { getStarterTemplate } from '@/lib/qa-plan-templates';
-import { planFileExtension, planSlug, runRecipeForPlan } from '@/lib/qa-run-command';
-
-interface QaPlan {
-  id: string;
-  project_id: string;
-  name: string;
-  kind: 'jest' | 'playwright' | 'maestro' | 'other';
-  language: 'typescript' | 'javascript' | 'yaml' | 'python' | 'other';
-  description: string | null;
-  body: string;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
+import { planFileExtension, planSlug, runRecipeForPlan, type PlanRunRecipe } from '@/lib/qa-run-command';
+import {
+  formatQaPlanRevisionLabel,
+  formatQaPlanVersionLabel,
+  LIVE_VERSION_KEY,
+  type QaPlan,
+  type QaPlanRevisionDetail,
+  type QaPlanRevisionSummary,
+} from '@/lib/qa-plan-history';
+import { QaPlanHistorySheet } from '@/components/qa-plan-history-sheet';
 
 const PLAN_LANGUAGES = ['typescript', 'javascript', 'yaml', 'python', 'other'] as const;
 
@@ -58,12 +54,14 @@ const EMPTY_FORM = { name: '', kind: 'other' as string, language: 'other' as str
 export function QaPlansPanel({
   projectId,
   focusPlanId,
+  focusPlanRevisionNum,
   onCountChange,
   onOpenRun,
   onRunCreated,
 }: {
   projectId: string;
   focusPlanId?: string | null;
+  focusPlanRevisionNum?: number | null;
   onCountChange?: (count: number) => void;
   onOpenRun?: (runId: string) => void;
   /** Fired after a run is created, so the Runs tab count stays honest while
@@ -75,6 +73,11 @@ export function QaPlansPanel({
   const [kindFilter, setKindFilter] = useState<string>('all');
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const focusedPlanIdRef = useRef<string | null>(null);
+  const [revisions, setRevisions] = useState<QaPlanRevisionSummary[]>([]);
+  const [isLoadingRevisions, setIsLoadingRevisions] = useState(false);
+  const [viewVersionKey, setViewVersionKey] = useState(LIVE_VERSION_KEY);
+  const [revisionDetails, setRevisionDetails] = useState<Record<string, QaPlanRevisionDetail>>({});
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   // Detail pane form — seeded from the selected plan on selection, then edited
   // in place. `isDirty` compares this directly against the selected plan, so
@@ -96,6 +99,14 @@ export function QaPlansPanel({
   const [showRunDialog, setShowRunDialog] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [runVersionKey, setRunVersionKey] = useState(LIVE_VERSION_KEY);
+  const [runVersionLoading, setRunVersionLoading] = useState(false);
+
+  // Save-as-version is deliberately separate from Save: the former names a
+  // frozen snapshot, while the latter only updates the live working copy.
+  const [showVersionDialog, setShowVersionDialog] = useState(false);
+  const [versionLabel, setVersionLabel] = useState('');
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
 
   const fetchPlans = useCallback(async () => {
     setIsLoading(true);
@@ -119,12 +130,40 @@ export function QaPlansPanel({
     }
   }, [projectId, kindFilter, onCountChange]);
 
+  const fetchRevisions = useCallback(async (planId: string) => {
+    setIsLoadingRevisions(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/qa/plans/${planId}/revisions`);
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to load plan revisions');
+      setRevisions(data.revisions ?? []);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load plan revisions');
+      setRevisions([]);
+    } finally {
+      setIsLoadingRevisions(false);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     fetchPlans();
   }, [fetchPlans]);
 
+  useEffect(() => {
+    if (!selectedPlanId) {
+      setRevisions([]);
+      setViewVersionKey(LIVE_VERSION_KEY);
+      setRevisionDetails({});
+      return;
+    }
+    void fetchRevisions(selectedPlanId);
+  }, [fetchRevisions, selectedPlanId]);
+
   const selectPlan = useCallback((plan: QaPlan | null) => {
     setSelectedPlanId(plan?.id ?? null);
+    setViewVersionKey(LIVE_VERSION_KEY);
+    setRevisionDetails({});
+    setRunVersionKey(LIVE_VERSION_KEY);
     setForm(
       plan
         ? { name: plan.name, kind: plan.kind, language: plan.language, description: plan.description ?? '', body: plan.body }
@@ -150,13 +189,70 @@ export function QaPlansPanel({
   }, [focusPlanId, plans, selectPlan, selectedPlanId]);
 
   const selectedPlan = plans.find((p) => p.id === selectedPlanId) ?? null;
+  const isViewingRevision = viewVersionKey !== LIVE_VERSION_KEY;
+
+  const loadRevisionDetail = useCallback(async (planId: string, versionKey: string): Promise<QaPlanRevisionDetail> => {
+    const response = await fetch(`/api/projects/${projectId}/qa/plans/${planId}/revisions/${versionKey}`);
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error ?? `Failed to load revision ${versionKey}`);
+    const revision = data as QaPlanRevisionDetail;
+    setRevisionDetails((current) => ({ ...current, [versionKey]: revision }));
+    return revision;
+  }, [projectId]);
+
+  // A frozen version is a read-only view. The live key remains the only state
+  // that can be edited or saved back to the parent plan row.
+  useEffect(() => {
+    if (!selectedPlan || viewVersionKey === LIVE_VERSION_KEY) return;
+    const cached = revisionDetails[viewVersionKey];
+    if (cached) {
+      setForm({
+        name: cached.name,
+        kind: cached.kind,
+        language: cached.language,
+        description: cached.description ?? '',
+        body: cached.body,
+      });
+      return;
+    }
+    let cancelled = false;
+    void loadRevisionDetail(selectedPlan.id, viewVersionKey)
+      .then((revision) => {
+        if (!cancelled) {
+          setForm({
+            name: revision.name,
+            kind: revision.kind,
+            language: revision.language,
+            description: revision.description ?? '',
+            body: revision.body,
+          });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) toast.error(error instanceof Error ? error.message : 'Failed to load plan revision');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadRevisionDetail, revisionDetails, selectedPlan, viewVersionKey]);
+
+  useEffect(() => {
+    if (
+      focusPlanRevisionNum === null || focusPlanRevisionNum === undefined
+      || focusPlanId !== selectedPlanId
+      || !revisions.some((revision) => revision.revision_num === focusPlanRevisionNum)
+    ) return;
+    setViewVersionKey(String(focusPlanRevisionNum));
+  }, [focusPlanId, focusPlanRevisionNum, revisions, selectedPlanId]);
 
   const isDirty = selectedPlan
-    ? form.name !== selectedPlan.name ||
+    ? !isViewingRevision && (
+      form.name !== selectedPlan.name ||
       form.kind !== selectedPlan.kind ||
       form.language !== selectedPlan.language ||
       form.description !== (selectedPlan.description ?? '') ||
       form.body !== selectedPlan.body
+    )
     : false;
 
   const openCreateDialog = () => {
@@ -204,7 +300,7 @@ export function QaPlansPanel({
   };
 
   const handleSave = async () => {
-    if (!selectedPlan) return;
+    if (!selectedPlan || isViewingRevision) return;
     const name = form.name.trim();
     if (!name) {
       toast.error('Name is required');
@@ -238,6 +334,36 @@ export function QaPlansPanel({
     }
   };
 
+  const handleSaveAsVersion = async () => {
+    if (!selectedPlan || isViewingRevision || isDirty) {
+      toast.error('Save the live plan before creating a version');
+      return;
+    }
+    const label = versionLabel.trim();
+    if (label.length < 1 || label.length > 100) {
+      toast.error('Label the version (1–100 characters)');
+      return;
+    }
+    setIsSavingVersion(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/qa/plans/${selectedPlan.id}/revisions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, created_by: 'human' }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to save plan version');
+      toast.success(`Saved as v${data.revision_num}`);
+      setVersionLabel('');
+      setShowVersionDialog(false);
+      await fetchRevisions(selectedPlan.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save plan version');
+    } finally {
+      setIsSavingVersion(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deletePlan) return;
     setIsDeleting(true);
@@ -268,15 +394,38 @@ export function QaPlansPanel({
     }
   };
 
-  // Built from the edited form for the Copy command; Run now executes the
-  // saved plan after refusing to run while the form is dirty.
-  const runRecipe = runRecipeForPlan({
-    name: form.name,
-    kind: form.kind,
-    language: form.language,
-    body: form.body,
-    description: form.description,
-  });
+  // A frozen run uses the exact revision body fetched from the detail endpoint.
+  // A live run uses the saved parent plan, and is refused while the editor is
+  // dirty. The separate Copy button still copies the editor's current body.
+  const liveRunnablePlan = selectedPlan;
+  const runPlan = runVersionKey === LIVE_VERSION_KEY
+    ? liveRunnablePlan
+    : revisionDetails[runVersionKey] ?? null;
+  const runRecipe: PlanRunRecipe = runPlan
+    ? runRecipeForPlan(runPlan)
+    : {
+      path: '',
+      runner: 'unknown',
+      ingestKind: 'unit',
+      script: null,
+      unsupportedReason: runVersionLoading ? 'Loading revision…' : 'Select a plan version to run.',
+    };
+
+  useEffect(() => {
+    if (!showRunDialog || runVersionKey === LIVE_VERSION_KEY || !selectedPlan || revisionDetails[runVersionKey]) return;
+    let cancelled = false;
+    setRunVersionLoading(true);
+    void loadRevisionDetail(selectedPlan.id, runVersionKey)
+      .catch((error) => {
+        if (!cancelled) setRunError(error instanceof Error ? error.message : 'Failed to load plan revision');
+      })
+      .finally(() => {
+        if (!cancelled) setRunVersionLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadRevisionDetail, revisionDetails, runVersionKey, selectedPlan, showRunDialog]);
 
   const handleCopyRunScript = async () => {
     if (!runRecipe.script) return;
@@ -290,11 +439,13 @@ export function QaPlansPanel({
 
   const openRunDialog = () => {
     setRunError(null);
+    setRunVersionKey(LIVE_VERSION_KEY);
+    setRunVersionLoading(false);
     setShowRunDialog(true);
   };
 
   const handleRunNow = async () => {
-    if (!selectedPlan || !runRecipe.script || isRunning || isDirty) return;
+    if (!selectedPlan || !runRecipe.script || isRunning || (runVersionKey === LIVE_VERSION_KEY && isDirty)) return;
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 310_000);
@@ -303,6 +454,8 @@ export function QaPlansPanel({
     try {
       const res = await fetch(`/api/projects/${projectId}/qa/plans/${selectedPlan.id}/run`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(runVersionKey === LIVE_VERSION_KEY ? {} : { revision_num: Number(runVersionKey) }),
         signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
@@ -315,8 +468,9 @@ export function QaPlansPanel({
       const failed = Number(data.failed ?? 0);
       const skipped = Number(data.skipped ?? 0);
       onRunCreated?.();
+      const versionSuffix = data.plan_revision_num ? ` · v${data.plan_revision_num}` : '';
       toast.success(
-        `${passed} passed · ${failed} failed · ${skipped} skipped`,
+        `${passed} passed · ${failed} failed · ${skipped} skipped${versionSuffix}`,
         onOpenRun && data.run_id
           ? { action: { label: 'Open run', onClick: () => onOpenRun(data.run_id) } }
           : undefined,
@@ -347,6 +501,37 @@ export function QaPlansPanel({
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+
+  const handleVersionChange = (key: string) => {
+    setViewVersionKey(key);
+    if (key === LIVE_VERSION_KEY && selectedPlan) {
+      setForm({
+        name: selectedPlan.name,
+        kind: selectedPlan.kind,
+        language: selectedPlan.language,
+        description: selectedPlan.description ?? '',
+        body: selectedPlan.body,
+      });
+    }
+  };
+
+  const handlePlanRestored = (restored: QaPlan) => {
+    setPlans((current) => current.map((plan) => plan.id === restored.id ? restored : plan));
+    selectPlan(restored);
+    void fetchRevisions(restored.id);
+  };
+
+  const latestRevision = revisions[0] ?? null;
+  const versionOptions = (
+    <>
+      {revisions.map((revision) => (
+        <SelectItem key={revision.id} value={String(revision.revision_num)}>
+          {formatQaPlanRevisionLabel(revision)}
+        </SelectItem>
+      ))}
+      <SelectItem value={LIVE_VERSION_KEY}>Live (current)</SelectItem>
+    </>
+  );
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col">
@@ -433,14 +618,20 @@ export function QaPlansPanel({
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b">
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                    {latestRevision && (
+                      <Badge variant="secondary" className="shrink-0 font-mono" title={formatQaPlanRevisionLabel(latestRevision)}>
+                        {formatQaPlanRevisionLabel(latestRevision)}
+                      </Badge>
+                    )}
                     <Input
                       value={form.name}
                       onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                       className="h-8 max-w-[240px] font-medium"
                       aria-label="Plan name"
+                      disabled={isViewingRevision}
                     />
-                    <Select value={form.kind} onValueChange={(v) => setForm((f) => ({ ...f, kind: v }))}>
-                      <SelectTrigger className="h-8 w-[130px]">
+                    <Select value={form.kind} onValueChange={(v) => setForm((f) => ({ ...f, kind: v }))} disabled={isViewingRevision}>
+                      <SelectTrigger className="h-8 w-[130px]" aria-label="Plan kind">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -451,8 +642,8 @@ export function QaPlansPanel({
                         ))}
                       </SelectContent>
                     </Select>
-                    <Select value={form.language} onValueChange={(v) => setForm((f) => ({ ...f, language: v }))}>
-                      <SelectTrigger className="h-8 w-[130px]">
+                    <Select value={form.language} onValueChange={(v) => setForm((f) => ({ ...f, language: v }))} disabled={isViewingRevision}>
+                      <SelectTrigger className="h-8 w-[130px]" aria-label="Plan language">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -465,8 +656,27 @@ export function QaPlansPanel({
                     </Select>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <Button size="sm" onClick={handleSave} disabled={!isDirty || isSaving || !form.name.trim()}>
+                    <Select value={viewVersionKey} onValueChange={handleVersionChange} disabled={isLoadingRevisions}>
+                      <SelectTrigger className="h-8 w-[160px]" aria-label="Plan version">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>{versionOptions}</SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { setVersionLabel(''); setShowVersionDialog(true); }}
+                      disabled={isViewingRevision || isDirty || isSavingVersion}
+                      title={isDirty ? 'Save the live edits first' : 'Save the live plan as a labelled version'}
+                    >
+                      Save as version
+                    </Button>
+                    <Button size="sm" onClick={handleSave} disabled={!isDirty || isViewingRevision || isSaving || !form.name.trim()}>
                       {isSaving ? 'Saving…' : 'Save'}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setIsHistoryOpen(true)}>
+                      <History className="mr-2 h-4 w-4" />
+                      History
                     </Button>
                     <Button variant="outline" size="sm" className="h-8" title="Run this plan" onClick={openRunDialog}>
                       <Play className="h-3.5 w-3.5 mr-1.5" />
@@ -484,6 +694,7 @@ export function QaPlansPanel({
                       className="h-8 w-8 text-destructive hover:text-destructive"
                       title="Delete"
                       onClick={() => setDeletePlan(selectedPlan)}
+                      disabled={isViewingRevision}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -491,6 +702,11 @@ export function QaPlansPanel({
                 </div>
 
                 <div className="flex flex-1 min-h-0 flex-col gap-3 pt-3">
+                  {isViewingRevision && (
+                    <p className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      Viewing {formatQaPlanVersionLabel(viewVersionKey, revisions)}. Select Live (current) to edit the working copy.
+                    </p>
+                  )}
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground font-normal">Description</Label>
                     <Textarea
@@ -498,6 +714,7 @@ export function QaPlansPanel({
                       onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                       placeholder="What this plan covers"
                       rows={2}
+                      disabled={isViewingRevision}
                     />
                   </div>
                   <div className="flex min-h-0 flex-1 flex-col space-y-1.5">
@@ -507,6 +724,7 @@ export function QaPlansPanel({
                       onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
                       className="font-mono text-xs flex-1 min-h-[360px] resize-none"
                       spellCheck={false}
+                      disabled={isViewingRevision}
                     />
                   </div>
                 </div>
@@ -515,6 +733,44 @@ export function QaPlansPanel({
           </div>
         </div>
       )}
+
+      <QaPlanHistorySheet
+        open={isHistoryOpen}
+        onOpenChange={setIsHistoryOpen}
+        projectId={projectId}
+        plan={selectedPlan}
+        onRestored={handlePlanRestored}
+      />
+
+      {/* Save as version dialog */}
+      <Dialog open={showVersionDialog} onOpenChange={setShowVersionDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Save as version</DialogTitle>
+            <DialogDescription>Give this frozen copy a label so it can be run and restored later.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5 py-2">
+            <Label htmlFor="plan-version-label">Version label</Label>
+            <Input
+              id="plan-version-label"
+              value={versionLabel}
+              maxLength={100}
+              placeholder="e.g. home page only"
+              onChange={(event) => setVersionLabel(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && versionLabel.trim()) void handleSaveAsVersion();
+              }}
+            />
+            <p className="text-[11px] text-muted-foreground">1–100 characters · the live plan must be saved first</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowVersionDialog(false)} disabled={isSavingVersion}>Cancel</Button>
+            <Button onClick={() => void handleSaveAsVersion()} disabled={isSavingVersion || !versionLabel.trim()}>
+              {isSavingVersion ? 'Saving…' : 'Save version'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* New Plan dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
@@ -601,12 +857,21 @@ export function QaPlansPanel({
           <DialogHeader className="min-w-0">
             <DialogTitle>Run this plan</DialogTitle>
             <DialogDescription>
-              Run the saved plan in its project directory and record the result under QA &rsaquo; Runs.
+              Run a frozen version or the current live plan in its project directory and record the result under QA &rsaquo; Runs.
             </DialogDescription>
             {/* Its own line with break-all: a generated filename is one long
                 unbreakable token and blows out the header inline. */}
             <code className="block min-w-0 break-all font-mono text-xs text-muted-foreground">{runRecipe.path}</code>
           </DialogHeader>
+
+          <div className="space-y-1.5">
+            <Label>Version to run</Label>
+            <Select value={runVersionKey} onValueChange={(key) => { setRunVersionKey(key); setRunError(null); }} disabled={isLoadingRevisions || runVersionLoading}>
+              <SelectTrigger aria-label="Version to run"><SelectValue /></SelectTrigger>
+              <SelectContent>{versionOptions}</SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">The run stores this version number with its result.</p>
+          </div>
 
           {runError && (
             <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive whitespace-pre-wrap">
@@ -630,7 +895,7 @@ export function QaPlansPanel({
                   {runRecipe.script}
                 </pre>
               </div>
-              {isDirty && (
+              {runVersionKey === LIVE_VERSION_KEY && isDirty && (
                 <p className="text-xs text-muted-foreground">
                   Save the edits before running; Run now uses the saved plan.
                 </p>
@@ -648,7 +913,7 @@ export function QaPlansPanel({
               <Copy className="h-3.5 w-3.5 mr-1.5" />
               Copy command
             </Button>
-            <Button onClick={handleRunNow} disabled={isRunning || !runRecipe.script || isDirty}>
+            <Button onClick={handleRunNow} disabled={isRunning || runVersionLoading || !runRecipe.script || (runVersionKey === LIVE_VERSION_KEY && isDirty)}>
               {isRunning ? <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1.5" />}
               {isRunning ? 'Running…' : 'Run now'}
             </Button>

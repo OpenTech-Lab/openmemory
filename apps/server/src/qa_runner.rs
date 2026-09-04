@@ -420,6 +420,7 @@ pub async fn execute_plan(
     db: &sqlx::PgPool,
     plan: &qa::QaPlanView,
     project_root: &Path,
+    plan_revision_num: Option<i32>,
 ) -> std::result::Result<qa::QaRunView, RunPlanError> {
     let target_relative = target_relative_path(
         &plan.name,
@@ -554,6 +555,8 @@ pub async fn execute_plan(
         event_id: None,
         task_id: None,
         external_ref: None,
+        plan_id: Some(plan.id),
+        plan_revision_num,
         cases,
         metrics: Vec::new(),
         sources: vec![qa_ingest::IngestSource {
