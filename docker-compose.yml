@@ -97,7 +97,7 @@ services:
         NEXT_PUBLIC_DRAWIO_VIEWER_URL: ${NEXT_PUBLIC_DRAWIO_VIEWER_URL:-http://localhost:18081}
         NEXT_PUBLIC_OPEN_PENCIL_URL: ${NEXT_PUBLIC_OPEN_PENCIL_URL:-http://localhost:18082}
     ports:
-      - "13000:3000"
+      - "127.0.0.1:13000:3000"
     environment:
       NEXT_PUBLIC_API_URL: http://openmemory-server:18080
       API_URL: http://openmemory-server:18080
