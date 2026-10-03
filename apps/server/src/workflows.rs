@@ -15,6 +15,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::crypto::decrypt_value;
+use openmemory_server::google_sa;
 
 const MAX_STEPS: usize = 20;
 const MAX_RESPONSE_BYTES: usize = 1_000_000;
@@ -50,6 +51,13 @@ pub struct WorkflowStep {
     pub auth_header: Option<String>,
     #[serde(default)]
     pub auth_prefix: Option<String>,
+    /// `None`/"static": `auth_key` is sent as-is. "google_service_account":
+    /// `auth_key` names a GCP service-account JSON secret and an access token
+    /// for `auth_scopes` is minted server-side per run.
+    #[serde(default)]
+    pub auth_mode: Option<String>,
+    #[serde(default)]
+    pub auth_scopes: Vec<String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
@@ -201,6 +209,32 @@ pub fn validate_definition(
                 match step.method.to_uppercase().as_str() {
                     "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {}
                     _ => anyhow::bail!("unsupported method in step '{}': {}", step.id, step.method),
+                }
+                match step.auth_mode.as_deref().unwrap_or("static") {
+                    "static" => {}
+                    "google_service_account" => {
+                        if step.auth_key.as_deref().unwrap_or("").is_empty() {
+                            anyhow::bail!(
+                                "step '{}' requires auth_key when auth_mode is 'google_service_account'",
+                                step.id
+                            );
+                        }
+                        if step.auth_scopes.is_empty()
+                            || step.auth_scopes.iter().any(|s| s.trim().is_empty())
+                        {
+                            anyhow::bail!(
+                                "step '{}' requires non-empty auth_scopes when auth_mode is 'google_service_account'",
+                                step.id
+                            );
+                        }
+                        if step.secret_target.as_deref().unwrap_or("header") != "header" {
+                            anyhow::bail!(
+                                "step '{}' cannot use secret_target 'url' with auth_mode 'google_service_account'",
+                                step.id
+                            );
+                        }
+                    }
+                    other => anyhow::bail!("unsupported auth_mode in step '{}': {}", step.id, other),
                 }
                 if step.secret_target.as_deref().unwrap_or("header") == "url" {
                     if step.auth_key.as_deref().unwrap_or("").is_empty() {
@@ -506,7 +540,16 @@ async fn execute_http_step(
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
     let secret_target = step.secret_target.as_deref().unwrap_or("header");
     let secret = match step.auth_key.as_deref() {
-        Some(key) if !key.is_empty() => Some(resolve_secret(db, encryption_key, key).await?),
+        Some(key) if !key.is_empty() => {
+            let stored = resolve_secret(db, encryption_key, key).await?;
+            if step.auth_mode.as_deref() == Some("google_service_account") {
+                // The minted token only ever goes into the Authorization header
+                // below; it is never part of the step result, run row or logs.
+                Some(google_sa::mint_access_token(&client, &stored, &step.auth_scopes).await?)
+            } else {
+                Some(stored)
+            }
+        }
         _ => None,
     };
     let url = if secret_target == "url" {
@@ -524,8 +567,10 @@ async fn execute_http_step(
         .header("Content-Type", "application/json");
     if secret_target != "url" {
         if let Some(value) = secret {
+            let google = step.auth_mode.as_deref() == Some("google_service_account");
             let header = step.auth_header.as_deref().unwrap_or("Authorization");
             let prefix = step.auth_prefix.as_deref().unwrap_or("Bearer ");
+            let (header, prefix) = if google { ("Authorization", "Bearer ") } else { (header, prefix) };
             request = request.header(header, format!("{prefix}{value}"));
         }
     }
@@ -788,5 +833,44 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("options"));
+    }
+
+    fn gsa_step(extra: Value) -> Value {
+        let mut step = json!({
+            "id": "q", "method": "POST", "url": "https://www.googleapis.com/x",
+            "auth_mode": "google_service_account",
+            "auth_key": "sa_secret",
+            "auth_scopes": ["https://www.googleapis.com/auth/webmasters.readonly"]
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            step[k] = v.clone();
+        }
+        json!([step])
+    }
+
+    #[test]
+    fn accepts_google_service_account_step_and_defaults_to_static() {
+        let parsed = validate_definition("valid", &json!({}), &gsa_step(json!({}))).unwrap();
+        assert_eq!(parsed[0].auth_mode.as_deref(), Some("google_service_account"));
+        assert_eq!(parsed[0].auth_scopes.len(), 1);
+        let plain = json!([{"id":"s","method":"GET","url":"https://example.com","auth_key":"k"}]);
+        let parsed = validate_definition("valid", &json!({}), &plain).unwrap();
+        assert_eq!(parsed[0].auth_mode, None);
+        assert!(parsed[0].auth_scopes.is_empty());
+    }
+
+    #[test]
+    fn google_service_account_requires_auth_key_and_scopes() {
+        let err = |extra: Value| {
+            validate_definition("valid", &json!({}), &gsa_step(extra))
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(err(json!({"auth_key": ""})).contains("auth_key"));
+        assert!(err(json!({"auth_key": null})).contains("auth_key"));
+        assert!(err(json!({"auth_scopes": []})).contains("auth_scopes"));
+        assert!(err(json!({"auth_scopes": ["  "]})).contains("auth_scopes"));
+        assert!(err(json!({"secret_target": "url"})).contains("secret_target"));
+        assert!(err(json!({"auth_mode": "oauth9"})).contains("unsupported auth_mode"));
     }
 }

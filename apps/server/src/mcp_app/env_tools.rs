@@ -914,9 +914,6 @@ impl McpServer {
         &mut self,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value> {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
         let key_name = args["key"].as_str().context("missing key")?.to_string();
         let scopes: Vec<String> = args["scopes"]
             .as_array()
@@ -946,86 +943,14 @@ impl McpServer {
             }
         }
 
-        // Resolve the service account JSON — never returned to the agent
-        let row: Option<(Vec<u8>, bool)> =
-            sqlx::query_as("SELECT value_encrypted, is_secret FROM env_params WHERE key = $1")
-                .bind(&key_name)
-                .fetch_optional(&self.db)
-                .await
-                .context("failed to query service account secret")?;
-
-        let stored = match row {
-            None => anyhow::bail!("Parameter '{}' not found in env params", key_name),
-            Some((encrypted, _)) => decrypt_value(&self.encryption_key, &encrypted)
-                .context("failed to decrypt service account secret")?,
-        };
-
-        let decoded = STANDARD.decode(stored.trim()).context(
-            "stored value isn't valid base64 (expected a file uploaded via env_set_file)",
-        )?;
-        let sa_json: serde_json::Value = serde_json::from_slice(&decoded)
-            .context("decoded file isn't valid JSON (expected a GCP service account key file)")?;
-
-        let client_email = sa_json["client_email"]
-            .as_str()
-            .context("service account JSON missing client_email")?
-            .to_string();
-        let private_key_pem = sa_json["private_key"]
-            .as_str()
-            .context("service account JSON missing private_key")?
-            .to_string();
-        let token_uri = sa_json["token_uri"]
-            .as_str()
-            .unwrap_or("https://oauth2.googleapis.com/token")
-            .to_string();
-
-        // Step 1: sign the JWT-bearer assertion (RS256, per Google's
-        // server-to-server OAuth2 flow). Never returned to the agent.
-        let now = Utc::now().timestamp();
-        let claims = json!({
-            "iss": client_email,
-            "scope": scopes.join(" "),
-            "aud": token_uri,
-            "iat": now,
-            "exp": now + 3600,
-        });
-        let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
-            .context("failed to parse service account private key (expected PEM)")?;
-        let assertion = encode(&Header::new(Algorithm::RS256), &claims, &encoding_key)
-            .context("failed to sign service account JWT assertion")?;
-
-        // Step 2: exchange the assertion for a short-lived access token.
-        // Never returned to the agent.
+        // Resolve the service account JSON and mint a short-lived access token.
+        // Neither the key, the signed assertion nor the token is returned to
+        // the agent.
+        let stored = self.resolve_env_secret(&key_name).await?;
         let client = HttpClient::new();
-        let token_response = client
-            .post(&token_uri)
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-                ("assertion", assertion.as_str()),
-            ])
-            .send()
-            .await
-            .context("token exchange request failed")?;
-        let token_status = token_response.status();
-        let token_body: serde_json::Value = token_response
-            .json()
-            .await
-            .context("failed to parse token endpoint response")?;
+        let access_token = google_sa::mint_access_token(&client, &stored, &scopes).await?;
 
-        if !token_status.is_success() {
-            anyhow::bail!(
-                "Token exchange failed (HTTP {}): {}",
-                token_status,
-                token_body
-            );
-        }
-
-        let access_token = token_body["access_token"]
-            .as_str()
-            .context("token endpoint response missing access_token")?
-            .to_string();
-
-        // Step 3: the actual API call, authenticated with the access token.
+        // The actual API call, authenticated with the access token.
         let mut req = match method.as_str() {
             "GET" => client.get(&url),
             "POST" => client.post(&url),
