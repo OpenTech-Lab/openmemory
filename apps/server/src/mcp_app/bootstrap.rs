@@ -287,6 +287,19 @@ impl McpServer {
 
         sqlx::query("ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS routine_id UUID REFERENCES project_routines(id) ON DELETE SET NULL")
             .execute(&db).await.ok();
+        // A routine's new task supersedes its previous open one, so unhandled
+        // instances are cancelled instead of piling up day after day.
+        sqlx::query("CREATE OR REPLACE FUNCTION supersede_open_routine_tasks() RETURNS trigger AS $$ \
+             BEGIN \
+                 UPDATE project_tasks SET status = 'cancelled', updated_at = NOW() \
+                  WHERE routine_id = NEW.routine_id AND id <> NEW.id AND status IN ('todo', 'in_progress'); \
+                 RETURN NEW; \
+             END $$ LANGUAGE plpgsql")
+            .execute(&db).await.ok();
+        sqlx::query("CREATE OR REPLACE TRIGGER project_tasks_supersede_routine \
+             AFTER INSERT ON project_tasks FOR EACH ROW WHEN (NEW.routine_id IS NOT NULL) \
+             EXECUTE FUNCTION supersede_open_routine_tasks()")
+            .execute(&db).await.ok();
 
         // Lands here, not up near project_designs/library, because its FK to
         // project_tasks requires that table to already exist.
