@@ -43,6 +43,8 @@ interface WorkflowStep {
   secret_target?: 'header' | 'url';
   auth_header?: string;
   auth_prefix?: string;
+  auth_mode?: 'static' | 'google_service_account';
+  auth_scopes?: string[];
   headers?: Record<string, string>;
   body?: unknown;
   capability?: 'image_generation' | 'skill' | 'command';
@@ -101,6 +103,7 @@ function toDraft(step: WorkflowStep): StepDraft {
     id: step.id, name: step.name ?? '', kind: step.kind ?? 'http', method: step.method ?? 'GET', url: step.url ?? '',
     auth_key: step.auth_key ?? '', secret_target: step.secret_target ?? 'header',
     auth_header: step.auth_header ?? 'Authorization', auth_prefix: step.auth_prefix ?? 'Bearer ',
+    auth_mode: step.auth_mode, auth_scopes: step.auth_scopes,
     headersText: JSON.stringify(step.headers ?? {}, null, 2),
     bodyText: step.body === undefined || step.body === null ? '' : JSON.stringify(step.body, null, 2),
     capability: step.capability, instruction: step.instruction ?? '', skill: step.skill ?? '',
@@ -343,7 +346,7 @@ function WorkflowPanelInner() {
         return {
           ...common, auth_key: step.auth_key?.trim() || undefined,
           secret_target: step.secret_target, auth_header: step.auth_header?.trim() || undefined,
-          auth_prefix: step.auth_prefix ?? undefined, headers, body,
+          auth_prefix: step.auth_prefix ?? undefined, auth_mode: step.auth_mode, auth_scopes: step.auth_scopes, headers, body,
         };
       });
       const payload = { name, description: description || null, input_schema: fieldsToSchema(inputFields), steps: payloadSteps, enabled };
