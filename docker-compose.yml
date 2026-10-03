@@ -13,7 +13,7 @@ services:
       POSTGRES_PASSWORD: openmemory
       POSTGRES_DB: openmemory
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -38,7 +38,7 @@ services:
         soft: 65536
         hard: 65536
     ports:
-      - "${OPENSEARCH_PORT:-9201}:9200"
+      - "127.0.0.1:${OPENSEARCH_PORT:-9201}:9200"
     volumes:
       - opensearch_data:/usr/share/opensearch/data
     restart: unless-stopped
@@ -55,7 +55,7 @@ services:
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
       DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
     ports:
-      - "5601:5601"
+      - "127.0.0.1:5601:5601"
     depends_on:
       opensearch:
         condition: service_healthy
@@ -63,7 +63,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6399:6379"
+      - "127.0.0.1:6399:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -77,7 +77,7 @@ services:
   falkordb:
     image: falkordb/falkordb:latest
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - falkordb_data:/var/lib/falkordb/data
     restart: unless-stopped

@@ -1469,6 +1469,7 @@ enum McpResponse {
         provider: String,
         model: String,
         configured: bool,
+        providers: Vec<llm::ProviderInfo>,
     },
 
     #[serde(rename = "graph.set_llm_config.result")]
@@ -4727,29 +4728,42 @@ async fn mcp(
 
             let mut provider = "openrouter".to_string();
             let mut model: Option<String> = None;
-            let mut configured = false;
+            let mut api_key_configured = false;
 
             for (key, encrypted) in rows {
                 match decrypt_value(&state.encryption_key, &encrypted) {
                     Ok(val) => match key.as_str() {
                         "GRAPH_LLM_PROVIDER" => provider = val,
                         "GRAPH_LLM_MODEL" => model = Some(val),
-                        "GRAPH_LLM_API_KEY" => configured = !val.is_empty(),
+                        "GRAPH_LLM_API_KEY" => api_key_configured = !val.trim().is_empty(),
                         _ => {}
                     },
                     Err(_) => {}
                 }
             }
 
-            let model = model.unwrap_or_else(|| match provider.as_str() {
-                "anthropic" => "claude-haiku-4-5-20251001".to_string(),
-                "openai" => "gpt-4o-mini".to_string(),
-                _ => "anthropic/claude-haiku-4".to_string(),
-            });
+            let providers = llm::provider_options();
+            let configured = if llm::is_local_cli_provider(&provider) {
+                providers
+                    .iter()
+                    .find(|candidate| candidate.id == provider)
+                    .map(|candidate| candidate.available)
+                    .unwrap_or(false)
+            } else {
+                api_key_configured
+            };
+            let model = model
+                .filter(|model| !model.trim().is_empty())
+                .unwrap_or_else(|| llm::default_model(&provider));
 
             Ok((
                 StatusCode::OK,
-                Json(McpResponse::GraphGetLlmConfigResult { provider, model, configured }),
+                Json(McpResponse::GraphGetLlmConfigResult {
+                    provider,
+                    model,
+                    configured,
+                    providers,
+                }),
             ))
         }
 
@@ -4758,6 +4772,15 @@ async fn mcp(
                 return Err((
                     StatusCode::UNAUTHORIZED,
                     Json(serde_json::json!({"error": "authentication required"})),
+                ));
+            }
+
+            let provider = provider.trim().to_string();
+            let model = model.trim().to_string();
+            if provider.is_empty() || model.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "provider and model are required"})),
                 ));
             }
 
@@ -4820,7 +4843,7 @@ async fn mcp(
                 None => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                        Json(serde_json::json!({"error": "LLM not configured — choose a provider in LLM Settings and authenticate it if needed"})),
                     ));
                 }
             };
@@ -4942,7 +4965,7 @@ async fn mcp(
                 None => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                        Json(serde_json::json!({"error": "LLM not configured — choose a provider in LLM Settings and authenticate it if needed"})),
                     ));
                 }
             };
@@ -5011,7 +5034,7 @@ async fn mcp(
             }
             let cfg = load_llm_config(&state.db, &state.encryption_key).await.ok_or_else(|| (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                Json(serde_json::json!({"error": "LLM not configured — choose a provider in LLM Settings and authenticate it if needed"})),
             ))?;
             match budget_ai::estimate(&title, &kind, &source, &planning_conditions, &cfg).await {
                 Ok(estimate) => Ok((StatusCode::OK, Json(McpResponse::AiBudgetForecastResult { estimate, model: cfg.model }))),
@@ -5039,7 +5062,7 @@ async fn mcp(
                 None => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"})),
+                        Json(serde_json::json!({"error": "LLM not configured — choose a provider in LLM Settings and authenticate it if needed"})),
                     ));
                 }
             };
@@ -5102,12 +5125,13 @@ async fn load_llm_config(db: &PgPool, encryption_key: &[u8; 32]) -> Option<llm::
         }
     }
 
-    let api_key = api_key?;
-    let model = model.unwrap_or_else(|| match provider.as_str() {
-        "anthropic" => "claude-haiku-4-5-20251001".to_string(),
-        "openai" => "gpt-4o-mini".to_string(),
-        _ => "anthropic/claude-haiku-4".to_string(),
-    });
+    let api_key = api_key.unwrap_or_default();
+    if !llm::is_local_cli_provider(&provider) && api_key.trim().is_empty() {
+        return None;
+    }
+    let model = model
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| llm::default_model(&provider));
 
     Some(llm::LlmConfig { provider, api_key, model })
 }
@@ -6493,7 +6517,7 @@ async fn suggest_project_commit_message(
     let cfg = match load_llm_config(&state.db, &state.encryption_key).await {
         Some(cfg) => cfg,
         None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": "LLM not configured — set GRAPH_LLM_API_KEY via LLM Settings"
+            "error": "LLM not configured — choose a provider in LLM Settings and authenticate it if needed"
         }))).into_response(),
     };
 

@@ -16,7 +16,24 @@ const DEFAULT_MODELS: Record<string, string> = {
   openrouter: 'anthropic/claude-haiku-4',
   anthropic: 'claude-haiku-4-5-20251001',
   openai: 'gpt-4o-mini',
+  'claude-code': 'opus',
+  codex: 'gpt-5.5',
 };
+
+interface ProviderOption {
+  id: string;
+  label: string;
+  local: boolean;
+  available: boolean;
+  requires_api_key: boolean;
+  models: string[];
+}
+
+const FALLBACK_PROVIDERS: ProviderOption[] = [
+  { id: 'openrouter', label: 'OpenRouter', local: false, available: true, requires_api_key: true, models: [DEFAULT_MODELS.openrouter] },
+  { id: 'anthropic', label: 'Anthropic API', local: false, available: true, requires_api_key: true, models: [DEFAULT_MODELS.anthropic] },
+  { id: 'openai', label: 'OpenAI API', local: false, available: true, requires_api_key: true, models: [DEFAULT_MODELS.openai] },
+];
 
 interface GraphLlmSettingsProps {
   onSaved?: () => void;
@@ -25,6 +42,7 @@ interface GraphLlmSettingsProps {
 export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
   const [provider, setProvider] = useState('openrouter');
   const [model, setModel] = useState(DEFAULT_MODELS.openrouter);
+  const [providers, setProviders] = useState<ProviderOption[]>(FALLBACK_PROVIDERS);
   const [apiKey, setApiKey] = useState('');
   const [configured, setConfigured] = useState(false);
   const [keyMasked, setKeyMasked] = useState(false);
@@ -40,6 +58,9 @@ export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
           body: JSON.stringify({ type: 'graph.get_llm_config' }),
         });
         const data = await res.json();
+        if (Array.isArray(data.providers) && data.providers.length > 0) {
+          setProviders(data.providers);
+        }
         if (data.provider) setProvider(data.provider);
         if (data.model) setModel(data.model);
         const isConfigured = data.configured === true;
@@ -54,10 +75,16 @@ export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
 
   const handleProviderChange = (value: string) => {
     setProvider(value);
-    setModel(DEFAULT_MODELS[value] ?? '');
+    const selected = providers.find((candidate) => candidate.id === value);
+    setModel(selected?.models[0] ?? DEFAULT_MODELS[value] ?? '');
     setKeyMasked(false);
     setApiKey('');
   };
+
+  const selectedProvider = providers.find((candidate) => candidate.id === provider);
+  const usesLocalAuth = selectedProvider?.local ?? (provider === 'claude-code' || provider === 'codex');
+  const requiresApiKey = selectedProvider?.requires_api_key ?? !usesLocalAuth;
+  const modelOptions = selectedProvider?.models ?? [];
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -101,9 +128,11 @@ export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
             <SelectValue placeholder="Select provider" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="openrouter">OpenRouter</SelectItem>
-            <SelectItem value="anthropic">Anthropic</SelectItem>
-            <SelectItem value="openai">OpenAI</SelectItem>
+            {providers.map((candidate) => (
+              <SelectItem key={candidate.id} value={candidate.id}>
+                {candidate.label}{candidate.local && !candidate.available ? ' (not found)' : ''}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -113,27 +142,39 @@ export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
           id="llm-model"
           value={model}
           onChange={(e) => setModel(e.target.value)}
+          list={modelOptions.length > 0 ? 'llm-model-options' : undefined}
           placeholder="Model name"
         />
       </div>
-      <div className="grid gap-2">
-        <Label htmlFor="llm-api-key">API Key</Label>
-        <Input
-          id="llm-api-key"
-          type={keyMasked ? 'text' : 'password'}
-          readOnly={keyMasked}
-          value={keyMasked ? '*****' : apiKey}
-          onFocus={() => {
-            if (keyMasked) {
-              setKeyMasked(false);
-              setApiKey('');
-            }
-          }}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="Enter your API key"
-          className={keyMasked ? 'cursor-pointer text-muted-foreground' : ''}
-        />
-      </div>
+      {modelOptions.length > 0 && (
+        <datalist id="llm-model-options">
+          {modelOptions.map((option) => <option key={option} value={option} />)}
+        </datalist>
+      )}
+      {requiresApiKey ? (
+        <div className="grid gap-2">
+          <Label htmlFor="llm-api-key">API Key</Label>
+          <Input
+            id="llm-api-key"
+            type={keyMasked ? 'text' : 'password'}
+            readOnly={keyMasked}
+            value={keyMasked ? '*****' : apiKey}
+            onFocus={() => {
+              if (keyMasked) {
+                setKeyMasked(false);
+                setApiKey('');
+              }
+            }}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="Enter your API key"
+            className={keyMasked ? 'cursor-pointer text-muted-foreground' : ''}
+          />
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Uses the local {provider === 'codex' ? 'Codex CLI' : 'Claude Code'} login and settings on the server host; no API key is stored here.
+        </p>
+      )}
       {saveError && (
         <p className="text-xs text-destructive">{saveError}</p>
       )}
@@ -142,7 +183,7 @@ export function GraphLlmSettings({ onSaved }: GraphLlmSettingsProps) {
       </Button>
       <p className="text-xs text-muted-foreground">
         Extracts entities and facts from your memories automatically, and powers the &quot;Suggest with AI&quot;
-        button on memory, task, and resource create forms. OpenRouter, Anthropic, and OpenAI are supported.
+        button on memory, task, and resource create forms. OpenRouter, Anthropic, OpenAI, Claude Code, and Codex CLI are supported.
       </p>
     </div>
   );

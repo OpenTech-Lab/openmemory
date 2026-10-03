@@ -172,6 +172,23 @@ mem autofill resource "<content>"
 
 Autofill is optional and never overrides explicitly supplied fields.
 
+### LLM providers
+
+Settings → LLM supports the existing OpenRouter, Anthropic API, and OpenAI API
+providers plus local **Claude Code** and **Codex CLI** providers. The local
+providers reuse the CLI login already present on the machine, so no API key is
+copied into OpenMemory. The settings response discovers Claude models from
+`~/.claude/settings.json` and local agent profiles, and Codex models from
+`~/.codex/config.toml` and its cached model catalog.
+
+Local calls are intentionally constrained: Claude Code runs in print mode with
+all tools and MCP servers disabled; Codex runs ephemerally in a read-only
+scratch directory without the user's Codex config or exec rules. The server
+must be able to execute the installed CLI. When using the Docker API mode, the
+home-directory mount in `docker-compose.yml` makes the local auth/config files
+available; set `OPENMEMORY_CLAUDE_CODE_COMMAND` or `OPENMEMORY_CODEX_COMMAND`
+if the executable is not discoverable automatically.
+
 ### Projects, tasks, and decisions
 
 Projects can be planning-only containers or linked to a local repository. MCP tools manage tasks, subtasks, dates, labels, status, and priority. Task notes are append-only and support human/agent decision checkpoints:
